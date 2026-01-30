@@ -1,0 +1,19 @@
+[Unit]
+Description=Clauderock - Anthropic API to AWS Bedrock proxy
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+ExecStart=%h/.local/bin/clauderock
+Restart=on-failure
+RestartSec=5
+Environment=AWS_REGION=us-west-2
+Environment=LOG_LEVEL=INFO
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
