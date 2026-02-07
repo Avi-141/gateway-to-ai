@@ -29,7 +29,7 @@ def clean_env(monkeypatch):
 @pytest.fixture(autouse=True)
 def reset_bedrock_singleton():
     """Reset the Bedrock client singleton before and after each test."""
-    from claudegate.client import reset_bedrock_client
+    from claudegate.bedrock_client import reset_bedrock_client
 
     reset_bedrock_client()
     yield

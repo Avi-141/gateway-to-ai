@@ -11,7 +11,7 @@ from botocore.exceptions import ClientError, ReadTimeoutError
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .client import get_bedrock_client, reset_bedrock_client
+from .bedrock_client import get_bedrock_client, reset_bedrock_client
 from .config import (
     BACKEND_TYPE,
     BEDROCK_REGION_PREFIX,
