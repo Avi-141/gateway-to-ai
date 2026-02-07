@@ -158,13 +158,20 @@ def get_copilot_model(model: str) -> tuple[str, str]:
     """Map Anthropic model name to Copilot model ID.
 
     Returns (copilot_model_id, anthropic_model_name) tuple.
-    The anthropic_model_name is used for response translation.
+    The anthropic_model_name is used for response translation (model label only).
     """
-    # Direct match
+    # Direct match in COPILOT_MODEL_MAP (Anthropic versioned names)
     if model in COPILOT_MODEL_MAP:
         return COPILOT_MODEL_MAP[model], model
-    # Partial match
+    # Partial match in COPILOT_MODEL_MAP
     for key, value in COPILOT_MODEL_MAP.items():
+        if key in model:
+            return value, key
+    # Direct match in COPILOT_OPENAI_MODEL_MAP (GPT, Gemini, Grok, etc.)
+    if model in COPILOT_OPENAI_MODEL_MAP:
+        return COPILOT_OPENAI_MODEL_MAP[model], model
+    # Partial match in COPILOT_OPENAI_MODEL_MAP
+    for key, value in COPILOT_OPENAI_MODEL_MAP.items():
         if key in model:
             return value, key
     # Default

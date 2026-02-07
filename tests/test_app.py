@@ -3,6 +3,7 @@
 import json
 import sys
 from io import BytesIO
+from unittest.mock import AsyncMock
 
 import pytest
 from botocore.exceptions import ReadTimeoutError
@@ -222,6 +223,43 @@ class TestMessagesRoute:
 
         resp = await async_client.post("/v1/messages", json=minimal_anthropic_request)
         assert resp.status_code == 500
+
+    @pytest.mark.anyio
+    async def test_non_claude_model_via_copilot(self, async_client, monkeypatch):
+        """Non-Claude models (GPT, Gemini) should route correctly via /v1/messages with Copilot."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+
+        mock_backend = AsyncMock()
+        from fastapi.responses import JSONResponse
+
+        anthropic_resp = {
+            "id": "msg_123",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "GPT response"}],
+            "model": "gpt-5.1-codex",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 3},
+        }
+        mock_backend.handle_messages.return_value = JSONResponse(content=anthropic_resp)
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+
+        resp = await async_client.post(
+            "/v1/messages",
+            json={
+                "model": "gpt-5.1-codex",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert resp.status_code == 200
+        # Verify handle_messages was called with the correct model
+        mock_backend.handle_messages.assert_called_once()
+        call_kwargs = mock_backend.handle_messages.call_args
+        # openai_model (copilot_model) should be "gpt-5.1-codex"
+        assert call_kwargs[0][3] == "gpt-5.1-codex"  # copilot_model positional arg
+        # anthropic_model should be "gpt-5.1-codex" (label for response)
+        assert call_kwargs[0][4] == "gpt-5.1-codex"  # anthropic_model positional arg
 
 
 # --- GET /health ---

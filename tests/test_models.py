@@ -86,6 +86,26 @@ class TestGetCopilotModel:
         assert model_id == "claude-sonnet-4.5"
         assert returned_name == "claude-sonnet-4-5-20250929"
 
+    def test_openai_model_direct_match(self):
+        model_id, returned_name = get_copilot_model("gpt-5.1-codex")
+        assert model_id == "gpt-5.1-codex"
+        assert returned_name == "gpt-5.1-codex"
+
+    def test_openai_model_gemini(self):
+        model_id, returned_name = get_copilot_model("gemini-2.5-pro")
+        assert model_id == "gemini-2.5-pro"
+        assert returned_name == "gemini-2.5-pro"
+
+    def test_openai_model_gpt4o(self):
+        model_id, returned_name = get_copilot_model("gpt-4o")
+        assert model_id == "gpt-4o"
+        assert returned_name == "gpt-4o"
+
+    def test_openai_model_partial_match(self):
+        model_id, returned_name = get_copilot_model("prefix-gpt-4o-suffix")
+        assert model_id == "gpt-4o"
+        assert returned_name == "gpt-4o"
+
     def test_unknown_falls_back_to_default(self):
         model_id, returned_name = get_copilot_model("totally-unknown")
         assert model_id == DEFAULT_COPILOT_MODEL

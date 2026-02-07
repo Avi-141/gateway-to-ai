@@ -65,9 +65,9 @@ A lightweight proxy that translates Anthropic API requests to AWS Bedrock or Git
 | claude-3-5-sonnet-20241022 | claude-3.5-sonnet |
 | claude-3-5-haiku-20241022 | claude-3.5-haiku |
 
-### Copilot Backend (Non-Claude Models via `/v1/chat/completions`)
+### Copilot Backend (Non-Claude Models)
 
-When using the OpenAI-compatible endpoint with the Copilot backend, non-Claude models are also available:
+When using the Copilot backend, non-Claude models are available via both `/v1/messages` (Anthropic format) and `/v1/chat/completions` (OpenAI format):
 
 | Model | Provider |
 |-------|----------|
@@ -89,7 +89,7 @@ When using the OpenAI-compatible endpoint with the Copilot backend, non-Claude m
 | grok-code-fast-1 | xAI |
 | raptor-mini | Other |
 
-These models are only available via the `/v1/chat/completions` endpoint (OpenAI format). They pass through directly to Copilot with zero format translations. Model availability depends on your Copilot plan.
+These models work via both endpoints when using the Copilot backend. On `/v1/chat/completions`, they pass through directly with zero format translations. On `/v1/messages`, requests are translated to OpenAI format and responses are translated back to Anthropic format. Model availability depends on your Copilot plan.
 
 ## Prerequisites
 
