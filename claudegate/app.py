@@ -596,10 +596,11 @@ async def list_models() -> dict[str, Any]:
     if BACKEND_TYPE == "copilot":
         # Combine Anthropic-name models and OpenAI-native models
         all_model_ids: dict[str, str] = {}
+        copilot_ids = set(COPILOT_MODEL_MAP.values())
         for model_id in COPILOT_MODEL_MAP:
             all_model_ids[model_id] = "anthropic"
         for model_id in COPILOT_OPENAI_MODEL_MAP:
-            if model_id not in all_model_ids:
+            if model_id not in all_model_ids and model_id not in copilot_ids:
                 if model_id.startswith(("gpt-",)):
                     owned_by = "openai"
                 elif model_id.startswith("gemini-"):
