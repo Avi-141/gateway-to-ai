@@ -1,4 +1,4 @@
-"""Model mappings from Anthropic model names to Bedrock model IDs."""
+"""Model mappings from Anthropic model names to Bedrock/Copilot model IDs."""
 
 from .config import BEDROCK_REGION_PREFIX
 
@@ -6,7 +6,9 @@ from .config import BEDROCK_REGION_PREFIX
 DEFAULT_MODEL = "anthropic.claude-sonnet-4-5-20250929-v1:0"
 
 # Map Anthropic model names to Bedrock model IDs (without region prefix)
-MODEL_MAP = {
+BEDROCK_MODEL_MAP = {
+    # Opus 4.6
+    "claude-opus-4-6-20250515": "anthropic.claude-opus-4-6-20250515-v1:0",
     # Opus 4.5
     "claude-opus-4-5-20251101": "anthropic.claude-opus-4-5-20251101-v1:0",
     # Opus 4.1
@@ -46,14 +48,61 @@ def add_region_prefix(model_id: str) -> str:
 def get_bedrock_model(model: str) -> str:
     """Map Anthropic model name to Bedrock model ID."""
     # Direct match
-    if model in MODEL_MAP:
-        return add_region_prefix(MODEL_MAP[model])
+    if model in BEDROCK_MODEL_MAP:
+        return add_region_prefix(BEDROCK_MODEL_MAP[model])
     # Already a Bedrock model ID (with or without prefix)
     if "anthropic." in model:
         return model
     # Partial match
-    for key, value in MODEL_MAP.items():
+    for key, value in BEDROCK_MODEL_MAP.items():
         if key in model:
             return add_region_prefix(value)
     # Default
     return add_region_prefix(DEFAULT_MODEL)
+
+
+# --- Copilot Model Mappings ---
+
+# Default Copilot model
+DEFAULT_COPILOT_MODEL = "claude-sonnet-4.5"
+
+# Map Anthropic model names to Copilot model IDs
+COPILOT_MODEL_MAP = {
+    # Opus 4.6
+    "claude-opus-4-6-20250515": "claude-opus-4.6",
+    # Opus 4.5
+    "claude-opus-4-5-20251101": "claude-opus-4.5",
+    # Opus 4.1
+    "claude-opus-4-1-20250805": "claude-opus-4.1",
+    # Opus 4
+    "claude-opus-4-20250514": "claude-opus-4",
+    # Sonnet 4.5
+    "claude-sonnet-4-5-20250929": "claude-sonnet-4.5",
+    # Sonnet 4
+    "claude-sonnet-4-20250514": "claude-sonnet-4",
+    # Haiku 4.5
+    "claude-haiku-4-5-20251001": "claude-haiku-4.5",
+    # Sonnet 3.7
+    "claude-3-7-sonnet-20250219": "claude-3.7-sonnet",
+    # Sonnet 3.5 v2
+    "claude-3-5-sonnet-20241022": "claude-3.5-sonnet",
+    # Haiku 3.5
+    "claude-3-5-haiku-20241022": "claude-3.5-haiku",
+}
+
+
+def get_copilot_model(model: str) -> tuple[str, str]:
+    """Map Anthropic model name to Copilot model ID.
+
+    Returns (copilot_model_id, anthropic_model_name) tuple.
+    The anthropic_model_name is used for response translation.
+    """
+    # Direct match
+    if model in COPILOT_MODEL_MAP:
+        return COPILOT_MODEL_MAP[model], model
+    # Partial match
+    for key, value in COPILOT_MODEL_MAP.items():
+        if key in model:
+            return value, key
+    # Default
+    return DEFAULT_COPILOT_MODEL, "claude-sonnet-4-5-20250929"

@@ -1,13 +1,13 @@
 [project]
 name = "clauderock"
 version = "0.1.0"
-description = "Anthropic API to AWS Bedrock proxy for Claude Code"
+description = "Anthropic API proxy for AWS Bedrock and GitHub Copilot backends"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [
     { name = "Daniel Schmidt" }
 ]
-keywords = ["anthropic", "bedrock", "claude", "proxy", "aws", "clauderock"]
+keywords = ["anthropic", "bedrock", "claude", "proxy", "aws", "copilot", "github", "clauderock"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -20,6 +20,7 @@ classifiers = [
 dependencies = [
     "boto3>=1.42.33",
     "fastapi>=0.115.0",
+    "httpx>=0.28.0",
     "tiktoken>=0.12.0",
     "uvicorn>=0.34.0",
 ]

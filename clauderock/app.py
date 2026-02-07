@@ -13,13 +13,15 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .client import get_bedrock_client, reset_bedrock_client
 from .config import (
+    BACKEND_TYPE,
     BEDROCK_REGION_PREFIX,
+    COPILOT_TIMEOUT,
     DEFAULT_HOST,
     DEFAULT_PORT,
     LOG_LEVEL,
     logger,
 )
-from .models import MODEL_MAP, add_region_prefix, get_bedrock_model
+from .models import COPILOT_MODEL_MAP, BEDROCK_MODEL_MAP, add_region_prefix, get_bedrock_model, get_copilot_model
 
 # Use cl100k_base encoding (similar to Claude's tokenizer)
 tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -38,21 +40,39 @@ CREDENTIALS_EXPIRED_MSG = (
     "to refresh your credentials, then retry."
 )
 
+# Copilot backend (initialized in lifespan if BACKEND=copilot)
+_copilot_backend = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handle startup and shutdown events."""
+    global _copilot_backend
+
     # Startup
     logger.info(f"Starting clauderock v{__version__}")
     logger.info(f"Host: {os.environ.get('HOST', DEFAULT_HOST)}")
     logger.info(f"Port: {os.environ.get('PORT', DEFAULT_PORT)}")
-    logger.info(f"AWS Region: {os.environ.get('AWS_REGION', 'us-west-2')}")
-    logger.info(f"Bedrock Region Prefix: {BEDROCK_REGION_PREFIX or '(none)'}")
+    logger.info(f"Backend: {BACKEND_TYPE}")
     logger.info(f"Log Level: {LOG_LEVEL}")
+
+    if BACKEND_TYPE == "copilot":
+        from .copilot_auth import CopilotAuth, get_github_token
+        from .copilot_client import CopilotBackend
+
+        github_token = get_github_token()
+        auth = CopilotAuth(github_token)
+        _copilot_backend = CopilotBackend(auth, timeout=COPILOT_TIMEOUT)
+        logger.info("Copilot backend initialized")
+    else:
+        logger.info(f"AWS Region: {os.environ.get('AWS_REGION', 'us-west-2')}")
+        logger.info(f"Bedrock Region Prefix: {BEDROCK_REGION_PREFIX or '(none)'}")
 
     yield
 
     # Shutdown
+    if _copilot_backend is not None:
+        await _copilot_backend.close()
     logger.info("Shutting down clauderock")
 
 
@@ -181,10 +201,17 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
         return error
 
     model = body["model"]
-    bedrock_model = get_bedrock_model(model)
     stream = body.get("stream", False)
 
     log_prefix = f"[{request_id}] " if request_id else ""
+
+    # Dispatch to Copilot backend
+    if BACKEND_TYPE == "copilot" and _copilot_backend is not None:
+        copilot_model, anthropic_model = get_copilot_model(model)
+        logger.info(f"{log_prefix}Request - model: {model} -> {copilot_model} (copilot), stream: {stream}")
+        return await _copilot_backend.handle_messages(body, request_id, stream, copilot_model, anthropic_model)
+
+    bedrock_model = get_bedrock_model(model)
     logger.info(f"{log_prefix}Request - model: {model} -> {bedrock_model}, stream: {stream}")
     logger.debug(f"{log_prefix}Request body keys: {list(body.keys())}")
 
@@ -264,13 +291,12 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
 
 
 @app.get("/health")
-async def health(check_bedrock: bool = False) -> dict[str, Any]:
-    """Health check endpoint. Use ?check_bedrock=true for deep check."""
-    result: dict[str, Any] = {"status": "ok", "version": __version__}
+async def health(check_bedrock: bool = False, check_copilot: bool = False) -> dict[str, Any]:
+    """Health check endpoint. Use ?check_bedrock=true or ?check_copilot=true for deep check."""
+    result: dict[str, Any] = {"status": "ok", "version": __version__, "backend": BACKEND_TYPE}
 
-    if check_bedrock:
+    if check_bedrock and BACKEND_TYPE == "bedrock":
         try:
-            # Simple call to verify Bedrock connectivity
             bedrock = get_bedrock_client()
             bedrock.invoke_model(
                 modelId=add_region_prefix("anthropic.claude-3-haiku-20240307-v1:0"),
@@ -287,6 +313,14 @@ async def health(check_bedrock: bool = False) -> dict[str, Any]:
             result["status"] = "degraded"
             result["bedrock"] = f"error: {e}"
 
+    if check_copilot and BACKEND_TYPE == "copilot" and _copilot_backend is not None:
+        try:
+            token = await _copilot_backend._auth.get_token()
+            result["copilot"] = "ok" if token else "no token"
+        except Exception as e:
+            result["status"] = "degraded"
+            result["copilot"] = f"error: {e}"
+
     return result
 
 
@@ -299,6 +333,7 @@ async def get_version() -> dict[str, str]:
 @app.get("/v1/models")
 async def list_models() -> dict[str, Any]:
     """Return available models in Anthropic API format."""
+    model_map = COPILOT_MODEL_MAP if BACKEND_TYPE == "copilot" else BEDROCK_MODEL_MAP
     models = [
         {
             "id": model_id,
@@ -306,7 +341,7 @@ async def list_models() -> dict[str, Any]:
             "display_name": model_id.replace("-", " ").title(),
             "created_at": "2024-01-01T00:00:00Z",
         }
-        for model_id in MODEL_MAP.keys()
+        for model_id in model_map.keys()
     ]
     return {
         "data": models,

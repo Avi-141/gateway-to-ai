@@ -94,3 +94,8 @@ logger = logging.getLogger("clauderock")
 # Cross-region inference prefix (us, eu, apac) - required for on-demand throughput
 # See: https://docs.aws.amazon.com/bedrock/latest/userguide/cross-region-inference.html
 BEDROCK_REGION_PREFIX = os.environ.get("BEDROCK_REGION_PREFIX", DEFAULT_BEDROCK_REGION_PREFIX)
+
+# Backend selection: "bedrock" or "copilot"
+BACKEND_TYPE = os.environ.get("BACKEND", "bedrock").lower()
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
+COPILOT_TIMEOUT = int(os.environ.get("COPILOT_TIMEOUT", "300"))
