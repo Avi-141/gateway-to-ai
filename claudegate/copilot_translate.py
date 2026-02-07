@@ -7,7 +7,6 @@ import json
 import uuid
 from typing import Any
 
-
 # --- Request Translation (Anthropic -> OpenAI) ---
 
 
@@ -216,9 +215,7 @@ def _translate_finish_reason(reason: str | None) -> str:
     return mapping.get(reason or "stop", "end_turn")
 
 
-def openai_to_anthropic_response(
-    openai_resp: dict[str, Any], model: str
-) -> dict[str, Any]:
+def openai_to_anthropic_response(openai_resp: dict[str, Any], model: str) -> dict[str, Any]:
     """Translate an OpenAI Chat Completions response to Anthropic Messages format."""
     choice = openai_resp.get("choices", [{}])[0]
     message = choice.get("message", {})
@@ -390,9 +387,7 @@ class StreamTranslator:
                     "name": tc_name,
                     "arguments": "",
                 }
-                events += self._emit_content_block_start(
-                    "tool_use", id=tc_id, name=tc_name
-                )
+                events += self._emit_content_block_start("tool_use", id=tc_id, name=tc_name)
 
             # Accumulate arguments
             if func.get("arguments"):

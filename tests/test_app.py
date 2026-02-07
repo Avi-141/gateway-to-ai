@@ -3,8 +3,6 @@
 import json
 import sys
 from io import BytesIO
-from typing import Any
-from unittest.mock import MagicMock, patch
 
 import pytest
 from botocore.exceptions import ReadTimeoutError
@@ -114,7 +112,9 @@ class TestMessagesRoute:
         assert resp.status_code == 400
 
     @pytest.mark.anyio
-    async def test_non_streaming_success(self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch):
+    async def test_non_streaming_success(
+        self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch
+    ):
         monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
         mock_response = {
             "body": BytesIO(
@@ -138,7 +138,9 @@ class TestMessagesRoute:
         assert body["content"][0]["text"] == "Hi!"
 
     @pytest.mark.anyio
-    async def test_streaming_returns_sse(self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch):
+    async def test_streaming_returns_sse(
+        self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch
+    ):
         monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
         minimal_anthropic_request["stream"] = True
 
@@ -160,7 +162,9 @@ class TestMessagesRoute:
         assert resp.status_code == 401
 
     @pytest.mark.anyio
-    async def test_validation_exception(self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch):
+    async def test_validation_exception(
+        self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch
+    ):
         monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
         mock_bedrock_client.invoke_model.side_effect = make_client_error("ValidationException", "Bad input")
 
@@ -192,7 +196,9 @@ class TestMessagesRoute:
         assert resp.status_code == 504
 
     @pytest.mark.anyio
-    async def test_generic_client_error(self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch):
+    async def test_generic_client_error(
+        self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch
+    ):
         monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
         mock_bedrock_client.invoke_model.side_effect = make_client_error("SomeOtherError", "Unknown")
 
@@ -208,7 +214,9 @@ class TestMessagesRoute:
         assert resp.status_code == 504
 
     @pytest.mark.anyio
-    async def test_unexpected_exception(self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch):
+    async def test_unexpected_exception(
+        self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch
+    ):
         monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
         mock_bedrock_client.invoke_model.side_effect = RuntimeError("kaboom")
 

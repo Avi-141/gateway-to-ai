@@ -1,11 +1,8 @@
 """Tests for claudegate/copilot_auth.py."""
 
-import os
-import stat
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
 
 from claudegate.copilot_auth import (
@@ -15,7 +12,6 @@ from claudegate.copilot_auth import (
     device_flow_login,
     get_github_token,
 )
-
 
 # --- _load_persisted_token ---
 
@@ -124,10 +120,12 @@ class TestDeviceFlowLogin:
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
 
-        with patch("claudegate.copilot_auth.httpx.Client", return_value=mock_client):
-            with patch("claudegate.copilot_auth.time.sleep"):
-                with patch("claudegate.copilot_auth._persist_token"):
-                    result = device_flow_login()
+        with (
+            patch("claudegate.copilot_auth.httpx.Client", return_value=mock_client),
+            patch("claudegate.copilot_auth.time.sleep"),
+            patch("claudegate.copilot_auth._persist_token"),
+        ):
+            result = device_flow_login()
 
         assert result == "gho_success"
 
@@ -153,10 +151,12 @@ class TestDeviceFlowLogin:
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
 
-        with patch("claudegate.copilot_auth.httpx.Client", return_value=mock_client):
-            with patch("claudegate.copilot_auth.time.sleep"):
-                with patch("claudegate.copilot_auth._persist_token"):
-                    result = device_flow_login()
+        with (
+            patch("claudegate.copilot_auth.httpx.Client", return_value=mock_client),
+            patch("claudegate.copilot_auth.time.sleep"),
+            patch("claudegate.copilot_auth._persist_token"),
+        ):
+            result = device_flow_login()
 
         assert result == "gho_ok"
 
@@ -180,10 +180,12 @@ class TestDeviceFlowLogin:
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
 
-        with patch("claudegate.copilot_auth.httpx.Client", return_value=mock_client):
-            with patch("claudegate.copilot_auth.time.sleep"):
-                with pytest.raises(RuntimeError, match="expired"):
-                    device_flow_login()
+        with (
+            patch("claudegate.copilot_auth.httpx.Client", return_value=mock_client),
+            patch("claudegate.copilot_auth.time.sleep"),
+            pytest.raises(RuntimeError, match="expired"),
+        ):
+            device_flow_login()
 
     def test_access_denied_error(self, monkeypatch):
         monkeypatch.setattr("claudegate.copilot_auth.TOKEN_DIR", MagicMock())
@@ -205,10 +207,12 @@ class TestDeviceFlowLogin:
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
 
-        with patch("claudegate.copilot_auth.httpx.Client", return_value=mock_client):
-            with patch("claudegate.copilot_auth.time.sleep"):
-                with pytest.raises(RuntimeError, match="denied"):
-                    device_flow_login()
+        with (
+            patch("claudegate.copilot_auth.httpx.Client", return_value=mock_client),
+            patch("claudegate.copilot_auth.time.sleep"),
+            pytest.raises(RuntimeError, match="denied"),
+        ):
+            device_flow_login()
 
 
 # --- CopilotAuth ---

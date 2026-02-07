@@ -1,11 +1,9 @@
 """GitHub OAuth device flow and Copilot token management."""
 
 import asyncio
-import json
 import os
 import time
 from pathlib import Path
-from typing import Any
 
 import httpx
 
@@ -21,8 +19,8 @@ TOKEN_FILE = TOKEN_DIR / "github_token"
 
 # Copilot API endpoints
 GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code"
-GITHUB_OAUTH_TOKEN_URL = "https://github.com/login/oauth/access_token"
-COPILOT_TOKEN_URL = "https://api.github.com/copilot_internal/v2/token"
+GITHUB_OAUTH_TOKEN_URL = "https://github.com/login/oauth/access_token"  # noqa: S105
+COPILOT_TOKEN_URL = "https://api.github.com/copilot_internal/v2/token"  # noqa: S105
 
 # Shared editor identification headers required by all Copilot endpoints
 COPILOT_HEADERS = {
@@ -192,9 +190,7 @@ class CopilotAuth:
 
         if resp.status_code != 200:
             body = resp.text[:500]
-            logger.error(
-                "Copilot token endpoint returned %d: %s", resp.status_code, body
-            )
+            logger.error("Copilot token endpoint returned %d: %s", resp.status_code, body)
 
         if resp.status_code == 401:
             raise RuntimeError(
@@ -202,9 +198,7 @@ class CopilotAuth:
                 "Please re-authenticate (delete ~/.config/claudegate/github_token and restart)."
             )
         if resp.status_code == 403:
-            raise RuntimeError(
-                f"Copilot token request denied (403). Response: {resp.text[:200]}"
-            )
+            raise RuntimeError(f"Copilot token request denied (403). Response: {resp.text[:200]}")
 
         resp.raise_for_status()
         data = resp.json()

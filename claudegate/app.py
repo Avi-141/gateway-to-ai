@@ -3,8 +3,9 @@
 import asyncio
 import json
 import os
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator
+from typing import Any
 
 import tiktoken
 from botocore.exceptions import ClientError, ReadTimeoutError
@@ -21,7 +22,7 @@ from .config import (
     LOG_LEVEL,
     logger,
 )
-from .models import COPILOT_MODEL_MAP, BEDROCK_MODEL_MAP, add_region_prefix, get_bedrock_model, get_copilot_model
+from .models import BEDROCK_MODEL_MAP, COPILOT_MODEL_MAP, add_region_prefix, get_bedrock_model, get_copilot_model
 
 # Use cl100k_base encoding (similar to Claude's tokenizer)
 tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -36,8 +37,7 @@ except PackageNotFoundError:
 
 # Error message for expired credentials
 CREDENTIALS_EXPIRED_MSG = (
-    "AWS credentials have expired. Please re-authenticate in your terminal "
-    "to refresh your credentials, then retry."
+    "AWS credentials have expired. Please re-authenticate in your terminal to refresh your credentials, then retry."
 )
 
 # Copilot backend (initialized in lifespan if BACKEND=copilot)
@@ -135,17 +135,13 @@ def _count_content_tokens(content: Any) -> int:
 # --- Streaming ---
 
 
-async def stream_response(
-    model: str, body: dict[str, Any], request_id: str = ""
-) -> AsyncGenerator[str, None]:
+async def stream_response(model: str, body: dict[str, Any], request_id: str = "") -> AsyncGenerator[str, None]:
     """Handle streaming responses."""
     log_prefix = f"[{request_id}] " if request_id else ""
     try:
         logger.info(f"{log_prefix}Starting stream for model: {model}")
         bedrock = get_bedrock_client()
-        response = bedrock.invoke_model_with_response_stream(
-            modelId=model, body=json.dumps(body)
-        )
+        response = bedrock.invoke_model_with_response_stream(modelId=model, body=json.dumps(body))
 
         chunk_count = 0
         for event in response["body"]:
@@ -171,9 +167,16 @@ async def stream_response(
             reset_bedrock_client()
             # Inject a visible message into the stream so user sees it
             error_text = f"\n\n⚠️ **Authentication Error**: {CREDENTIALS_EXPIRED_MSG}\n"
-            yield f"event: content_block_start\ndata: {json.dumps({'type': 'content_block_start', 'index': 0, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
-            yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': 0, 'delta': {'type': 'text_delta', 'text': error_text}})}\n\n"
-            yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': 0})}\n\n"
+            block_start = json.dumps(
+                {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+            )
+            block_delta = json.dumps(
+                {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": error_text}}
+            )
+            block_stop = json.dumps({"type": "content_block_stop", "index": 0})
+            yield f"event: content_block_start\ndata: {block_start}\n\n"
+            yield f"event: content_block_delta\ndata: {block_delta}\n\n"
+            yield f"event: content_block_stop\ndata: {block_stop}\n\n"
         else:
             logger.error(f"{log_prefix}Stream error: {e}")
             yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': {'message': str(e)}})}\n\n"
@@ -282,9 +285,7 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
             return _error_response(500, "api_error", error_message)
     except ReadTimeoutError as e:
         logger.error(f"{log_prefix}Read timeout: {e}")
-        return _error_response(
-            504, "timeout_error", "Request timed out. Try a smaller request or use streaming."
-        )
+        return _error_response(504, "timeout_error", "Request timed out. Try a smaller request or use streaming.")
     except Exception as e:
         logger.error(f"{log_prefix}Unexpected error: {e}")
         return _error_response(500, "api_error", str(e))
@@ -341,7 +342,7 @@ async def list_models() -> dict[str, Any]:
             "display_name": model_id.replace("-", " ").title(),
             "created_at": "2024-01-01T00:00:00Z",
         }
-        for model_id in model_map.keys()
+        for model_id in model_map
     ]
     return {
         "data": models,

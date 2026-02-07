@@ -2,8 +2,6 @@
 
 import json
 
-import pytest
-
 from claudegate.copilot_translate import (
     StreamTranslator,
     _translate_content_to_openai,
@@ -13,7 +11,6 @@ from claudegate.copilot_translate import (
     anthropic_to_openai_request,
     openai_to_anthropic_response,
 )
-
 
 # --- _translate_content_to_openai ---
 
@@ -401,9 +398,7 @@ class TestStreamTranslator:
             "choices": [
                 {
                     "delta": {
-                        "tool_calls": [
-                            {"index": 0, "id": "call_1", "function": {"name": "fn", "arguments": '{"a":'}}
-                        ]
+                        "tool_calls": [{"index": 0, "id": "call_1", "function": {"name": "fn", "arguments": '{"a":'}}]
                     },
                     "finish_reason": None,
                 }
@@ -461,7 +456,10 @@ class TestStreamTranslator:
             # Tool arguments
             {
                 "choices": [
-                    {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '{"x":1}'}}]}, "finish_reason": None}
+                    {
+                        "delta": {"tool_calls": [{"index": 0, "function": {"arguments": '{"x":1}'}}]},
+                        "finish_reason": None,
+                    }
                 ],
             },
             # Finish

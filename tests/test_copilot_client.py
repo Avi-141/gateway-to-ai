@@ -58,9 +58,7 @@ class TestHandleMessages:
     async def test_non_streaming_success(self, backend):
         openai_resp = {
             "id": "chat-123",
-            "choices": [
-                {"message": {"role": "assistant", "content": "Hello!"}, "finish_reason": "stop"}
-            ],
+            "choices": [{"message": {"role": "assistant", "content": "Hello!"}, "finish_reason": "stop"}],
             "usage": {"prompt_tokens": 5, "completion_tokens": 3},
         }
         mock_response = MagicMock()
@@ -142,6 +140,7 @@ class TestHandleMessages:
             "max_tokens": 100,
             "messages": [{"role": "user", "content": "hi"}],
         }
+
         # Mock _stream_response to yield some data
         async def mock_stream(*args, **kwargs):
             yield "event: message_start\ndata: {}\n\n"
@@ -207,9 +206,7 @@ class TestStreamResponse:
     async def test_timeout_error(self, backend):
         """Test that timeout during streaming produces error event."""
 
-        with patch.object(
-            backend._client, "stream", side_effect=httpx.TimeoutException("timed out")
-        ):
+        with patch.object(backend._client, "stream", side_effect=httpx.TimeoutException("timed out")):
             events = []
             async for event in backend._stream_response({"model": "m"}, "model", ""):
                 events.append(event)

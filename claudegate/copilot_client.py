@@ -2,7 +2,8 @@
 
 import asyncio
 import json
-from typing import Any, AsyncGenerator
+from collections.abc import AsyncGenerator
+from typing import Any
 
 import httpx
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -116,9 +117,7 @@ class CopilotBackend:
             headers = await self._get_headers()
             logger.info(f"{log_prefix}Starting Copilot stream for {openai_body.get('model')}")
 
-            async with self._client.stream(
-                "POST", COPILOT_CHAT_URL, headers=headers, json=openai_body
-            ) as resp:
+            async with self._client.stream("POST", COPILOT_CHAT_URL, headers=headers, json=openai_body) as resp:
                 if resp.status_code != 200:
                     body = await resp.aread()
                     detail = body.decode()[:500]
@@ -164,7 +163,8 @@ class CopilotBackend:
 
         except httpx.TimeoutException:
             logger.error(f"{log_prefix}Copilot stream timed out")
-            yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': {'message': 'Copilot stream timed out'}})}\n\n"
+            error_data = json.dumps({"type": "error", "error": {"message": "Copilot stream timed out"}})
+            yield f"event: error\ndata: {error_data}\n\n"
         except Exception as e:
             logger.error(f"{log_prefix}Copilot stream error: {e}")
             yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': {'message': str(e)}})}\n\n"

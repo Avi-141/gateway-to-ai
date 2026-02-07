@@ -12,14 +12,15 @@ from claudegate.models import (
     get_copilot_model,
 )
 
-
 # --- add_region_prefix ---
 
 
 class TestAddRegionPrefix:
     def test_with_prefix(self, monkeypatch):
         monkeypatch.setattr("claudegate.models.BEDROCK_REGION_PREFIX", "us")
-        assert add_region_prefix("anthropic.claude-3-haiku-20240307-v1:0") == "us.anthropic.claude-3-haiku-20240307-v1:0"
+        assert (
+            add_region_prefix("anthropic.claude-3-haiku-20240307-v1:0") == "us.anthropic.claude-3-haiku-20240307-v1:0"
+        )
 
     def test_empty_prefix(self, monkeypatch):
         monkeypatch.setattr("claudegate.models.BEDROCK_REGION_PREFIX", "")
