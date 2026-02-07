@@ -95,7 +95,10 @@ logger = logging.getLogger("claudegate")
 # See: https://docs.aws.amazon.com/bedrock/latest/userguide/cross-region-inference.html
 BEDROCK_REGION_PREFIX = os.environ.get("BEDROCK_REGION_PREFIX", DEFAULT_BEDROCK_REGION_PREFIX)
 
-# Backend selection: "bedrock" or "copilot"
-BACKEND_TYPE = os.environ.get("BACKEND", "bedrock").lower()
+# Backend selection: "bedrock", "copilot", or comma-separated "copilot,bedrock" for fallback
+_backends = [b.strip() for b in os.environ.get("BACKEND", "bedrock").lower().split(",") if b.strip()]
+BACKEND_TYPE = _backends[0]  # primary backend
+FALLBACK_BACKEND = _backends[1] if len(_backends) > 1 else ""  # optional fallback
+FALLBACK_ON_ERRORS = {429, 500, 502, 503, 504}
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 COPILOT_TIMEOUT = int(os.environ.get("COPILOT_TIMEOUT", "300"))

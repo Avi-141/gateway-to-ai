@@ -8,15 +8,25 @@ from typing import Any
 import httpx
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .config import logger
+from .config import FALLBACK_ON_ERRORS, logger
 from .copilot_auth import COPILOT_HEADERS, CopilotAuth
 from .copilot_translate import (
     StreamTranslator,
     anthropic_to_openai_request,
     openai_to_anthropic_response,
 )
+from .errors import CopilotHttpError, TransientBackendError
 
 COPILOT_CHAT_URL = "https://api.githubcopilot.com/chat/completions"
+
+# Map HTTP status codes to Anthropic error types
+_ERROR_TYPE_MAP: dict[int, str] = {
+    429: "rate_limit_error",
+    500: "api_error",
+    502: "api_error",
+    503: "api_error",
+    504: "timeout_error",
+}
 
 
 class CopilotBackend:
@@ -64,99 +74,102 @@ class CopilotBackend:
     async def handle_messages(
         self, body: dict[str, Any], request_id: str, stream: bool, openai_model: str, anthropic_model: str
     ) -> JSONResponse | StreamingResponse:
-        """Handle a messages request by proxying through Copilot."""
+        """Handle a messages request by proxying through Copilot.
+
+        Raises TransientBackendError for fallback-eligible errors (429, 5xx).
+        Raises CopilotHttpError for non-transient HTTP errors.
+        Auth errors (RuntimeError) and unexpected errors are still raised.
+        """
         log_prefix = f"[{request_id}] " if request_id else ""
 
-        try:
-            openai_body = anthropic_to_openai_request(body, openai_model)
+        openai_body = anthropic_to_openai_request(body, openai_model)
 
-            if stream:
-                openai_body["stream"] = True
-                openai_body["stream_options"] = {"include_usage": True}
-                return StreamingResponse(
-                    self._stream_response(openai_body, anthropic_model, log_prefix),
-                    media_type="text/event-stream",
-                )
-            else:
-                headers = await self._get_headers()
-                logger.info(f"{log_prefix}Copilot request to {openai_model}")
-                logger.debug(f"{log_prefix}OpenAI body keys: {list(openai_body.keys())}")
-
-                resp = await self._client.post(COPILOT_CHAT_URL, headers=headers, json=openai_body)
-
-                if resp.status_code != 200:
-                    detail = resp.text[:500]
-                    logger.error(f"{log_prefix}Copilot error {resp.status_code}: {detail}")
-                    return self._map_http_error(resp.status_code, detail)
-
-                openai_resp = resp.json()
-                result = openai_to_anthropic_response(openai_resp, anthropic_model)
-                logger.debug(f"{log_prefix}Response: {json.dumps(result)[:500]}")
-                return JSONResponse(content=result)
-
-        except httpx.TimeoutException:
-            logger.error(f"{log_prefix}Copilot request timed out")
-            return self._error_response(
-                504, "timeout_error", "Copilot request timed out. Try a smaller request or use streaming."
+        if stream:
+            openai_body["stream"] = True
+            openai_body["stream_options"] = {"include_usage": True}
+            resp, stream_cm = await self._open_stream(openai_body, log_prefix)
+            return StreamingResponse(
+                self._stream_response(resp, stream_cm, anthropic_model, log_prefix),
+                media_type="text/event-stream",
             )
-        except RuntimeError as e:
-            logger.error(f"{log_prefix}Auth error: {e}")
-            return self._error_response(401, "authentication_error", str(e))
-        except Exception as e:
-            logger.error(f"{log_prefix}Unexpected Copilot error: {e}")
-            return self._error_response(500, "api_error", str(e))
+        else:
+            headers = await self._get_headers()
+            logger.info(f"{log_prefix}Copilot request to {openai_model}")
+            logger.debug(f"{log_prefix}OpenAI body keys: {list(openai_body.keys())}")
+
+            resp = await self._client.post(COPILOT_CHAT_URL, headers=headers, json=openai_body)
+
+            if resp.status_code != 200:
+                detail = resp.text[:500]
+                logger.error(f"{log_prefix}Copilot error {resp.status_code}: {detail}")
+                if resp.status_code in FALLBACK_ON_ERRORS:
+                    error_type = _ERROR_TYPE_MAP.get(resp.status_code, "api_error")
+                    raise TransientBackendError(resp.status_code, error_type, detail, "copilot")
+                raise CopilotHttpError(resp.status_code, detail)
+
+            openai_resp = resp.json()
+            result = openai_to_anthropic_response(openai_resp, anthropic_model)
+            logger.debug(f"{log_prefix}Response: {json.dumps(result)[:500]}")
+            return JSONResponse(content=result)
+
+    async def _open_stream(self, openai_body: dict[str, Any], log_prefix: str) -> tuple[httpx.Response, Any]:
+        """Open streaming connection and validate HTTP status.
+
+        Returns (response, context_manager) on success.
+        Raises TransientBackendError for fallback-eligible status codes.
+        Raises CopilotHttpError for non-transient HTTP errors.
+        """
+        headers = await self._get_headers()
+        logger.info(f"{log_prefix}Starting Copilot stream for {openai_body.get('model')}")
+
+        stream_cm = self._client.stream("POST", COPILOT_CHAT_URL, headers=headers, json=openai_body)
+        resp = await stream_cm.__aenter__()
+
+        if resp.status_code != 200:
+            body = await resp.aread()
+            detail = body.decode()[:500]
+            await stream_cm.__aexit__(None, None, None)
+            logger.error(f"{log_prefix}Copilot stream error {resp.status_code}: {detail}")
+            if resp.status_code in FALLBACK_ON_ERRORS:
+                error_type = _ERROR_TYPE_MAP.get(resp.status_code, "api_error")
+                raise TransientBackendError(resp.status_code, error_type, detail, "copilot")
+            raise CopilotHttpError(resp.status_code, detail)
+
+        return resp, stream_cm
 
     async def _stream_response(
-        self, openai_body: dict[str, Any], anthropic_model: str, log_prefix: str
+        self, resp: httpx.Response, stream_cm: Any, anthropic_model: str, log_prefix: str
     ) -> AsyncGenerator[str, None]:
-        """Stream response from Copilot, translating to Anthropic SSE format."""
+        """Stream response from already-opened Copilot connection, translating to Anthropic SSE format."""
         translator = StreamTranslator(anthropic_model)
         chunk_count = 0
 
         try:
-            headers = await self._get_headers()
-            logger.info(f"{log_prefix}Starting Copilot stream for {openai_body.get('model')}")
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str.strip() == "[DONE]":
+                    break
 
-            async with self._client.stream("POST", COPILOT_CHAT_URL, headers=headers, json=openai_body) as resp:
-                if resp.status_code != 200:
-                    body = await resp.aread()
-                    detail = body.decode()[:500]
-                    logger.error(f"{log_prefix}Copilot stream error {resp.status_code}: {detail}")
-                    error_event = {
-                        "type": "error",
-                        "error": {"type": "api_error", "message": f"Copilot error {resp.status_code}: {detail}"},
-                    }
-                    yield f"event: error\ndata: {json.dumps(error_event)}\n\n"
-                    return
+                try:
+                    chunk = json.loads(data_str)
+                except json.JSONDecodeError:
+                    logger.warning(f"{log_prefix}Skipping malformed chunk: {data_str[:100]}")
+                    continue
 
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    data_str = line[6:]
-                    if data_str.strip() == "[DONE]":
-                        break
+                chunk_count += 1
+                if chunk_count <= 3:
+                    logger.debug(f"{log_prefix}Chunk {chunk_count}: {data_str[:200]}")
 
-                    try:
-                        chunk = json.loads(data_str)
-                    except json.JSONDecodeError:
-                        logger.warning(f"{log_prefix}Skipping malformed chunk: {data_str[:100]}")
-                        continue
-
-                    chunk_count += 1
-                    if chunk_count <= 3:
-                        logger.debug(f"{log_prefix}Chunk {chunk_count}: {data_str[:200]}")
-
-                    events = translator.translate_chunk(chunk)
-                    if events:
-                        yield events
-                        await asyncio.sleep(0)
+                events = translator.translate_chunk(chunk)
+                if events:
+                    yield events
+                    await asyncio.sleep(0)
 
             # If translator never got a finish_reason, ensure cleanup
             if translator.current_block_type is not None:
                 yield translator._emit_content_block_stop()
-            if translator.started:
-                # Check if message_stop was already emitted
-                pass
 
             logger.info(f"{log_prefix}Copilot stream complete, {chunk_count} chunks")
             yield "event: done\ndata: [DONE]\n\n"
@@ -168,6 +181,8 @@ class CopilotBackend:
         except Exception as e:
             logger.error(f"{log_prefix}Copilot stream error: {e}")
             yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': {'message': str(e)}})}\n\n"
+        finally:
+            await stream_cm.__aexit__(None, None, None)
 
     async def close(self) -> None:
         """Close HTTP client and auth."""

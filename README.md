@@ -12,6 +12,7 @@ A lightweight proxy that translates Anthropic API requests to AWS Bedrock or Git
 
 - Two backends: **AWS Bedrock** (native Anthropic format) and **GitHub Copilot** (OpenAI-compatible, auto-translated)
 - Backend selected via `BACKEND=bedrock|copilot` environment variable
+- **Cross-backend fallback**: set `BACKEND=copilot,bedrock` to automatically retry on the other backend when the primary returns a transient error (429, 5xx)
 - Supports streaming and non-streaming responses
 - Extended thinking support (Bedrock)
 - Full tool use round-trip translation (Copilot)
@@ -102,6 +103,12 @@ export BACKEND="bedrock"
 
 # Use GitHub Copilot
 export BACKEND="copilot"
+
+# Use Copilot with Bedrock as fallback (retries on 429, 5xx errors)
+export BACKEND="copilot,bedrock"
+
+# Use Bedrock with Copilot as fallback
+export BACKEND="bedrock,copilot"
 ```
 
 ### Bedrock Configuration
@@ -154,6 +161,11 @@ claudegate
 **With Copilot:**
 ```bash
 BACKEND=copilot claudegate
+```
+
+**With fallback (Copilot primary, Bedrock fallback):**
+```bash
+BACKEND=copilot,bedrock claudegate
 ```
 
 If `GITHUB_TOKEN` is not set, the proxy will run an interactive OAuth device flow at startup:
@@ -270,6 +282,8 @@ The proxy returns Anthropic-compatible error responses:
 | 429 | `rate_limit_error` | Rate limiting / throttling |
 | 504 | `timeout_error` | Request timed out |
 | 500 | `api_error` | Internal / backend errors |
+
+**Fallback:** When a fallback backend is configured (`BACKEND=copilot,bedrock`), transient errors (429, 500, 502, 503, 504) on the primary backend automatically trigger a retry on the fallback. Non-transient errors (400, 401, 403) are returned immediately without fallback. For streaming requests, fallback only works for pre-stream errors (connection failures, HTTP status errors before the first chunk is sent). Mid-stream errors are delivered as SSE error events as usual.
 
 **Bedrock:** The proxy detects expired AWS credentials and resets the credential cache. If credentials are still expired (e.g., SSO session expired), refresh them manually:
 

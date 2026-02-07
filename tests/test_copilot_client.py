@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from claudegate.copilot_client import CopilotBackend
+from claudegate.errors import CopilotHttpError, TransientBackendError
 
 
 @pytest.fixture
@@ -79,7 +80,8 @@ class TestHandleMessages:
         assert result["type"] == "message"
 
     @pytest.mark.anyio
-    async def test_non_streaming_http_error(self, backend):
+    async def test_non_streaming_transient_error_raises(self, backend):
+        """429 raises TransientBackendError instead of returning response."""
         mock_response = MagicMock()
         mock_response.status_code = 429
         mock_response.text = "rate limited"
@@ -90,12 +92,51 @@ class TestHandleMessages:
                 "max_tokens": 100,
                 "messages": [{"role": "user", "content": "hi"}],
             }
-            resp = await backend.handle_messages(body, "", False, "m", "x")
+            with pytest.raises(TransientBackendError) as exc_info:
+                await backend.handle_messages(body, "", False, "m", "x")
 
-        assert resp.status_code == 429
+        assert exc_info.value.status_code == 429
+        assert exc_info.value.backend == "copilot"
 
     @pytest.mark.anyio
-    async def test_non_streaming_timeout(self, backend):
+    async def test_non_streaming_500_raises_transient(self, backend):
+        """500 raises TransientBackendError."""
+        mock_response = MagicMock()
+        mock_response.status_code = 500
+        mock_response.text = "server error"
+
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
+            body = {
+                "model": "x",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "hi"}],
+            }
+            with pytest.raises(TransientBackendError) as exc_info:
+                await backend.handle_messages(body, "", False, "m", "x")
+
+        assert exc_info.value.status_code == 500
+
+    @pytest.mark.anyio
+    async def test_non_streaming_401_raises_copilot_http_error(self, backend):
+        """401 raises CopilotHttpError (not transient)."""
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_response.text = "unauthorized"
+
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
+            body = {
+                "model": "x",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "hi"}],
+            }
+            with pytest.raises(CopilotHttpError) as exc_info:
+                await backend.handle_messages(body, "", False, "m", "x")
+
+        assert exc_info.value.status_code == 401
+
+    @pytest.mark.anyio
+    async def test_non_streaming_timeout_raises(self, backend):
+        """Timeout is re-raised (not caught internally)."""
         with patch.object(
             backend._client, "post", new_callable=AsyncMock, side_effect=httpx.TimeoutException("timeout")
         ):
@@ -104,12 +145,12 @@ class TestHandleMessages:
                 "max_tokens": 100,
                 "messages": [{"role": "user", "content": "hi"}],
             }
-            resp = await backend.handle_messages(body, "", False, "m", "x")
-
-        assert resp.status_code == 504
+            with pytest.raises(httpx.TimeoutException):
+                await backend.handle_messages(body, "", False, "m", "x")
 
     @pytest.mark.anyio
-    async def test_non_streaming_auth_error(self, backend):
+    async def test_non_streaming_auth_error_raises(self, backend):
+        """Auth errors are re-raised."""
         backend._auth.get_token.side_effect = RuntimeError("bad token")
 
         body = {
@@ -117,21 +158,8 @@ class TestHandleMessages:
             "max_tokens": 100,
             "messages": [{"role": "user", "content": "hi"}],
         }
-        resp = await backend.handle_messages(body, "", False, "m", "x")
-
-        assert resp.status_code == 401
-
-    @pytest.mark.anyio
-    async def test_non_streaming_unexpected_error(self, backend):
-        with patch.object(backend._client, "post", new_callable=AsyncMock, side_effect=ValueError("unexpected")):
-            body = {
-                "model": "x",
-                "max_tokens": 100,
-                "messages": [{"role": "user", "content": "hi"}],
-            }
-            resp = await backend.handle_messages(body, "", False, "m", "x")
-
-        assert resp.status_code == 500
+        with pytest.raises(RuntimeError, match="bad token"):
+            await backend.handle_messages(body, "", False, "m", "x")
 
     @pytest.mark.anyio
     async def test_streaming_returns_streaming_response(self, backend):
@@ -141,14 +169,80 @@ class TestHandleMessages:
             "messages": [{"role": "user", "content": "hi"}],
         }
 
-        # Mock _stream_response to yield some data
-        async def mock_stream(*args, **kwargs):
-            yield "event: message_start\ndata: {}\n\n"
+        mock_resp = AsyncMock()
+        mock_resp.status_code = 200
 
-        with patch.object(backend, "_stream_response", mock_stream):
+        with (
+            patch.object(backend, "_open_stream", new_callable=AsyncMock, return_value=(mock_resp, AsyncMock())),
+            patch.object(backend, "_stream_response") as mock_stream,
+        ):
+
+            async def fake_gen(*args, **kwargs):
+                yield "event: message_start\ndata: {}\n\n"
+
+            mock_stream.return_value = fake_gen()
             resp = await backend.handle_messages(body, "", True, "m", "x")
 
         assert resp.media_type == "text/event-stream"
+
+
+# --- _open_stream ---
+
+
+class TestOpenStream:
+    @pytest.mark.anyio
+    async def test_success(self, backend):
+        """Successful stream open returns (response, context_manager)."""
+        mock_resp = AsyncMock()
+        mock_resp.status_code = 200
+
+        mock_stream_ctx = AsyncMock()
+        mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with patch.object(backend._client, "stream", return_value=mock_stream_ctx):
+            resp, cm = await backend._open_stream({"model": "m"}, "")
+
+        assert resp.status_code == 200
+
+    @pytest.mark.anyio
+    async def test_transient_error_raises(self, backend):
+        """429 from Copilot stream raises TransientBackendError."""
+        mock_resp = AsyncMock()
+        mock_resp.status_code = 429
+        mock_resp.aread = AsyncMock(return_value=b"rate limited")
+
+        mock_stream_ctx = AsyncMock()
+        mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch.object(backend._client, "stream", return_value=mock_stream_ctx),
+            pytest.raises(TransientBackendError) as exc_info,
+        ):
+            await backend._open_stream({"model": "m"}, "")
+
+        assert exc_info.value.status_code == 429
+        mock_stream_ctx.__aexit__.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_non_transient_error_raises_copilot_http(self, backend):
+        """401 from Copilot stream raises CopilotHttpError."""
+        mock_resp = AsyncMock()
+        mock_resp.status_code = 401
+        mock_resp.aread = AsyncMock(return_value=b"unauthorized")
+
+        mock_stream_ctx = AsyncMock()
+        mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch.object(backend._client, "stream", return_value=mock_stream_ctx),
+            pytest.raises(CopilotHttpError) as exc_info,
+        ):
+            await backend._open_stream({"model": "m"}, "")
+
+        assert exc_info.value.status_code == 401
 
 
 # --- _stream_response ---
@@ -165,55 +259,43 @@ class TestStreamResponse:
             yield "data: [DONE]"
 
         mock_resp = AsyncMock()
-        mock_resp.status_code = 200
         mock_resp.aiter_lines = mock_aiter_lines
 
-        # Use async context manager
         mock_stream_ctx = AsyncMock()
-        mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
 
-        with patch.object(backend._client, "stream", return_value=mock_stream_ctx):
-            events = []
-            async for event in backend._stream_response({"model": "m"}, "model", ""):
-                events.append(event)
+        events = []
+        async for event in backend._stream_response(mock_resp, mock_stream_ctx, "model", ""):
+            events.append(event)
 
         all_text = "".join(events)
         assert "message_start" in all_text
         assert "text_delta" in all_text
         assert "message_stop" in all_text
-
-    @pytest.mark.anyio
-    async def test_non_200_error(self, backend):
-        """Test that non-200 status from Copilot produces error event."""
-        mock_resp = AsyncMock()
-        mock_resp.status_code = 500
-        mock_resp.aread = AsyncMock(return_value=b"server error")
-
-        mock_stream_ctx = AsyncMock()
-        mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
-
-        with patch.object(backend._client, "stream", return_value=mock_stream_ctx):
-            events = []
-            async for event in backend._stream_response({"model": "m"}, "model", ""):
-                events.append(event)
-
-        all_text = "".join(events)
-        assert "error" in all_text
+        mock_stream_ctx.__aexit__.assert_called_once()
 
     @pytest.mark.anyio
     async def test_timeout_error(self, backend):
         """Test that timeout during streaming produces error event."""
 
-        with patch.object(backend._client, "stream", side_effect=httpx.TimeoutException("timed out")):
-            events = []
-            async for event in backend._stream_response({"model": "m"}, "model", ""):
-                events.append(event)
+        async def mock_aiter_lines():
+            raise httpx.TimeoutException("timed out")
+            yield  # noqa: RET503 - unreachable, needed to make it an async generator
+
+        mock_resp = AsyncMock()
+        mock_resp.aiter_lines = mock_aiter_lines
+
+        mock_stream_ctx = AsyncMock()
+        mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        events = []
+        async for event in backend._stream_response(mock_resp, mock_stream_ctx, "model", ""):
+            events.append(event)
 
         all_text = "".join(events)
         assert "error" in all_text
         assert "timed out" in all_text
+        mock_stream_ctx.__aexit__.assert_called_once()
 
 
 # --- close ---

@@ -19,9 +19,11 @@ from .config import (
     COPILOT_TIMEOUT,
     DEFAULT_HOST,
     DEFAULT_PORT,
+    FALLBACK_BACKEND,
     LOG_LEVEL,
     logger,
 )
+from .errors import CopilotHttpError, TransientBackendError
 from .models import BEDROCK_MODEL_MAP, COPILOT_MODEL_MAP, add_region_prefix, get_bedrock_model, get_copilot_model
 
 # Use cl100k_base encoding (similar to Claude's tokenizer)
@@ -40,7 +42,7 @@ CREDENTIALS_EXPIRED_MSG = (
     "AWS credentials have expired. Please re-authenticate in your terminal to refresh your credentials, then retry."
 )
 
-# Copilot backend (initialized in lifespan if BACKEND=copilot)
+# Copilot backend (initialized in lifespan if needed)
 _copilot_backend = None
 
 
@@ -49,14 +51,26 @@ async def lifespan(app: FastAPI):
     """Handle startup and shutdown events."""
     global _copilot_backend
 
+    # Validate fallback config
+    if FALLBACK_BACKEND:
+        if FALLBACK_BACKEND == BACKEND_TYPE:
+            raise ValueError(f"FALLBACK_BACKEND cannot be the same as BACKEND_TYPE: {BACKEND_TYPE}")
+        valid = {"bedrock", "copilot"}
+        if FALLBACK_BACKEND not in valid:
+            raise ValueError(f"Invalid FALLBACK_BACKEND: {FALLBACK_BACKEND}, must be one of {valid}")
+
     # Startup
     logger.info(f"Starting claudegate v{__version__}")
     logger.info(f"Host: {os.environ.get('HOST', DEFAULT_HOST)}")
     logger.info(f"Port: {os.environ.get('PORT', DEFAULT_PORT)}")
     logger.info(f"Backend: {BACKEND_TYPE}")
+    if FALLBACK_BACKEND:
+        logger.info(f"Fallback: {FALLBACK_BACKEND}")
     logger.info(f"Log Level: {LOG_LEVEL}")
 
-    if BACKEND_TYPE == "copilot":
+    # Initialize copilot if it's primary or fallback
+    needs_copilot = BACKEND_TYPE == "copilot" or FALLBACK_BACKEND == "copilot"
+    if needs_copilot:
         from .copilot_auth import CopilotAuth, get_github_token
         from .copilot_client import CopilotBackend
 
@@ -64,7 +78,9 @@ async def lifespan(app: FastAPI):
         auth = CopilotAuth(github_token)
         _copilot_backend = CopilotBackend(auth, timeout=COPILOT_TIMEOUT)
         logger.info("Copilot backend initialized")
-    else:
+
+    needs_bedrock = BACKEND_TYPE == "bedrock" or FALLBACK_BACKEND == "bedrock"
+    if needs_bedrock:
         logger.info(f"AWS Region: {os.environ.get('AWS_REGION', 'us-west-2')}")
         logger.info(f"Bedrock Region Prefix: {BEDROCK_REGION_PREFIX or '(none)'}")
 
@@ -132,18 +148,70 @@ def _count_content_tokens(content: Any) -> int:
     return 0
 
 
-# --- Streaming ---
+# --- Bedrock Helpers ---
 
 
-async def stream_response(model: str, body: dict[str, Any], request_id: str = "") -> AsyncGenerator[str, None]:
-    """Handle streaming responses."""
-    log_prefix = f"[{request_id}] " if request_id else ""
+def _build_bedrock_body(body: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Build Bedrock request body from Anthropic request."""
+    bedrock_body: dict[str, Any] = {
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": body["max_tokens"],
+        "messages": body["messages"],
+    }
+
+    # Check for anthropic-beta header and convert to body field
+    beta_header = request.headers.get("anthropic-beta")
+    if beta_header:
+        bedrock_body["anthropic_beta"] = [b.strip() for b in beta_header.split(",")]
+
+    # Optional fields - pass through all supported Anthropic API parameters
+    optional_fields = [
+        "system",
+        "temperature",
+        "top_p",
+        "top_k",
+        "tools",
+        "tool_choice",
+        "thinking",
+        "stop_sequences",
+        "metadata",
+        "anthropic_beta",
+    ]
+    for field in optional_fields:
+        if field in body:
+            bedrock_body[field] = body[field]
+
+    return bedrock_body
+
+
+def _open_bedrock_stream(model: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Open a bedrock streaming connection. Returns the response dict.
+
+    Raises TransientBackendError for fallback-eligible ClientErrors.
+    Re-raises non-transient ClientError as-is.
+    """
     try:
-        logger.info(f"{log_prefix}Starting stream for model: {model}")
         bedrock = get_bedrock_client()
-        response = bedrock.invoke_model_with_response_stream(modelId=model, body=json.dumps(body))
+        return bedrock.invoke_model_with_response_stream(modelId=model, body=json.dumps(body))
+    except ClientError as e:
+        error_code = e.response.get("Error", {}).get("Code", "")
+        error_message = e.response.get("Error", {}).get("Message", str(e))
+        if error_code == "ThrottlingException":
+            raise TransientBackendError(429, "rate_limit_error", error_message, "bedrock") from e
+        elif error_code == "ModelTimeoutException":
+            raise TransientBackendError(504, "timeout_error", error_message, "bedrock") from e
+        elif error_code in ("ServiceUnavailableException", "InternalServerException"):
+            raise TransientBackendError(500, "api_error", error_message, "bedrock") from e
+        raise
+    except ReadTimeoutError as e:
+        raise TransientBackendError(504, "timeout_error", str(e), "bedrock") from e
 
-        chunk_count = 0
+
+async def _stream_bedrock_chunks(response: dict[str, Any], request_id: str = "") -> AsyncGenerator[str, None]:
+    """Iterate chunks from an already-opened bedrock stream."""
+    log_prefix = f"[{request_id}] " if request_id else ""
+    chunk_count = 0
+    try:
         for event in response["body"]:
             chunk = event.get("chunk")
             if chunk:
@@ -151,7 +219,6 @@ async def stream_response(model: str, body: dict[str, Any], request_id: str = ""
                 chunk_count += 1
                 if chunk_count <= 3:
                     logger.debug(f"{log_prefix}Chunk {chunk_count}: {json.dumps(data)[:200]}")
-                # Include event type for proper SSE format
                 event_type = data.get("type", "unknown")
                 sse_data = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
                 yield sse_data
@@ -163,10 +230,8 @@ async def stream_response(model: str, body: dict[str, Any], request_id: str = ""
         error_code = e.response.get("Error", {}).get("Code", "")
         if error_code in ("ExpiredTokenException", "ExpiredToken"):
             logger.error(f"{log_prefix}Credentials expired during stream")
-            # Reset client so next request after re-auth works
             reset_bedrock_client()
-            # Inject a visible message into the stream so user sees it
-            error_text = f"\n\n⚠️ **Authentication Error**: {CREDENTIALS_EXPIRED_MSG}\n"
+            error_text = f"\n\n\u26a0\ufe0f **Authentication Error**: {CREDENTIALS_EXPIRED_MSG}\n"
             block_start = json.dumps(
                 {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
             )
@@ -185,87 +250,41 @@ async def stream_response(model: str, body: dict[str, Any], request_id: str = ""
         yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': {'message': str(e)}})}\n\n"
 
 
-# --- Route Handlers ---
+async def _call_bedrock(
+    body: dict[str, Any], request: Request, request_id: str, stream: bool
+) -> JSONResponse | StreamingResponse:
+    """Execute request against Bedrock backend.
 
-
-@app.post("/v1/messages", response_model=None)
-async def messages(request: Request) -> JSONResponse | StreamingResponse:
-    """Handle chat completion requests."""
-    # Get request ID for tracing
-    request_id = request.headers.get("x-request-id", "")
-
-    try:
-        body = await request.json()
-    except json.JSONDecodeError:
-        return _error_response(400, "invalid_request_error", "Invalid JSON in request body")
-
-    # Validate required fields
-    if error := _validate_request(body):
-        return error
-
-    model = body["model"]
-    stream = body.get("stream", False)
-
+    Raises TransientBackendError for fallback-eligible errors.
+    Returns JSONResponse/StreamingResponse on success or non-transient error.
+    """
     log_prefix = f"[{request_id}] " if request_id else ""
-
-    # Dispatch to Copilot backend
-    if BACKEND_TYPE == "copilot" and _copilot_backend is not None:
-        copilot_model, anthropic_model = get_copilot_model(model)
-        logger.info(f"{log_prefix}Request - model: {model} -> {copilot_model} (copilot), stream: {stream}")
-        return await _copilot_backend.handle_messages(body, request_id, stream, copilot_model, anthropic_model)
-
-    bedrock_model = get_bedrock_model(model)
-    logger.info(f"{log_prefix}Request - model: {model} -> {bedrock_model}, stream: {stream}")
+    bedrock_model = get_bedrock_model(body["model"])
+    logger.info(f"{log_prefix}Request - model: {body['model']} -> {bedrock_model}, stream: {stream}")
     logger.debug(f"{log_prefix}Request body keys: {list(body.keys())}")
 
-    # Build Bedrock request body
-    bedrock_body: dict[str, Any] = {
-        "anthropic_version": "bedrock-2023-05-31",
-        "max_tokens": body["max_tokens"],
-        "messages": body["messages"],
-    }
+    bedrock_body = _build_bedrock_body(body, request)
 
-    # Check for anthropic-beta header and convert to body field
-    beta_header = request.headers.get("anthropic-beta")
-    if beta_header:
-        bedrock_body["anthropic_beta"] = [b.strip() for b in beta_header.split(",")]
-
-    # Optional fields - pass through all supported Anthropic API parameters
-    optional_fields = [
-        "system",  # System prompt
-        "temperature",  # Sampling temperature (0.0-1.0)
-        "top_p",  # Nucleus sampling
-        "top_k",  # Top-k sampling
-        "tools",  # Tool definitions
-        "tool_choice",  # Tool selection preference
-        "thinking",  # Extended thinking config
-        "stop_sequences",  # Custom stop sequences
-        "metadata",  # Request metadata (user_id)
-        "anthropic_beta",  # Beta features (if passed in body)
-    ]
-    for field in optional_fields:
-        if field in body:
-            bedrock_body[field] = body[field]
+    if stream:
+        # Two-phase: open (can raise TransientBackendError), then iterate
+        response = _open_bedrock_stream(bedrock_model, bedrock_body)
+        return StreamingResponse(
+            _stream_bedrock_chunks(response, request_id),
+            media_type="text/event-stream",
+        )
 
     try:
         bedrock = get_bedrock_client()
-        if stream:
-            return StreamingResponse(
-                stream_response(bedrock_model, bedrock_body, request_id),
-                media_type="text/event-stream",
-            )
-        else:
-            response = bedrock.invoke_model(modelId=bedrock_model, body=json.dumps(bedrock_body))
-            result = json.loads(response["body"].read())
-            logger.debug(f"{log_prefix}Response: {json.dumps(result)[:500]}")
-            return JSONResponse(content=result)
+        response = bedrock.invoke_model(modelId=bedrock_model, body=json.dumps(bedrock_body))
+        result = json.loads(response["body"].read())
+        logger.debug(f"{log_prefix}Response: {json.dumps(result)[:500]}")
+        return JSONResponse(content=result)
     except ClientError as e:
         error_code = e.response.get("Error", {}).get("Code", "")
         error_message = e.response.get("Error", {}).get("Message", str(e))
 
         if error_code in ("ExpiredTokenException", "ExpiredToken"):
             logger.error(f"{log_prefix}Credentials expired")
-            # Reset client so next request after re-auth works
             reset_bedrock_client()
             return _error_response(401, "authentication_error", CREDENTIALS_EXPIRED_MSG)
         elif error_code == "ValidationException":
@@ -275,17 +294,93 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
             logger.error(f"{log_prefix}Access denied: {error_message}")
             return _error_response(403, "permission_error", error_message)
         elif error_code == "ThrottlingException":
-            logger.error(f"{log_prefix}Rate limited: {error_message}")
-            return _error_response(429, "rate_limit_error", error_message)
+            raise TransientBackendError(429, "rate_limit_error", error_message, "bedrock") from e
         elif error_code == "ModelTimeoutException":
-            logger.error(f"{log_prefix}Model timeout: {error_message}")
-            return _error_response(504, "timeout_error", "Model took too long to respond")
+            raise TransientBackendError(504, "timeout_error", error_message, "bedrock") from e
+        elif error_code in ("ServiceUnavailableException", "InternalServerException"):
+            raise TransientBackendError(500, "api_error", error_message, "bedrock") from e
         else:
             logger.error(f"{log_prefix}Bedrock error ({error_code}): {error_message}")
             return _error_response(500, "api_error", error_message)
     except ReadTimeoutError as e:
-        logger.error(f"{log_prefix}Read timeout: {e}")
-        return _error_response(504, "timeout_error", "Request timed out. Try a smaller request or use streaming.")
+        raise TransientBackendError(
+            504, "timeout_error", "Request timed out. Try a smaller request or use streaming.", "bedrock"
+        ) from e
+    except Exception as e:
+        logger.error(f"{log_prefix}Unexpected error: {e}")
+        return _error_response(500, "api_error", str(e))
+
+
+async def _call_copilot(body: dict[str, Any], request_id: str, stream: bool) -> JSONResponse | StreamingResponse:
+    """Execute request against Copilot backend.
+
+    Raises TransientBackendError for fallback-eligible errors.
+    Raises CopilotHttpError, RuntimeError, httpx.TimeoutException for non-fallback errors.
+    """
+    if _copilot_backend is None:
+        raise RuntimeError("Copilot backend not initialized")
+    copilot_model, anthropic_model = get_copilot_model(body["model"])
+    log_prefix = f"[{request_id}] " if request_id else ""
+    logger.info(f"{log_prefix}Request - model: {body['model']} -> {copilot_model} (copilot), stream: {stream}")
+    return await _copilot_backend.handle_messages(body, request_id, stream, copilot_model, anthropic_model)
+
+
+# --- Route Handlers ---
+
+
+@app.post("/v1/messages", response_model=None)
+async def messages(request: Request) -> JSONResponse | StreamingResponse:
+    """Handle chat completion requests."""
+    request_id = request.headers.get("x-request-id", "")
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return _error_response(400, "invalid_request_error", "Invalid JSON in request body")
+
+    if error := _validate_request(body):
+        return error
+
+    stream = body.get("stream", False)
+    log_prefix = f"[{request_id}] " if request_id else ""
+
+    # Map backend name to call function
+    def _get_backend_caller(backend_name: str):
+        if backend_name == "copilot":
+            return lambda: _call_copilot(body, request_id, stream)
+        return lambda: _call_bedrock(body, request, request_id, stream)
+
+    primary_call = _get_backend_caller(BACKEND_TYPE)
+
+    try:
+        return await primary_call()
+    except TransientBackendError as e:
+        if not FALLBACK_BACKEND:
+            logger.error(f"{log_prefix}{e.backend} transient error {e.status_code}, no fallback configured")
+            return _error_response(e.status_code, e.error_type, e.message)
+
+        logger.warning(
+            f"{log_prefix}Primary ({BACKEND_TYPE}) failed with {e.status_code}, falling back to {FALLBACK_BACKEND}"
+        )
+
+        fallback_call = _get_backend_caller(FALLBACK_BACKEND)
+        try:
+            return await fallback_call()
+        except TransientBackendError as fallback_err:
+            logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) also failed with {fallback_err.status_code}")
+            return _error_response(fallback_err.status_code, fallback_err.error_type, fallback_err.message)
+        except CopilotHttpError as fallback_err:
+            return _error_response(fallback_err.status_code, "api_error", fallback_err.detail)
+        except RuntimeError as fallback_err:
+            return _error_response(401, "authentication_error", str(fallback_err))
+        except Exception as fallback_err:
+            logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) unexpected error: {fallback_err}")
+            return _error_response(500, "api_error", str(fallback_err))
+    except CopilotHttpError as e:
+        return _error_response(e.status_code, "api_error", e.detail)
+    except RuntimeError as e:
+        logger.error(f"{log_prefix}Auth error: {e}")
+        return _error_response(401, "authentication_error", str(e))
     except Exception as e:
         logger.error(f"{log_prefix}Unexpected error: {e}")
         return _error_response(500, "api_error", str(e))
@@ -295,6 +390,9 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
 async def health(check_bedrock: bool = False, check_copilot: bool = False) -> dict[str, Any]:
     """Health check endpoint. Use ?check_bedrock=true or ?check_copilot=true for deep check."""
     result: dict[str, Any] = {"status": "ok", "version": __version__, "backend": BACKEND_TYPE}
+
+    if FALLBACK_BACKEND:
+        result["fallback"] = FALLBACK_BACKEND
 
     if check_bedrock and BACKEND_TYPE == "bedrock":
         try:
