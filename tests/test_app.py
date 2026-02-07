@@ -280,9 +280,10 @@ class TestModelsRoute:
         resp = await async_client.get("/v1/models")
         assert resp.status_code == 200
         body = resp.json()
+        assert body["object"] == "list"
         assert "data" in body
         assert len(body["data"]) > 0
-        assert body["data"][0]["type"] == "model"
+        assert body["data"][0]["object"] == "model"
         assert "id" in body["data"][0]
 
     @pytest.mark.anyio

@@ -184,6 +184,77 @@ class CopilotBackend:
         finally:
             await stream_cm.__aexit__(None, None, None)
 
+    async def handle_openai_messages(
+        self, openai_body: dict[str, Any], request_id: str, stream: bool, copilot_model: str
+    ) -> JSONResponse | StreamingResponse:
+        """Handle an OpenAI-format request by passing directly to Copilot (no translation).
+
+        Raises TransientBackendError for fallback-eligible errors (429, 5xx).
+        Raises CopilotHttpError for non-transient HTTP errors.
+        """
+        log_prefix = f"[{request_id}] " if request_id else ""
+
+        # Override model to Copilot-compatible name
+        openai_body = {**openai_body, "model": copilot_model}
+
+        if stream:
+            openai_body["stream"] = True
+            openai_body["stream_options"] = {"include_usage": True}
+            resp, stream_cm = await self._open_stream(openai_body, log_prefix)
+            return StreamingResponse(
+                self._stream_openai_response(resp, stream_cm, log_prefix),
+                media_type="text/event-stream",
+            )
+        else:
+            headers = await self._get_headers()
+            logger.info(f"{log_prefix}Copilot OpenAI passthrough to {copilot_model}")
+            logger.debug(f"{log_prefix}OpenAI body keys: {list(openai_body.keys())}")
+
+            resp = await self._client.post(COPILOT_CHAT_URL, headers=headers, json=openai_body)
+
+            if resp.status_code != 200:
+                detail = resp.text[:500]
+                logger.error(f"{log_prefix}Copilot error {resp.status_code}: {detail}")
+                if resp.status_code in FALLBACK_ON_ERRORS:
+                    error_type = _ERROR_TYPE_MAP.get(resp.status_code, "api_error")
+                    raise TransientBackendError(resp.status_code, error_type, detail, "copilot")
+                raise CopilotHttpError(resp.status_code, detail)
+
+            openai_resp = resp.json()
+            logger.debug(f"{log_prefix}Response: {json.dumps(openai_resp)[:500]}")
+            return JSONResponse(content=openai_resp)
+
+    async def _stream_openai_response(
+        self, resp: httpx.Response, stream_cm: Any, log_prefix: str
+    ) -> AsyncGenerator[str, None]:
+        """Stream OpenAI response as-is from Copilot (no Anthropic translation)."""
+        chunk_count = 0
+
+        try:
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                chunk_count += 1
+                if chunk_count <= 3:
+                    logger.debug(f"{log_prefix}OpenAI chunk {chunk_count}: {line[:200]}")
+                yield f"{line}\n\n"
+                await asyncio.sleep(0)
+
+            logger.info(f"{log_prefix}Copilot OpenAI stream complete, {chunk_count} lines")
+
+        except httpx.TimeoutException:
+            logger.error(f"{log_prefix}Copilot stream timed out")
+            error_data = json.dumps(
+                {"error": {"message": "Copilot stream timed out", "type": "server_error", "param": None, "code": None}}
+            )
+            yield f"data: {error_data}\n\n"
+        except Exception as e:
+            logger.error(f"{log_prefix}Copilot stream error: {e}")
+            error_data = json.dumps({"error": {"message": str(e), "type": "server_error", "param": None, "code": None}})
+            yield f"data: {error_data}\n\n"
+        finally:
+            await stream_cm.__aexit__(None, None, None)
+
     async def close(self) -> None:
         """Close HTTP client and auth."""
         await self._client.aclose()

@@ -1,12 +1,14 @@
 # claudegate
 
-A lightweight proxy that translates Anthropic API requests to AWS Bedrock or GitHub Copilot, enabling Claude Code and other Anthropic API clients to use either backend.
+A lightweight proxy that translates Anthropic API requests to AWS Bedrock or GitHub Copilot, enabling Claude Code, Open WebUI, and other Anthropic or OpenAI API clients to use either backend.
 
 ## Use Cases
 
 - **[Auto-Claude](https://github.com/AndyMik90/Auto-Claude)** - Run Auto-Claude with AWS Bedrock or GitHub Copilot
 - **Any Anthropic API client** - Redirect to Bedrock or Copilot without code changes
 - **GitHub Copilot users** - Use your Copilot subscription to power Claude Code
+- **[Open WebUI](https://github.com/open-webui/open-webui)** - Use Open WebUI with Bedrock or Copilot via the OpenAI-compatible API
+- **Any OpenAI API client** - Use the `/v1/chat/completions` endpoint with any OpenAI-format client
 
 ## Features
 
@@ -23,6 +25,9 @@ A lightweight proxy that translates Anthropic API requests to AWS Bedrock or Git
 - Deep health checks with backend connectivity verification
 - Graceful startup/shutdown with configuration logging
 - GitHub OAuth device flow for easy Copilot authentication
+- **OpenAI-compatible API** (`/v1/chat/completions`) for Open WebUI and other OpenAI-format clients
+- **Non-Claude models** (GPT-4o, o3-mini, etc.) via Copilot backend's OpenAI-compatible endpoint
+- **Direct Copilot passthrough** — zero-translation path for `/v1/chat/completions` when Copilot is the backend
 
 ## Supported Models
 
@@ -45,7 +50,7 @@ A lightweight proxy that translates Anthropic API requests to AWS Bedrock or Git
 | claude-3-opus-20240229 | us.anthropic.claude-3-opus-20240229-v1:0 |
 | claude-3-sonnet-20240229 | us.anthropic.claude-3-sonnet-20240229-v1:0 |
 
-### Copilot Backend
+### Copilot Backend (Claude Models)
 
 | Anthropic Model | Copilot Model |
 |-----------------|---------------|
@@ -59,6 +64,32 @@ A lightweight proxy that translates Anthropic API requests to AWS Bedrock or Git
 | claude-3-7-sonnet-20250219 | claude-3.7-sonnet |
 | claude-3-5-sonnet-20241022 | claude-3.5-sonnet |
 | claude-3-5-haiku-20241022 | claude-3.5-haiku |
+
+### Copilot Backend (Non-Claude Models via `/v1/chat/completions`)
+
+When using the OpenAI-compatible endpoint with the Copilot backend, non-Claude models are also available:
+
+| Model | Provider |
+|-------|----------|
+| gpt-5.2-codex | OpenAI |
+| gpt-5.2 | OpenAI |
+| gpt-5.1-codex-max | OpenAI |
+| gpt-5.1-codex-mini | OpenAI |
+| gpt-5.1-codex | OpenAI |
+| gpt-5.1 | OpenAI |
+| gpt-5-codex | OpenAI |
+| gpt-5-mini | OpenAI |
+| gpt-5 | OpenAI |
+| gpt-4.1 | OpenAI |
+| gpt-4o | OpenAI |
+| gpt-4o-mini | OpenAI |
+| gemini-3-pro | Google |
+| gemini-3-flash | Google |
+| gemini-2.5-pro | Google |
+| grok-code-fast-1 | xAI |
+| raptor-mini | Other |
+
+These models are only available via the `/v1/chat/completions` endpoint (OpenAI format). They pass through directly to Copilot with zero format translations. Model availability depends on your Copilot plan.
 
 ## Prerequisites
 
@@ -208,6 +239,18 @@ cp contrib/systemd/claudegate.service ~/.config/systemd/user/
 systemctl --user enable --now claudegate
 ```
 
+### Configure Open WebUI
+
+Point Open WebUI at claudegate as an OpenAI-compatible backend:
+
+1. In Open WebUI **Settings > Connections**, add a new OpenAI connection:
+   - **API Base URL:** `http://localhost:8080/v1`
+   - **API Key:** `sk-dummy` (any value; claudegate ignores it)
+2. Select a model from the list (e.g., `claude-sonnet-4-5-20250929`)
+3. Start chatting
+
+This works with any OpenAI-format client, not just Open WebUI.
+
 ### Configure Claude Code
 
 Set these environment variables before running Claude Code:
@@ -219,6 +262,7 @@ export ANTHROPIC_BASE_URL="http://localhost:8080"
 
 ### Test the proxy
 
+**Anthropic format:**
 ```bash
 curl -X POST http://localhost:8080/v1/messages \
   -H "Content-Type: application/json" \
@@ -229,17 +273,30 @@ curl -X POST http://localhost:8080/v1/messages \
   }'
 ```
 
+**OpenAI format:**
+```bash
+curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4-20250514",
+    "messages": [{"role": "user", "content": "Hello!"}]
+  }'
+```
+
 ## API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/v1/messages` | POST | Main chat completion endpoint |
-| `/v1/models` | GET | List available models |
+| `/v1/messages` | POST | Anthropic Messages API endpoint |
+| `/v1/chat/completions` | POST | OpenAI-compatible Chat Completions endpoint |
+| `/v1/models` | GET | List available models (OpenAI-compatible format) |
 | `/v1/messages/count_tokens` | POST | Count tokens in a request |
 | `/health` | GET | Health check (add `?check_bedrock=true` or `?check_copilot=true` for deep check) |
 | `/version` | GET | Return current version |
 
 ## Supported Parameters
+
+### Anthropic API (`/v1/messages`)
 
 The `/v1/messages` endpoint supports all standard Anthropic API parameters:
 
@@ -260,9 +317,27 @@ The `/v1/messages` endpoint supports all standard Anthropic API parameters:
 
 The `anthropic-beta` header is also supported and converted to the `anthropic_beta` body field (Bedrock only).
 
+### OpenAI-Compatible API (`/v1/chat/completions`)
+
+The `/v1/chat/completions` endpoint supports standard OpenAI Chat Completions parameters:
+
+- `model` (required) - Model identifier
+- `messages` (required) - Array of messages (system, user, assistant, tool roles)
+- `max_tokens` - Maximum tokens to generate (defaults to 4096 if omitted)
+- `temperature` - Sampling temperature (0.0-1.0)
+- `top_p` - Nucleus sampling
+- `stop` - Custom stop sequences
+- `stream` - Enable streaming responses
+- `tools` - Tool/function definitions
+- `tool_choice` - Tool selection (`auto`, `required`, `none`, or specific function)
+
+When the **Copilot** backend is used, requests pass through directly to Copilot with zero format translations. This also enables non-Claude models (GPT-4o, o3-mini, etc.) that Copilot supports natively. When the **Bedrock** backend is used, requests are translated to Anthropic format, processed through Bedrock, and responses are translated back to OpenAI format.
+
 ## Error Handling
 
-The proxy returns Anthropic-compatible error responses:
+### Anthropic format (`/v1/messages`)
+
+The `/v1/messages` endpoint returns Anthropic-compatible error responses:
 
 ```json
 {
@@ -282,6 +357,23 @@ The proxy returns Anthropic-compatible error responses:
 | 429 | `rate_limit_error` | Rate limiting / throttling |
 | 504 | `timeout_error` | Request timed out |
 | 500 | `api_error` | Internal / backend errors |
+
+### OpenAI format (`/v1/chat/completions`)
+
+The `/v1/chat/completions` endpoint returns OpenAI-compatible error responses:
+
+```json
+{
+  "error": {
+    "message": "Missing required field: model",
+    "type": "invalid_request_error",
+    "param": null,
+    "code": null
+  }
+}
+```
+
+### Fallback behavior
 
 **Fallback:** When a fallback backend is configured (`BACKEND=copilot,bedrock`), transient errors (429, 500, 502, 503, 504) on the primary backend automatically trigger a retry on the fallback. Non-transient errors (400, 401, 403) are returned immediately without fallback. For streaming requests, fallback only works for pre-stream errors (connection failures, HTTP status errors before the first chunk is sent). Mid-stream errors are delivered as SSE error events as usual.
 

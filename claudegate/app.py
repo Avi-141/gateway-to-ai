@@ -24,7 +24,20 @@ from .config import (
     logger,
 )
 from .errors import CopilotHttpError, TransientBackendError
-from .models import BEDROCK_MODEL_MAP, COPILOT_MODEL_MAP, add_region_prefix, get_bedrock_model, get_copilot_model
+from .models import (
+    BEDROCK_MODEL_MAP,
+    COPILOT_MODEL_MAP,
+    COPILOT_OPENAI_MODEL_MAP,
+    add_region_prefix,
+    get_bedrock_model,
+    get_copilot_model,
+    get_copilot_openai_model,
+)
+from .openai_translate import (
+    ReverseStreamTranslator,
+    anthropic_to_openai_response,
+    openai_to_anthropic_request,
+)
 
 # Use cl100k_base encoding (similar to Claude's tokenizer)
 tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -107,6 +120,21 @@ def _error_response(status_code: int, error_type: str, message: str) -> JSONResp
             "error": {
                 "type": error_type,
                 "message": message,
+            },
+        },
+    )
+
+
+def _openai_error_response(status_code: int, message: str, error_type: str = "invalid_request_error") -> JSONResponse:
+    """Return OpenAI-style error response."""
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "error": {
+                "message": message,
+                "type": error_type,
+                "param": None,
+                "code": None,
             },
         },
     )
@@ -325,6 +353,61 @@ async def _call_copilot(body: dict[str, Any], request_id: str, stream: bool) -> 
     return await _copilot_backend.handle_messages(body, request_id, stream, copilot_model, anthropic_model)
 
 
+async def _call_copilot_openai(body: dict[str, Any], request_id: str, stream: bool) -> JSONResponse | StreamingResponse:
+    """Execute OpenAI-format request directly against Copilot (no translation).
+
+    Raises TransientBackendError for fallback-eligible errors.
+    Raises CopilotHttpError, RuntimeError, httpx.TimeoutException for non-fallback errors.
+    """
+    if _copilot_backend is None:
+        raise RuntimeError("Copilot backend not initialized")
+    copilot_model = get_copilot_openai_model(body["model"])
+    log_prefix = f"[{request_id}] " if request_id else ""
+    logger.info(
+        f"{log_prefix}OpenAI passthrough - model: {body['model']} -> {copilot_model} (copilot), stream: {stream}"
+    )
+    return await _copilot_backend.handle_openai_messages(body, request_id, stream, copilot_model)
+
+
+async def _call_bedrock_for_openai(
+    body: dict[str, Any], request: Request, request_id: str, stream: bool
+) -> JSONResponse | StreamingResponse:
+    """Execute OpenAI-format request against Bedrock with translation.
+
+    Translates OpenAI -> Anthropic, calls Bedrock, translates response back to OpenAI.
+    Raises TransientBackendError for fallback-eligible errors.
+    """
+    anthropic_body = openai_to_anthropic_request(body)
+    result = await _call_bedrock(anthropic_body, request, request_id, stream)
+
+    # Convert Anthropic error responses to OpenAI format
+    if isinstance(result, JSONResponse) and result.status_code >= 400:
+        anthropic_err = json.loads(bytes(result.body))
+        err_info = anthropic_err.get("error", {})
+        return _openai_error_response(
+            result.status_code,
+            err_info.get("message", "Unknown error"),
+            err_info.get("type", "server_error"),
+        )
+
+    # Translate response from Anthropic format to OpenAI format
+    if isinstance(result, StreamingResponse):
+        translator = ReverseStreamTranslator(body["model"])
+
+        async def _translate_stream() -> AsyncGenerator[str, None]:
+            async for chunk in result.body_iterator:
+                text = chunk.decode() if isinstance(chunk, bytes) else str(chunk)
+                translated = translator.translate_sse(text)
+                if translated:
+                    yield translated
+
+        return StreamingResponse(_translate_stream(), media_type="text/event-stream")
+    else:
+        anthropic_resp = json.loads(bytes(result.body))
+        openai_resp = anthropic_to_openai_response(anthropic_resp, body["model"])
+        return JSONResponse(content=openai_resp)
+
+
 # --- Route Handlers ---
 
 
@@ -386,6 +469,79 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
         return _error_response(500, "api_error", str(e))
 
 
+@app.post("/v1/chat/completions", response_model=None)
+async def chat_completions(request: Request) -> JSONResponse | StreamingResponse:
+    """Handle OpenAI-compatible chat completion requests.
+
+    When Copilot is the backend, requests pass through directly (0 translations).
+    When Bedrock is the backend, requests are translated OpenAI -> Anthropic -> Bedrock -> Anthropic -> OpenAI.
+    """
+    request_id = request.headers.get("x-request-id", "")
+    log_prefix = f"[{request_id}] " if request_id else ""
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return _openai_error_response(400, "Invalid JSON in request body")
+
+    # Validate required fields (OpenAI format: model + messages required, max_tokens optional)
+    if "model" not in body:
+        return _openai_error_response(400, "Missing required field: model")
+    if "messages" not in body:
+        return _openai_error_response(400, "Missing required field: messages")
+    if not isinstance(body["messages"], list):
+        return _openai_error_response(400, "messages must be an array")
+    if not body["messages"]:
+        return _openai_error_response(400, "messages must not be empty")
+
+    stream = body.get("stream", False)
+
+    logger.info(f"{log_prefix}OpenAI-compat request - model: {body['model']}, stream: {stream}")
+
+    # Map backend name to call function
+    # Copilot: direct passthrough (0 translations)
+    # Bedrock: translated (OpenAI -> Anthropic -> Bedrock -> Anthropic -> OpenAI)
+    def _get_backend_caller(backend_name: str):
+        if backend_name == "copilot":
+            return lambda: _call_copilot_openai(body, request_id, stream)
+        return lambda: _call_bedrock_for_openai(body, request, request_id, stream)
+
+    primary_call = _get_backend_caller(BACKEND_TYPE)
+
+    try:
+        return await primary_call()
+    except TransientBackendError as e:
+        if not FALLBACK_BACKEND:
+            logger.error(f"{log_prefix}{e.backend} transient error {e.status_code}, no fallback configured")
+            return _openai_error_response(e.status_code, e.message, "server_error")
+
+        logger.warning(
+            f"{log_prefix}Primary ({BACKEND_TYPE}) failed with {e.status_code}, falling back to {FALLBACK_BACKEND}"
+        )
+
+        fallback_call = _get_backend_caller(FALLBACK_BACKEND)
+        try:
+            return await fallback_call()
+        except TransientBackendError as fallback_err:
+            logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) also failed with {fallback_err.status_code}")
+            return _openai_error_response(fallback_err.status_code, fallback_err.message, "server_error")
+        except CopilotHttpError as fallback_err:
+            return _openai_error_response(fallback_err.status_code, fallback_err.detail, "server_error")
+        except RuntimeError as fallback_err:
+            return _openai_error_response(401, str(fallback_err), "authentication_error")
+        except Exception as fallback_err:
+            logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) unexpected error: {fallback_err}")
+            return _openai_error_response(500, str(fallback_err), "server_error")
+    except CopilotHttpError as e:
+        return _openai_error_response(e.status_code, e.detail, "server_error")
+    except RuntimeError as e:
+        logger.error(f"{log_prefix}Auth error: {e}")
+        return _openai_error_response(401, str(e), "authentication_error")
+    except Exception as e:
+        logger.error(f"{log_prefix}Unexpected error: {e}")
+        return _openai_error_response(500, str(e), "server_error")
+
+
 @app.get("/health")
 async def health(check_bedrock: bool = False, check_copilot: bool = False) -> dict[str, Any]:
     """Health check endpoint. Use ?check_bedrock=true or ?check_copilot=true for deep check."""
@@ -431,22 +587,52 @@ async def get_version() -> dict[str, str]:
 
 @app.get("/v1/models")
 async def list_models() -> dict[str, Any]:
-    """Return available models in Anthropic API format."""
-    model_map = COPILOT_MODEL_MAP if BACKEND_TYPE == "copilot" else BEDROCK_MODEL_MAP
-    models = [
-        {
-            "id": model_id,
-            "type": "model",
-            "display_name": model_id.replace("-", " ").title(),
-            "created_at": "2024-01-01T00:00:00Z",
-        }
-        for model_id in model_map
-    ]
+    """Return available models in OpenAI-compatible format.
+
+    Compatible with both Open WebUI (expects object/data[].object) and
+    Claude Code (only reads data[].id).
+    When Copilot is the backend, includes both Claude and non-Claude models.
+    """
+    if BACKEND_TYPE == "copilot":
+        # Combine Anthropic-name models and OpenAI-native models
+        all_model_ids: dict[str, str] = {}
+        for model_id in COPILOT_MODEL_MAP:
+            all_model_ids[model_id] = "anthropic"
+        for model_id in COPILOT_OPENAI_MODEL_MAP:
+            if model_id not in all_model_ids:
+                if model_id.startswith(("gpt-",)):
+                    owned_by = "openai"
+                elif model_id.startswith("gemini-"):
+                    owned_by = "google"
+                elif model_id.startswith("grok-"):
+                    owned_by = "xai"
+                elif model_id.startswith("claude-"):
+                    owned_by = "anthropic"
+                else:
+                    owned_by = "other"
+                all_model_ids[model_id] = owned_by
+        models = [
+            {
+                "id": model_id,
+                "object": "model",
+                "created": 1700000000,
+                "owned_by": owned_by,
+            }
+            for model_id, owned_by in all_model_ids.items()
+        ]
+    else:
+        models = [
+            {
+                "id": model_id,
+                "object": "model",
+                "created": 1700000000,
+                "owned_by": "anthropic",
+            }
+            for model_id in BEDROCK_MODEL_MAP
+        ]
     return {
+        "object": "list",
         "data": models,
-        "has_more": False,
-        "first_id": models[0]["id"] if models else None,
-        "last_id": models[-1]["id"] if models else None,
     }
 
 

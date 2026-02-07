@@ -5,11 +5,13 @@ import pytest
 from claudegate.models import (
     BEDROCK_MODEL_MAP,
     COPILOT_MODEL_MAP,
+    COPILOT_OPENAI_MODEL_MAP,
     DEFAULT_COPILOT_MODEL,
     DEFAULT_MODEL,
     add_region_prefix,
     get_bedrock_model,
     get_copilot_model,
+    get_copilot_openai_model,
 )
 
 # --- add_region_prefix ---
@@ -93,3 +95,40 @@ class TestGetCopilotModel:
         model_id, returned_name = get_copilot_model("")
         assert model_id == DEFAULT_COPILOT_MODEL
         assert returned_name == "claude-sonnet-4-5-20250929"
+
+
+# --- get_copilot_openai_model ---
+
+
+class TestGetCopilotOpenAIModel:
+    @pytest.mark.parametrize("model_name,expected", list(COPILOT_OPENAI_MODEL_MAP.items()))
+    def test_all_openai_map_entries(self, model_name, expected):
+        assert get_copilot_openai_model(model_name) == expected
+
+    def test_direct_openai_model(self):
+        assert get_copilot_openai_model("gpt-4o") == "gpt-4o"
+
+    def test_copilot_display_name(self):
+        assert get_copilot_openai_model("claude-sonnet-4.5") == "claude-sonnet-4.5"
+
+    def test_anthropic_name_mapping(self):
+        # Anthropic versioned name should map via COPILOT_MODEL_MAP
+        assert get_copilot_openai_model("claude-sonnet-4-5-20250929") == "claude-sonnet-4.5"
+
+    def test_anthropic_partial_match(self):
+        assert get_copilot_openai_model("prefix-claude-sonnet-4-5-20250929-suffix") == "claude-sonnet-4.5"
+
+    def test_unknown_model_passthrough(self):
+        assert get_copilot_openai_model("some-custom-model") == "some-custom-model"
+
+    def test_empty_string_passthrough(self):
+        assert get_copilot_openai_model("") == ""
+
+    def test_gpt5_codex_models(self):
+        assert get_copilot_openai_model("gpt-5.1-codex") == "gpt-5.1-codex"
+        assert get_copilot_openai_model("gpt-5.1-codex-max") == "gpt-5.1-codex-max"
+        assert get_copilot_openai_model("gpt-5.2-codex") == "gpt-5.2-codex"
+
+    def test_gemini_models(self):
+        assert get_copilot_openai_model("gemini-2.5-pro") == "gemini-2.5-pro"
+        assert get_copilot_openai_model("gemini-3-pro") == "gemini-3-pro"

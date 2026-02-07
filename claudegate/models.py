@@ -91,6 +91,69 @@ COPILOT_MODEL_MAP = {
 }
 
 
+# Map OpenAI-native model names to Copilot model IDs (used for /v1/chat/completions direct passthrough)
+# Source: https://docs.github.com/copilot/reference/ai-models/supported-models
+COPILOT_OPENAI_MODEL_MAP: dict[str, str] = {
+    # Claude models (Copilot display names)
+    "claude-opus-4.6": "claude-opus-4.6",
+    "claude-opus-4.5": "claude-opus-4.5",
+    "claude-opus-4.1": "claude-opus-4.1",
+    "claude-opus-4": "claude-opus-4",
+    "claude-sonnet-4.5": "claude-sonnet-4.5",
+    "claude-sonnet-4": "claude-sonnet-4",
+    "claude-haiku-4.5": "claude-haiku-4.5",
+    "claude-3.7-sonnet": "claude-3.7-sonnet",
+    "claude-3.5-sonnet": "claude-3.5-sonnet",
+    "claude-3.5-haiku": "claude-3.5-haiku",
+    # GPT-5.x series
+    "gpt-5.2-codex": "gpt-5.2-codex",
+    "gpt-5.2": "gpt-5.2",
+    "gpt-5.1-codex-max": "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini": "gpt-5.1-codex-mini",
+    "gpt-5.1-codex": "gpt-5.1-codex",
+    "gpt-5.1": "gpt-5.1",
+    "gpt-5-codex": "gpt-5-codex",
+    "gpt-5-mini": "gpt-5-mini",
+    "gpt-5": "gpt-5",
+    # GPT-4.x series
+    "gpt-4.1": "gpt-4.1",
+    "gpt-4o": "gpt-4o",
+    "gpt-4o-mini": "gpt-4o-mini",
+    # Gemini models
+    "gemini-3-pro": "gemini-3-pro",
+    "gemini-3-flash": "gemini-3-flash",
+    "gemini-2.5-pro": "gemini-2.5-pro",
+    # Other models
+    "grok-code-fast-1": "grok-code-fast-1",
+    "raptor-mini": "raptor-mini",
+}
+
+
+def get_copilot_openai_model(model: str) -> str:
+    """Map a model name to a Copilot-compatible model ID for OpenAI passthrough.
+
+    Checks COPILOT_OPENAI_MODEL_MAP (direct match), then COPILOT_MODEL_MAP
+    (Anthropic names like claude-sonnet-4-5-20250929), then partial matches.
+    Unknown models pass through as-is.
+    """
+    # Direct match in OpenAI map
+    if model in COPILOT_OPENAI_MODEL_MAP:
+        return COPILOT_OPENAI_MODEL_MAP[model]
+    # Direct match in Anthropic->Copilot map (returns Copilot display name)
+    if model in COPILOT_MODEL_MAP:
+        return COPILOT_MODEL_MAP[model]
+    # Partial match in Anthropic->Copilot map
+    for key, value in COPILOT_MODEL_MAP.items():
+        if key in model:
+            return value
+    # Partial match in OpenAI map
+    for key, value in COPILOT_OPENAI_MODEL_MAP.items():
+        if key in model:
+            return value
+    # Unknown model: pass through as-is (let Copilot API reject if invalid)
+    return model
+
+
 def get_copilot_model(model: str) -> tuple[str, str]:
     """Map Anthropic model name to Copilot model ID.
 

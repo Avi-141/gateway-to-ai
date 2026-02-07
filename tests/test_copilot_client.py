@@ -298,6 +298,192 @@ class TestStreamResponse:
         mock_stream_ctx.__aexit__.assert_called_once()
 
 
+# --- handle_openai_messages ---
+
+
+class TestHandleOpenAIMessages:
+    @pytest.mark.anyio
+    async def test_non_streaming_success(self, backend):
+        openai_resp = {
+            "id": "chatcmpl-123",
+            "object": "chat.completion",
+            "choices": [{"message": {"role": "assistant", "content": "Hello!"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+        }
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = openai_resp
+
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
+            body = {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}
+            resp = await backend.handle_openai_messages(body, "req1", False, "gpt-4o")
+
+        assert resp.status_code == 200
+        result = json.loads(resp.body)
+        assert result["choices"][0]["message"]["content"] == "Hello!"
+        # Verify model was overridden in the posted body
+        posted_body = mock_post.call_args.kwargs["json"]
+        assert posted_body["model"] == "gpt-4o"
+
+    @pytest.mark.anyio
+    async def test_model_override(self, backend):
+        """Verify the model is overridden to the copilot model name."""
+        openai_resp = {
+            "id": "chatcmpl-123",
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+        }
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = openai_resp
+
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
+            body = {"model": "claude-sonnet-4-5-20250929", "messages": [{"role": "user", "content": "hi"}]}
+            await backend.handle_openai_messages(body, "", False, "claude-sonnet-4.5")
+
+        posted_body = mock_post.call_args.kwargs["json"]
+        assert posted_body["model"] == "claude-sonnet-4.5"
+
+    @pytest.mark.anyio
+    async def test_429_raises_transient_error(self, backend):
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.text = "rate limited"
+
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
+            body = {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}
+            with pytest.raises(TransientBackendError) as exc_info:
+                await backend.handle_openai_messages(body, "", False, "gpt-4o")
+
+        assert exc_info.value.status_code == 429
+        assert exc_info.value.backend == "copilot"
+
+    @pytest.mark.anyio
+    async def test_401_raises_copilot_http_error(self, backend):
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_response.text = "unauthorized"
+
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
+            body = {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}
+            with pytest.raises(CopilotHttpError) as exc_info:
+                await backend.handle_openai_messages(body, "", False, "gpt-4o")
+
+        assert exc_info.value.status_code == 401
+
+    @pytest.mark.anyio
+    async def test_streaming_returns_streaming_response(self, backend):
+        body = {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}
+
+        mock_resp = AsyncMock()
+        mock_resp.status_code = 200
+
+        with (
+            patch.object(backend, "_open_stream", new_callable=AsyncMock, return_value=(mock_resp, AsyncMock())),
+            patch.object(backend, "_stream_openai_response") as mock_stream,
+        ):
+
+            async def fake_gen(*args, **kwargs):
+                yield "data: {}\n\n"
+
+            mock_stream.return_value = fake_gen()
+            resp = await backend.handle_openai_messages(body, "", True, "gpt-4o")
+
+        assert resp.media_type == "text/event-stream"
+
+    @pytest.mark.anyio
+    async def test_does_not_mutate_original_body(self, backend):
+        """Original body dict should not be modified."""
+        openai_resp = {
+            "id": "chatcmpl-123",
+            "choices": [{"message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+        }
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = openai_resp
+
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
+            body = {"model": "original-model", "messages": [{"role": "user", "content": "hi"}]}
+            await backend.handle_openai_messages(body, "", False, "gpt-4o")
+
+        assert body["model"] == "original-model"
+
+
+# --- _stream_openai_response ---
+
+
+class TestStreamOpenAIResponse:
+    @pytest.mark.anyio
+    async def test_forwards_lines_as_is(self, backend):
+        """Lines are forwarded without Anthropic translation."""
+
+        async def mock_aiter_lines():
+            yield 'data: {"id":"c1","choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}'
+            yield 'data: {"id":"c1","choices":[{"delta":{},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+        mock_resp = AsyncMock()
+        mock_resp.aiter_lines = mock_aiter_lines
+
+        mock_stream_ctx = AsyncMock()
+        mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        events = []
+        async for event in backend._stream_openai_response(mock_resp, mock_stream_ctx, ""):
+            events.append(event)
+
+        all_text = "".join(events)
+        # Should contain raw OpenAI content, not Anthropic events
+        assert "Hi" in all_text
+        assert "finish_reason" in all_text
+        assert "[DONE]" in all_text
+        # Should NOT contain Anthropic-style events
+        assert "message_start" not in all_text
+        assert "text_delta" not in all_text
+        mock_stream_ctx.__aexit__.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_timeout_error(self, backend):
+        async def mock_aiter_lines():
+            raise httpx.TimeoutException("timed out")
+            yield  # noqa: RET503
+
+        mock_resp = AsyncMock()
+        mock_resp.aiter_lines = mock_aiter_lines
+
+        mock_stream_ctx = AsyncMock()
+        mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        events = []
+        async for event in backend._stream_openai_response(mock_resp, mock_stream_ctx, ""):
+            events.append(event)
+
+        all_text = "".join(events)
+        assert "timed out" in all_text
+        assert "server_error" in all_text
+        mock_stream_ctx.__aexit__.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_empty_lines_skipped(self, backend):
+        async def mock_aiter_lines():
+            yield ""
+            yield 'data: {"id":"c1","choices":[{"delta":{"content":"Hi"}}]}'
+            yield ""
+
+        mock_resp = AsyncMock()
+        mock_resp.aiter_lines = mock_aiter_lines
+
+        mock_stream_ctx = AsyncMock()
+        mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        events = []
+        async for event in backend._stream_openai_response(mock_resp, mock_stream_ctx, ""):
+            events.append(event)
+
+        # Only the non-empty line should produce output
+        assert len(events) == 1
+        assert "Hi" in events[0]
+
+
 # --- close ---
 
 

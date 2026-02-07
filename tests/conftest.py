@@ -128,6 +128,39 @@ def openai_streaming_chunks() -> list[dict[str, Any]]:
 
 
 @pytest.fixture
+def minimal_openai_request() -> dict[str, Any]:
+    """Minimal valid OpenAI Chat Completions request body."""
+    return {
+        "model": "claude-sonnet-4-5-20250929",
+        "messages": [{"role": "user", "content": "Hello"}],
+    }
+
+
+@pytest.fixture
+def openai_request_with_tools() -> dict[str, Any]:
+    """OpenAI request body with tool definitions."""
+    return {
+        "model": "claude-sonnet-4-5-20250929",
+        "messages": [{"role": "user", "content": "What is the weather?"}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Get current weather",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"location": {"type": "string"}},
+                        "required": ["location"],
+                    },
+                },
+            }
+        ],
+        "tool_choice": "auto",
+    }
+
+
+@pytest.fixture
 def mock_copilot_auth():
     """Mock CopilotAuth with get_token returning a fake token."""
     auth = AsyncMock()
