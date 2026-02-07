@@ -1,0 +1,146 @@
+"""Shared test fixtures for claudegate tests."""
+
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import httpx
+import pytest
+
+from claudegate.app import app
+
+
+@pytest.fixture(autouse=True)
+def clean_env(monkeypatch):
+    """Remove environment variables that affect module behaviour."""
+    for var in (
+        "BACKEND",
+        "GITHUB_TOKEN",
+        "AWS_REGION",
+        "BEDROCK_REGION_PREFIX",
+        "BEDROCK_READ_TIMEOUT",
+        "HOST",
+        "PORT",
+        "LOG_LEVEL",
+        "COPILOT_TIMEOUT",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def reset_bedrock_singleton():
+    """Reset the Bedrock client singleton before and after each test."""
+    from claudegate.client import reset_bedrock_client
+
+    reset_bedrock_client()
+    yield
+    reset_bedrock_client()
+
+
+@pytest.fixture
+def async_client():
+    """HTTPX async client wired to the FastAPI app (no lifespan)."""
+    transport = httpx.ASGITransport(app=app)
+    return httpx.AsyncClient(transport=transport, base_url="http://test")
+
+
+@pytest.fixture
+def mock_bedrock_client():
+    """Patch get_bedrock_client to return a MagicMock."""
+    mock = MagicMock()
+    with patch("claudegate.app.get_bedrock_client", return_value=mock):
+        yield mock
+
+
+@pytest.fixture
+def minimal_anthropic_request() -> dict[str, Any]:
+    """Minimal valid Anthropic Messages API request body."""
+    return {
+        "model": "claude-sonnet-4-5-20250929",
+        "max_tokens": 1024,
+        "messages": [{"role": "user", "content": "Hello"}],
+    }
+
+
+@pytest.fixture
+def anthropic_request_with_tools() -> dict[str, Any]:
+    """Request body with tool definitions and tool_choice."""
+    return {
+        "model": "claude-sonnet-4-5-20250929",
+        "max_tokens": 1024,
+        "messages": [{"role": "user", "content": "What is the weather?"}],
+        "tools": [
+            {
+                "name": "get_weather",
+                "description": "Get current weather",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"location": {"type": "string"}},
+                    "required": ["location"],
+                },
+            }
+        ],
+        "tool_choice": {"type": "auto"},
+    }
+
+
+@pytest.fixture
+def openai_chat_response() -> dict[str, Any]:
+    """Sample OpenAI non-streaming chat completion response."""
+    return {
+        "id": "chatcmpl-abc123",
+        "object": "chat.completion",
+        "created": 1700000000,
+        "model": "claude-sonnet-4.5",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "Hello there!"},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    }
+
+
+@pytest.fixture
+def openai_streaming_chunks() -> list[dict[str, Any]]:
+    """List of OpenAI SSE chunk dicts for streaming tests."""
+    return [
+        {
+            "id": "chatcmpl-abc123",
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}],
+            "usage": {"prompt_tokens": 10},
+        },
+        {
+            "id": "chatcmpl-abc123",
+            "choices": [{"index": 0, "delta": {"content": "Hello"}, "finish_reason": None}],
+        },
+        {
+            "id": "chatcmpl-abc123",
+            "choices": [{"index": 0, "delta": {"content": " world"}, "finish_reason": None}],
+        },
+        {
+            "id": "chatcmpl-abc123",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": {"completion_tokens": 3},
+        },
+    ]
+
+
+@pytest.fixture
+def mock_copilot_auth():
+    """Mock CopilotAuth with get_token returning a fake token."""
+    auth = AsyncMock()
+    auth.get_token.return_value = "fake-copilot-token"
+    auth.close = AsyncMock()
+    return auth
+
+
+def make_client_error(code: str = "InternalError", message: str = "Something failed"):
+    """Create a botocore ClientError with the given error code."""
+    from botocore.exceptions import ClientError
+
+    return ClientError(
+        error_response={"Error": {"Code": code, "Message": message}},
+        operation_name="InvokeModel",
+    )

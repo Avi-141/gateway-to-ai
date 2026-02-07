@@ -25,12 +25,33 @@ dependencies = [
     "uvicorn>=0.34.0",
 ]
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.25.0",
+    "pytest-httpx>=0.35.0",
+    "pytest-cov>=6.0.0",
+]
+
 [project.scripts]
 claudegate = "claudegate:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = ["--strict-markers", "--tb=short", "-q"]
+
+[tool.coverage.run]
+source = ["claudegate"]
+omit = ["claudegate/__init__.py"]
+
+[tool.coverage.report]
+show_missing = true
+exclude_lines = ["pragma: no cover", "if __name__ == .__main__."]
 
 [tool.hatch.build.targets.wheel]
 packages = ["claudegate"]

@@ -1,0 +1,94 @@
+"""Tests for claudegate/models.py."""
+
+import pytest
+
+from claudegate.models import (
+    BEDROCK_MODEL_MAP,
+    COPILOT_MODEL_MAP,
+    DEFAULT_COPILOT_MODEL,
+    DEFAULT_MODEL,
+    add_region_prefix,
+    get_bedrock_model,
+    get_copilot_model,
+)
+
+
+# --- add_region_prefix ---
+
+
+class TestAddRegionPrefix:
+    def test_with_prefix(self, monkeypatch):
+        monkeypatch.setattr("claudegate.models.BEDROCK_REGION_PREFIX", "us")
+        assert add_region_prefix("anthropic.claude-3-haiku-20240307-v1:0") == "us.anthropic.claude-3-haiku-20240307-v1:0"
+
+    def test_empty_prefix(self, monkeypatch):
+        monkeypatch.setattr("claudegate.models.BEDROCK_REGION_PREFIX", "")
+        assert add_region_prefix("anthropic.claude-3-haiku-20240307-v1:0") == "anthropic.claude-3-haiku-20240307-v1:0"
+
+    def test_no_prefix_none(self, monkeypatch):
+        monkeypatch.setattr("claudegate.models.BEDROCK_REGION_PREFIX", "")
+        model = "some-model"
+        assert add_region_prefix(model) == model
+
+
+# --- get_bedrock_model ---
+
+
+class TestGetBedrockModel:
+    @pytest.mark.parametrize("anthropic_name,bedrock_id", list(BEDROCK_MODEL_MAP.items()))
+    def test_all_map_entries(self, anthropic_name, bedrock_id, monkeypatch):
+        monkeypatch.setattr("claudegate.models.BEDROCK_REGION_PREFIX", "")
+        assert get_bedrock_model(anthropic_name) == bedrock_id
+
+    def test_direct_match_with_prefix(self, monkeypatch):
+        monkeypatch.setattr("claudegate.models.BEDROCK_REGION_PREFIX", "eu")
+        result = get_bedrock_model("claude-sonnet-4-5-20250929")
+        assert result == "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+    def test_passthrough_bedrock_model_id(self, monkeypatch):
+        monkeypatch.setattr("claudegate.models.BEDROCK_REGION_PREFIX", "us")
+        # Already contains "anthropic." so should pass through as-is
+        model = "us.anthropic.claude-3-haiku-20240307-v1:0"
+        assert get_bedrock_model(model) == model
+
+    def test_partial_match(self, monkeypatch):
+        monkeypatch.setattr("claudegate.models.BEDROCK_REGION_PREFIX", "")
+        # A model name that contains a known key as substring
+        result = get_bedrock_model("some-prefix-claude-sonnet-4-5-20250929-suffix")
+        assert result == "anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+    def test_unknown_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setattr("claudegate.models.BEDROCK_REGION_PREFIX", "")
+        result = get_bedrock_model("completely-unknown-model")
+        assert result == DEFAULT_MODEL
+
+    def test_empty_string_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setattr("claudegate.models.BEDROCK_REGION_PREFIX", "")
+        result = get_bedrock_model("")
+        assert result == DEFAULT_MODEL
+
+
+# --- get_copilot_model ---
+
+
+class TestGetCopilotModel:
+    @pytest.mark.parametrize("anthropic_name,copilot_id", list(COPILOT_MODEL_MAP.items()))
+    def test_all_map_entries(self, anthropic_name, copilot_id):
+        model_id, returned_name = get_copilot_model(anthropic_name)
+        assert model_id == copilot_id
+        assert returned_name == anthropic_name
+
+    def test_partial_match(self):
+        model_id, returned_name = get_copilot_model("prefix-claude-sonnet-4-5-20250929-suffix")
+        assert model_id == "claude-sonnet-4.5"
+        assert returned_name == "claude-sonnet-4-5-20250929"
+
+    def test_unknown_falls_back_to_default(self):
+        model_id, returned_name = get_copilot_model("totally-unknown")
+        assert model_id == DEFAULT_COPILOT_MODEL
+        assert returned_name == "claude-sonnet-4-5-20250929"
+
+    def test_empty_string_falls_back_to_default(self):
+        model_id, returned_name = get_copilot_model("")
+        assert model_id == DEFAULT_COPILOT_MODEL
+        assert returned_name == "claude-sonnet-4-5-20250929"
