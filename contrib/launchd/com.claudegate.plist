@@ -3,21 +3,21 @@
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.clauderock</string>
+    <string>com.claudegate</string>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>~/.local/bin/clauderock</string>
+        <string>~/.local/bin/claudegate</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>/tmp/clauderock.log</string>
+    <string>/tmp/claudegate.log</string>
     <key>StandardErrorPath</key>
-    <string>/tmp/clauderock.log</string>
+    <string>/tmp/claudegate.log</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>AWS_REGION</key>

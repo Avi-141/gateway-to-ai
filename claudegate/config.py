@@ -63,7 +63,7 @@ LOGGING_CONFIG = {
             "level": LOG_LEVEL,
             "propagate": False,
         },
-        "clauderock": {
+        "claudegate": {
             "handlers": ["default"],
             "level": LOG_LEVEL,
             "propagate": False,
@@ -89,7 +89,7 @@ LOGGING_CONFIG = {
 
 # Apply logging configuration
 logging.config.dictConfig(LOGGING_CONFIG)
-logger = logging.getLogger("clauderock")
+logger = logging.getLogger("claudegate")
 
 # Cross-region inference prefix (us, eu, apac) - required for on-demand throughput
 # See: https://docs.aws.amazon.com/bedrock/latest/userguide/cross-region-inference.html

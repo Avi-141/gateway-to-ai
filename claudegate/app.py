@@ -30,7 +30,7 @@ tokenizer = tiktoken.get_encoding("cl100k_base")
 try:
     from importlib.metadata import PackageNotFoundError, version
 
-    __version__ = version("clauderock")
+    __version__ = version("claudegate")
 except PackageNotFoundError:
     __version__ = "0.0.0-dev"
 
@@ -50,7 +50,7 @@ async def lifespan(app: FastAPI):
     global _copilot_backend
 
     # Startup
-    logger.info(f"Starting clauderock v{__version__}")
+    logger.info(f"Starting claudegate v{__version__}")
     logger.info(f"Host: {os.environ.get('HOST', DEFAULT_HOST)}")
     logger.info(f"Port: {os.environ.get('PORT', DEFAULT_PORT)}")
     logger.info(f"Backend: {BACKEND_TYPE}")
@@ -73,10 +73,10 @@ async def lifespan(app: FastAPI):
     # Shutdown
     if _copilot_backend is not None:
         await _copilot_backend.close()
-    logger.info("Shutting down clauderock")
+    logger.info("Shutting down claudegate")
 
 
-app = FastAPI(title="clauderock", version=__version__, lifespan=lifespan)
+app = FastAPI(title="claudegate", version=__version__, lifespan=lifespan)
 
 
 # --- Helper Functions ---

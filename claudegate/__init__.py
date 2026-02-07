@@ -1,4 +1,4 @@
-"""Clauderock - Anthropic API to AWS Bedrock proxy."""
+"""Claudegate - Anthropic API to AWS Bedrock proxy."""
 
 import os
 

@@ -16,7 +16,7 @@ COPILOT_CLIENT_ID = "Iv1.b507a08c87ecfe98"
 COPILOT_SCOPE = "copilot"
 
 # Token persistence path
-TOKEN_DIR = Path.home() / ".config" / "clauderock"
+TOKEN_DIR = Path.home() / ".config" / "claudegate"
 TOKEN_FILE = TOKEN_DIR / "github_token"
 
 # Copilot API endpoints
@@ -199,7 +199,7 @@ class CopilotAuth:
         if resp.status_code == 401:
             raise RuntimeError(
                 "GitHub token is invalid or expired. "
-                "Please re-authenticate (delete ~/.config/clauderock/github_token and restart)."
+                "Please re-authenticate (delete ~/.config/claudegate/github_token and restart)."
             )
         if resp.status_code == 403:
             raise RuntimeError(

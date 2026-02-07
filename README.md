@@ -1,4 +1,4 @@
-# clauderock
+# claudegate
 
 A lightweight proxy that translates Anthropic API requests to AWS Bedrock or GitHub Copilot, enabling Claude Code and other Anthropic API clients to use either backend.
 
@@ -71,31 +71,31 @@ A lightweight proxy that translates Anthropic API requests to AWS Bedrock or Git
 
 ```bash
 # Install as a global tool
-uv tool install git+https://github.com/yourusername/clauderock.git
+uv tool install git+https://github.com/yourusername/claudegate.git
 
 # Run anytime
-clauderock
+claudegate
 ```
 
 ### Run without installing
 
 ```bash
 # One-liner using uvx
-uvx --from git+https://github.com/yourusername/clauderock.git clauderock
+uvx --from git+https://github.com/yourusername/claudegate.git claudegate
 ```
 
 ### Development
 
 ```bash
-git clone https://github.com/yourusername/clauderock.git
-cd clauderock
-uv run clauderock
+git clone https://github.com/yourusername/claudegate.git
+cd claudegate
+uv run claudegate
 ```
 
 ## Project Structure
 
 ```
-clauderock/
+claudegate/
 ├── __init__.py           # Package entry point, exports main()
 ├── app.py                # FastAPI application and route handlers
 ├── client.py             # AWS Bedrock client management
@@ -162,12 +162,12 @@ export LOG_LEVEL="INFO"  # default: INFO
 
 **With Bedrock (default):**
 ```bash
-clauderock
+claudegate
 ```
 
 **With Copilot:**
 ```bash
-BACKEND=copilot clauderock
+BACKEND=copilot claudegate
 ```
 
 If `GITHUB_TOKEN` is not set, the proxy will run an interactive OAuth device flow at startup:
@@ -181,33 +181,33 @@ Waiting for authorization...
 Authorization successful!
 ```
 
-The token is persisted to `~/.config/clauderock/github_token` for subsequent startups.
+The token is persisted to `~/.config/claudegate/github_token` for subsequent startups.
 
 ### Run in background
 
 **Quick (terminal session):**
 ```bash
-clauderock &
+claudegate &
 ```
 
 **Persist after terminal close:**
 ```bash
-nohup clauderock > ~/.clauderock.log 2>&1 &
+nohup claudegate > ~/.claudegate.log 2>&1 &
 ```
 
 **macOS (auto-start on login):**
 ```bash
 # Edit the plist to set your AWS_REGION, then:
-cp contrib/launchd/com.clauderock.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.clauderock.plist
+cp contrib/launchd/com.claudegate.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.claudegate.plist
 ```
 
 **Linux (systemd user service):**
 ```bash
 # Edit the service file to set your AWS_REGION, then:
 mkdir -p ~/.config/systemd/user
-cp contrib/systemd/clauderock.service ~/.config/systemd/user/
-systemctl --user enable --now clauderock
+cp contrib/systemd/claudegate.service ~/.config/systemd/user/
+systemctl --user enable --now claudegate
 ```
 
 ### Configure Claude Code
@@ -295,7 +295,7 @@ aws sso login
 # Re-run your assume-role command or script
 ```
 
-**Copilot:** The proxy automatically refreshes Copilot tokens before expiry. If your GitHub OAuth token becomes invalid, delete `~/.config/clauderock/github_token` and restart the proxy to re-authenticate via device flow.
+**Copilot:** The proxy automatically refreshes Copilot tokens before expiry. If your GitHub OAuth token becomes invalid, delete `~/.config/claudegate/github_token` and restart the proxy to re-authenticate via device flow.
 
 ## Request Tracing
 

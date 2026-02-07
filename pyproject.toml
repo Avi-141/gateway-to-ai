@@ -1,5 +1,5 @@
 [project]
-name = "clauderock"
+name = "claudegate"
 version = "0.1.0"
 description = "Anthropic API proxy for AWS Bedrock and GitHub Copilot backends"
 readme = "README.md"
@@ -7,7 +7,7 @@ requires-python = ">=3.11"
 authors = [
     { name = "Daniel Schmidt" }
 ]
-keywords = ["anthropic", "bedrock", "claude", "proxy", "aws", "copilot", "github", "clauderock"]
+keywords = ["anthropic", "bedrock", "claude", "proxy", "aws", "copilot", "github", "claudegate"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -26,11 +26,11 @@ dependencies = [
 ]
 
 [project.scripts]
-clauderock = "clauderock:main"
+claudegate = "claudegate:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["clauderock"]
+packages = ["claudegate"]
