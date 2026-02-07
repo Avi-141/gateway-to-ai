@@ -92,20 +92,6 @@ cd claudegate
 uv run claudegate
 ```
 
-## Project Structure
-
-```
-claudegate/
-├── __init__.py           # Package entry point, exports main()
-├── app.py                # FastAPI application and route handlers
-├── client.py             # AWS Bedrock client management
-├── config.py             # Configuration constants and logging
-├── models.py             # Model mappings (Anthropic -> Bedrock/Copilot)
-├── copilot_auth.py       # GitHub OAuth device flow and Copilot token management
-├── copilot_client.py     # Copilot HTTP client and backend
-└── copilot_translate.py  # Anthropic <-> OpenAI format translation
-```
-
 ## Configuration
 
 ### Backend Selection
