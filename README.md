@@ -13,8 +13,8 @@ A lightweight proxy that translates Anthropic API requests to AWS Bedrock or Git
 ## Features
 
 - Two backends: **AWS Bedrock** (native Anthropic format) and **GitHub Copilot** (OpenAI-compatible, auto-translated)
-- Backend selected via `BACKEND=bedrock|copilot` environment variable
-- **Cross-backend fallback**: set `BACKEND=copilot,bedrock` to automatically retry on the other backend when the primary returns a transient error (429, 5xx)
+- Backend selected via `CLAUDEGATE_BACKEND=bedrock|copilot` environment variable
+- **Cross-backend fallback**: set `CLAUDEGATE_BACKEND=copilot,bedrock` to automatically retry on the other backend when the primary returns a transient error (429, 5xx)
 - Supports streaming and non-streaming responses
 - Extended thinking support (Bedrock)
 - Full tool use round-trip translation (Copilot)
@@ -130,16 +130,16 @@ uv run claudegate
 
 ```bash
 # Use AWS Bedrock (default)
-export BACKEND="bedrock"
+export CLAUDEGATE_BACKEND="bedrock"
 
 # Use GitHub Copilot
-export BACKEND="copilot"
+export CLAUDEGATE_BACKEND="copilot"
 
 # Use Copilot with Bedrock as fallback (retries on 429, 5xx errors)
-export BACKEND="copilot,bedrock"
+export CLAUDEGATE_BACKEND="copilot,bedrock"
 
 # Use Bedrock with Copilot as fallback
-export BACKEND="bedrock,copilot"
+export CLAUDEGATE_BACKEND="bedrock,copilot"
 ```
 
 ### Bedrock Configuration
@@ -173,11 +173,11 @@ export COPILOT_TIMEOUT="300"  # default: 300 (seconds)
 
 ```bash
 # Optional: Server configuration
-export HOST="0.0.0.0"  # default: 0.0.0.0
-export PORT="8080"     # default: 8080
+export CLAUDEGATE_HOST="0.0.0.0"  # default: 0.0.0.0
+export CLAUDEGATE_PORT="8080"     # default: 8080
 
 # Optional: Log level (DEBUG, INFO, WARNING, ERROR)
-export LOG_LEVEL="INFO"  # default: INFO
+export CLAUDEGATE_LOG_LEVEL="INFO"  # default: INFO
 ```
 
 ## Usage
@@ -191,12 +191,12 @@ claudegate
 
 **With Copilot:**
 ```bash
-BACKEND=copilot claudegate
+CLAUDEGATE_BACKEND=copilot claudegate
 ```
 
 **With fallback (Copilot primary, Bedrock fallback):**
 ```bash
-BACKEND=copilot,bedrock claudegate
+CLAUDEGATE_BACKEND=copilot,bedrock claudegate
 ```
 
 If `GITHUB_TOKEN` is not set, the proxy will run an interactive OAuth device flow at startup:
@@ -375,7 +375,7 @@ The `/v1/chat/completions` endpoint returns OpenAI-compatible error responses:
 
 ### Fallback behavior
 
-**Fallback:** When a fallback backend is configured (`BACKEND=copilot,bedrock`), transient errors (429, 500, 502, 503, 504) on the primary backend automatically trigger a retry on the fallback. Non-transient errors (400, 401, 403) are returned immediately without fallback. For streaming requests, fallback only works for pre-stream errors (connection failures, HTTP status errors before the first chunk is sent). Mid-stream errors are delivered as SSE error events as usual.
+**Fallback:** When a fallback backend is configured (`CLAUDEGATE_BACKEND=copilot,bedrock`), transient errors (429, 500, 502, 503, 504) on the primary backend automatically trigger a retry on the fallback. Non-transient errors (400, 401, 403) are returned immediately without fallback. For streaming requests, fallback only works for pre-stream errors (connection failures, HTTP status errors before the first chunk is sent). Mid-stream errors are delivered as SSE error events as usual.
 
 **Bedrock:** The proxy detects expired AWS credentials and resets the credential cache. If credentials are still expired (e.g., SSO session expired), refresh them manually:
 

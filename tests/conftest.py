@@ -13,14 +13,14 @@ from claudegate.app import app
 def clean_env(monkeypatch):
     """Remove environment variables that affect module behaviour."""
     for var in (
-        "BACKEND",
+        "CLAUDEGATE_BACKEND",
         "GITHUB_TOKEN",
         "AWS_REGION",
         "BEDROCK_REGION_PREFIX",
         "BEDROCK_READ_TIMEOUT",
-        "HOST",
-        "PORT",
-        "LOG_LEVEL",
+        "CLAUDEGATE_HOST",
+        "CLAUDEGATE_PORT",
+        "CLAUDEGATE_LOG_LEVEL",
         "COPILOT_TIMEOUT",
     ):
         monkeypatch.delenv(var, raising=False)

@@ -9,7 +9,7 @@ ExecStart=%h/.local/bin/claudegate
 Restart=on-failure
 RestartSec=5
 Environment=AWS_REGION=us-west-2
-Environment=LOG_LEVEL=INFO
+Environment=CLAUDEGATE_LOG_LEVEL=INFO
 
 # Logging
 StandardOutput=journal

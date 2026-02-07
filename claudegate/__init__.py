@@ -12,8 +12,8 @@ def main() -> None:
     """Entry point for the proxy server."""
     import uvicorn
 
-    host = os.environ.get("HOST", DEFAULT_HOST)
-    port = int(os.environ.get("PORT", DEFAULT_PORT))
+    host = os.environ.get("CLAUDEGATE_HOST", DEFAULT_HOST)
+    port = int(os.environ.get("CLAUDEGATE_PORT", DEFAULT_PORT))
 
     # Uvicorn handles SIGTERM/SIGINT gracefully
     # Lifespan context manager handles startup/shutdown logging

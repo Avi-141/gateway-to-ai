@@ -74,8 +74,8 @@ async def lifespan(app: FastAPI):
 
     # Startup
     logger.info(f"Starting claudegate v{__version__}")
-    logger.info(f"Host: {os.environ.get('HOST', DEFAULT_HOST)}")
-    logger.info(f"Port: {os.environ.get('PORT', DEFAULT_PORT)}")
+    logger.info(f"Host: {os.environ.get('CLAUDEGATE_HOST', DEFAULT_HOST)}")
+    logger.info(f"Port: {os.environ.get('CLAUDEGATE_PORT', DEFAULT_PORT)}")
     logger.info(f"Backend: {BACKEND_TYPE}")
     if FALLBACK_BACKEND:
         logger.info(f"Fallback: {FALLBACK_BACKEND}")
