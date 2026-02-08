@@ -18,6 +18,7 @@ from .copilot_translate import (
 from .errors import CopilotHttpError, TransientBackendError
 
 COPILOT_CHAT_URL = "https://api.githubcopilot.com/chat/completions"
+COPILOT_MODELS_URL = "https://api.githubcopilot.com/models"
 
 # Map HTTP status codes to Anthropic error types
 _ERROR_TYPE_MAP: dict[int, str] = {
@@ -45,6 +46,20 @@ class CopilotBackend:
             "Content-Type": "application/json",
             "Copilot-Integration-Id": "vscode-chat",
         }
+
+    async def list_models(self) -> list[dict[str, Any]]:
+        """Fetch available models from the Copilot API."""
+        headers = await self._get_headers()
+        try:
+            resp = await self._client.get(COPILOT_MODELS_URL, headers=headers)
+        except Exception as e:
+            logger.warning(f"Failed to fetch Copilot models: {e}")
+            return []
+        if resp.status_code != 200:
+            logger.warning(f"Failed to fetch Copilot models: HTTP {resp.status_code}")
+            return []
+        data = resp.json()
+        return data.get("data", [])
 
     def _error_response(self, status_code: int, error_type: str, message: str) -> JSONResponse:
         """Return Anthropic-style error response."""

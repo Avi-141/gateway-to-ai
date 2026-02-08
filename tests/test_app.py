@@ -332,6 +332,48 @@ class TestModelsRoute:
         body = resp.json()
         assert len(body["data"]) > 0
 
+    @pytest.mark.anyio
+    async def test_copilot_dynamic_models(self, async_client, monkeypatch):
+        """When dynamic models are available, /v1/models returns them."""
+        from claudegate.models import set_copilot_models
+
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        dynamic = [
+            {"id": "claude-sonnet-4.5", "owned_by": "anthropic", "created_at": 1700000001},
+            {"id": "gpt-4o", "owned_by": "openai", "created_at": 1700000002},
+            {"id": "gemini-2.5-pro-preview"},
+        ]
+        set_copilot_models(dynamic)
+        try:
+            resp = await async_client.get("/v1/models")
+            assert resp.status_code == 200
+            body = resp.json()
+            ids = [m["id"] for m in body["data"]]
+            assert "claude-sonnet-4.5" in ids
+            assert "gpt-4o" in ids
+            assert "gemini-2.5-pro-preview" in ids
+            # Check owned_by inference for model without explicit owned_by
+            gemini = next(m for m in body["data"] if m["id"] == "gemini-2.5-pro-preview")
+            assert gemini["owned_by"] == "google"
+            # Check explicit owned_by is used
+            gpt = next(m for m in body["data"] if m["id"] == "gpt-4o")
+            assert gpt["owned_by"] == "openai"
+        finally:
+            set_copilot_models([])
+
+    @pytest.mark.anyio
+    async def test_copilot_fallback_to_hardcoded(self, async_client, monkeypatch):
+        """When dynamic models are empty, /v1/models falls back to hardcoded maps."""
+        from claudegate.models import set_copilot_models
+
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        set_copilot_models([])
+        resp = await async_client.get("/v1/models")
+        assert resp.status_code == 200
+        body = resp.json()
+        # Should have entries from the hardcoded maps
+        assert len(body["data"]) > 0
+
 
 # --- POST /v1/messages/count_tokens ---
 

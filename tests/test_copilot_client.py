@@ -16,6 +16,62 @@ def backend(mock_copilot_auth):
     return CopilotBackend(mock_copilot_auth, timeout=30)
 
 
+# --- list_models ---
+
+
+class TestListModels:
+    @pytest.mark.anyio
+    async def test_success(self, backend):
+        """Successful fetch returns model list."""
+        models_data = {
+            "data": [
+                {"id": "claude-sonnet-4.5", "name": "Claude Sonnet 4.5", "owned_by": "anthropic"},
+                {"id": "gpt-4o", "name": "GPT-4o", "owned_by": "openai"},
+            ]
+        }
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = models_data
+
+        with patch.object(backend._client, "get", new_callable=AsyncMock, return_value=mock_response):
+            result = await backend.list_models()
+
+        assert len(result) == 2
+        assert result[0]["id"] == "claude-sonnet-4.5"
+        assert result[1]["id"] == "gpt-4o"
+
+    @pytest.mark.anyio
+    async def test_http_error_returns_empty(self, backend):
+        """Non-200 response returns empty list."""
+        mock_response = MagicMock()
+        mock_response.status_code = 403
+
+        with patch.object(backend._client, "get", new_callable=AsyncMock, return_value=mock_response):
+            result = await backend.list_models()
+
+        assert result == []
+
+    @pytest.mark.anyio
+    async def test_network_error_returns_empty(self, backend):
+        """Network exception returns empty list."""
+        with patch.object(backend._client, "get", new_callable=AsyncMock, side_effect=httpx.ConnectError("failed")):
+            result = await backend.list_models()
+
+        assert result == []
+
+    @pytest.mark.anyio
+    async def test_missing_data_key_returns_empty(self, backend):
+        """Response without 'data' key returns empty list."""
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"object": "list"}
+
+        with patch.object(backend._client, "get", new_callable=AsyncMock, return_value=mock_response):
+            result = await backend.list_models()
+
+        assert result == []
+
+
 # --- _map_http_error ---
 
 

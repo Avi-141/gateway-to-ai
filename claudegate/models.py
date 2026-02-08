@@ -1,5 +1,7 @@
 """Model mappings from Anthropic model names to Bedrock/Copilot model IDs."""
 
+from typing import Any
+
 from .config import BEDROCK_REGION_PREFIX
 
 # Default model when no match found
@@ -93,18 +95,15 @@ COPILOT_MODEL_MAP = {
 
 # Map OpenAI-native model names to Copilot model IDs (used for /v1/chat/completions direct passthrough)
 # Source: https://docs.github.com/copilot/reference/ai-models/supported-models
+# NOTE: This is a fallback only — when dynamic models are fetched at startup, those are used instead.
 COPILOT_OPENAI_MODEL_MAP: dict[str, str] = {
     # Claude models (Copilot display names)
     "claude-opus-4.6": "claude-opus-4.6",
     "claude-opus-4.5": "claude-opus-4.5",
     "claude-opus-4.1": "claude-opus-4.1",
-    "claude-opus-4": "claude-opus-4",
     "claude-sonnet-4.5": "claude-sonnet-4.5",
     "claude-sonnet-4": "claude-sonnet-4",
     "claude-haiku-4.5": "claude-haiku-4.5",
-    "claude-3.7-sonnet": "claude-3.7-sonnet",
-    "claude-3.5-sonnet": "claude-3.5-sonnet",
-    "claude-3.5-haiku": "claude-3.5-haiku",
     # GPT-5.x series
     "gpt-5.2-codex": "gpt-5.2-codex",
     "gpt-5.2": "gpt-5.2",
@@ -118,10 +117,9 @@ COPILOT_OPENAI_MODEL_MAP: dict[str, str] = {
     # GPT-4.x series
     "gpt-4.1": "gpt-4.1",
     "gpt-4o": "gpt-4o",
-    "gpt-4o-mini": "gpt-4o-mini",
     # Gemini models
-    "gemini-3-pro": "gemini-3-pro",
-    "gemini-3-flash": "gemini-3-flash",
+    "gemini-3-pro-preview": "gemini-3-pro-preview",
+    "gemini-3-flash-preview": "gemini-3-flash-preview",
     "gemini-2.5-pro": "gemini-2.5-pro",
     # Other models
     "grok-code-fast-1": "grok-code-fast-1",
@@ -129,28 +127,61 @@ COPILOT_OPENAI_MODEL_MAP: dict[str, str] = {
 }
 
 
+# --- Dynamic Copilot Model Registry ---
+
+# Populated at startup from the Copilot /models endpoint
+_copilot_models: list[dict[str, Any]] = []
+_copilot_model_ids: set[str] = set()
+
+
+def set_copilot_models(models: list[dict[str, Any]]) -> None:
+    """Store models fetched from the Copilot API."""
+    global _copilot_models, _copilot_model_ids
+    _copilot_models = models
+    _copilot_model_ids = {m["id"] for m in models if "id" in m}
+
+
+def get_available_copilot_models() -> list[dict[str, Any]]:
+    """Return the dynamically fetched Copilot models (empty if not fetched)."""
+    return _copilot_models
+
+
 def get_copilot_openai_model(model: str) -> str:
     """Map a model name to a Copilot-compatible model ID for OpenAI passthrough.
 
-    Checks COPILOT_OPENAI_MODEL_MAP (direct match), then COPILOT_MODEL_MAP
-    (Anthropic names like claude-sonnet-4-5-20250929), then partial matches.
-    Unknown models pass through as-is.
+    When dynamic models are available (fetched from Copilot API at startup),
+    checks the dynamic registry first, then COPILOT_MODEL_MAP for Anthropic
+    versioned names. Models not found anywhere pass through as-is.
+
+    When no dynamic models are available, falls back to hardcoded maps.
     """
-    # Direct match in OpenAI map
+    # Check dynamic registry (exact match on model id)
+    if _copilot_model_ids:
+        if model in _copilot_model_ids:
+            return model
+        # Anthropic versioned name -> Copilot display name (stable mapping)
+        if model in COPILOT_MODEL_MAP:
+            resolved = COPILOT_MODEL_MAP[model]
+            if resolved in _copilot_model_ids:
+                return resolved
+        # Partial match in Anthropic->Copilot map
+        for key, value in COPILOT_MODEL_MAP.items():
+            if key in model and value in _copilot_model_ids:
+                return value
+        # Not found in dynamic registry — pass through as-is
+        # (let Copilot API reject if invalid, avoids sending wrong guessed IDs)
+        return model
+    # No dynamic models: fall back to hardcoded maps
     if model in COPILOT_OPENAI_MODEL_MAP:
         return COPILOT_OPENAI_MODEL_MAP[model]
-    # Direct match in Anthropic->Copilot map (returns Copilot display name)
     if model in COPILOT_MODEL_MAP:
         return COPILOT_MODEL_MAP[model]
-    # Partial match in Anthropic->Copilot map
     for key, value in COPILOT_MODEL_MAP.items():
         if key in model:
             return value
-    # Partial match in OpenAI map
     for key, value in COPILOT_OPENAI_MODEL_MAP.items():
         if key in model:
             return value
-    # Unknown model: pass through as-is (let Copilot API reject if invalid)
     return model
 
 
@@ -159,6 +190,8 @@ def get_copilot_model(model: str) -> tuple[str, str]:
 
     Returns (copilot_model_id, anthropic_model_name) tuple.
     The anthropic_model_name is used for response translation (model label only).
+
+    When dynamic models are available, validates against them.
     """
     # Direct match in COPILOT_MODEL_MAP (Anthropic versioned names)
     if model in COPILOT_MODEL_MAP:
@@ -167,6 +200,9 @@ def get_copilot_model(model: str) -> tuple[str, str]:
     for key, value in COPILOT_MODEL_MAP.items():
         if key in model:
             return value, key
+    # Check dynamic registry for non-Anthropic models
+    if _copilot_model_ids and model in _copilot_model_ids:
+        return model, model
     # Direct match in COPILOT_OPENAI_MODEL_MAP (GPT, Gemini, Grok, etc.)
     if model in COPILOT_OPENAI_MODEL_MAP:
         return COPILOT_OPENAI_MODEL_MAP[model], model

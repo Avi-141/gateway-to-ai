@@ -29,9 +29,11 @@ from .models import (
     COPILOT_MODEL_MAP,
     COPILOT_OPENAI_MODEL_MAP,
     add_region_prefix,
+    get_available_copilot_models,
     get_bedrock_model,
     get_copilot_model,
     get_copilot_openai_model,
+    set_copilot_models,
 )
 from .openai_translate import (
     ReverseStreamTranslator,
@@ -91,6 +93,13 @@ async def lifespan(app: FastAPI):
         auth = CopilotAuth(github_token)
         _copilot_backend = CopilotBackend(auth, timeout=COPILOT_TIMEOUT)
         logger.info("Copilot backend initialized")
+
+        models = await _copilot_backend.list_models()
+        if models:
+            set_copilot_models(models)
+            logger.info(f"Loaded {len(models)} models from Copilot API")
+        else:
+            logger.warning("No models fetched from Copilot API, using hardcoded maps")
 
     needs_bedrock = BACKEND_TYPE == "bedrock" or FALLBACK_BACKEND == "bedrock"
     if needs_bedrock:
@@ -585,42 +594,59 @@ async def get_version() -> dict[str, str]:
     return {"version": __version__}
 
 
+def _infer_owned_by(model_id: str) -> str:
+    """Infer the owned_by field from a model ID prefix."""
+    if model_id.startswith(("gpt-", "o1-", "o3-", "o4-")):
+        return "openai"
+    elif model_id.startswith("gemini-"):
+        return "google"
+    elif model_id.startswith("grok-"):
+        return "xai"
+    elif model_id.startswith("claude-"):
+        return "anthropic"
+    return "other"
+
+
 @app.get("/v1/models")
 async def list_models() -> dict[str, Any]:
     """Return available models in OpenAI-compatible format.
 
     Compatible with both Open WebUI (expects object/data[].object) and
     Claude Code (only reads data[].id).
-    When Copilot is the backend, includes both Claude and non-Claude models.
+    When Copilot is the backend, uses dynamically fetched models if available,
+    otherwise falls back to hardcoded maps.
     """
     if BACKEND_TYPE == "copilot":
-        # Combine Anthropic-name models and OpenAI-native models
-        all_model_ids: dict[str, str] = {}
-        copilot_ids = set(COPILOT_MODEL_MAP.values())
-        for model_id in COPILOT_MODEL_MAP:
-            all_model_ids[model_id] = "anthropic"
-        for model_id in COPILOT_OPENAI_MODEL_MAP:
-            if model_id not in all_model_ids and model_id not in copilot_ids:
-                if model_id.startswith(("gpt-",)):
-                    owned_by = "openai"
-                elif model_id.startswith("gemini-"):
-                    owned_by = "google"
-                elif model_id.startswith("grok-"):
-                    owned_by = "xai"
-                elif model_id.startswith("claude-"):
-                    owned_by = "anthropic"
-                else:
-                    owned_by = "other"
-                all_model_ids[model_id] = owned_by
-        models = [
-            {
-                "id": model_id,
-                "object": "model",
-                "created": 1700000000,
-                "owned_by": owned_by,
-            }
-            for model_id, owned_by in all_model_ids.items()
-        ]
+        dynamic_models = get_available_copilot_models()
+        if dynamic_models:
+            models = [
+                {
+                    "id": m["id"],
+                    "object": "model",
+                    "created": m.get("created_at", 1700000000),
+                    "owned_by": m.get("owned_by", _infer_owned_by(m["id"])),
+                }
+                for m in dynamic_models
+                if "id" in m
+            ]
+        else:
+            # Fallback to hardcoded maps
+            all_model_ids: dict[str, str] = {}
+            copilot_ids = set(COPILOT_MODEL_MAP.values())
+            for model_id in COPILOT_MODEL_MAP:
+                all_model_ids[model_id] = "anthropic"
+            for model_id in COPILOT_OPENAI_MODEL_MAP:
+                if model_id not in all_model_ids and model_id not in copilot_ids:
+                    all_model_ids[model_id] = _infer_owned_by(model_id)
+            models = [
+                {
+                    "id": model_id,
+                    "object": "model",
+                    "created": 1700000000,
+                    "owned_by": owned_by,
+                }
+                for model_id, owned_by in all_model_ids.items()
+            ]
     else:
         models = [
             {
