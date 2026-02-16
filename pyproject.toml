@@ -8,9 +8,6 @@ authors = [
     { name = "Daniel Schmidt" }
 ]
 keywords = ["anthropic", "bedrock", "claude", "proxy", "aws", "copilot", "github", "claudegate"]
-
-[project.urls]
-Repository = "https://github.com/Avi-141/gateway-to-ai"
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -27,6 +24,9 @@ dependencies = [
     "tiktoken>=0.12.0",
     "uvicorn>=0.34.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/Avi-141/gateway-to-ai"
 
 [project.optional-dependencies]
 dev = [
