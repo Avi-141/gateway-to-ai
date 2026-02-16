@@ -103,7 +103,7 @@ These models work via both endpoints when using the Copilot backend. On `/v1/cha
 
 ```bash
 # Install as a global tool
-uv tool install git+https://github.com/yourusername/claudegate.git
+uv tool install git+https://github.com/Avi-141/gateway-to-ai.git
 
 # Run anytime
 claudegate
@@ -113,13 +113,13 @@ claudegate
 
 ```bash
 # One-liner using uvx
-uvx --from git+https://github.com/yourusername/claudegate.git claudegate
+uvx --from git+https://github.com/Avi-141/gateway-to-ai.git claudegate
 ```
 
 ### Development
 
 ```bash
-git clone https://github.com/yourusername/claudegate.git
+git clone https://github.com/Avi-141/gateway-to-ai.git
 cd claudegate
 uv run claudegate
 ```
