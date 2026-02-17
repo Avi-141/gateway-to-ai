@@ -3,12 +3,13 @@
 import json
 import sys
 from io import BytesIO
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from botocore.exceptions import ReadTimeoutError
+from botocore.exceptions import ClientError, ReadTimeoutError
 
 from claudegate.app import _count_content_tokens, _error_response, _validate_request
+from claudegate.errors import CopilotHttpError, TransientBackendError
 from tests.conftest import make_client_error
 
 # Get the actual module object (not the FastAPI app re-exported by __init__)
@@ -261,6 +262,436 @@ class TestMessagesRoute:
         # anthropic_model should be "gpt-5.1-codex" (label for response)
         assert call_kwargs[0][4] == "gpt-5.1-codex"  # anthropic_model positional arg
 
+    @pytest.mark.anyio
+    async def test_copilot_http_error(self, async_client, monkeypatch):
+        """CopilotHttpError from primary should return error response."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        mock_backend = AsyncMock()
+        mock_backend.handle_messages.side_effect = CopilotHttpError(403, "Forbidden")
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+
+        resp = await async_client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-sonnet-4-5-20250929",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert resp.status_code == 403
+        assert resp.json()["error"]["message"] == "Forbidden"
+
+    @pytest.mark.anyio
+    async def test_runtime_error_auth(self, async_client, monkeypatch):
+        """RuntimeError from copilot should return 401 auth error."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(app_module, "_copilot_backend", None)
+
+        resp = await async_client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-sonnet-4-5-20250929",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert resp.status_code == 401
+
+    @pytest.mark.anyio
+    async def test_generic_exception(self, async_client, monkeypatch):
+        """Unexpected exception from copilot primary should return 500."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        mock_backend = AsyncMock()
+        mock_backend.handle_messages.side_effect = ValueError("unexpected")
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+
+        resp = await async_client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-sonnet-4-5-20250929",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert resp.status_code == 500
+        assert "unexpected" in resp.json()["error"]["message"]
+
+
+# --- Streaming Error Handling ---
+
+
+class TestStreamingErrors:
+    @pytest.mark.anyio
+    async def test_expired_credentials_mid_stream(self, async_client, monkeypatch):
+        """Expired credentials during streaming should inject error content blocks."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+
+        # Create a mock response whose body iterator raises ExpiredTokenException
+        expired_error = ClientError(
+            error_response={"Error": {"Code": "ExpiredTokenException", "Message": "Token expired"}},
+            operation_name="InvokeModelWithResponseStream",
+        )
+
+        def failing_body():
+            # Yield one good chunk, then raise
+            chunk_data = json.dumps({"type": "message_start", "message": {}}).encode()
+            yield {"chunk": {"bytes": chunk_data}}
+            raise expired_error
+
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model_with_response_stream.return_value = {"body": failing_body()}
+
+        with (
+            patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
+            patch("claudegate.app.reset_bedrock_client") as mock_reset,
+        ):
+            resp = await async_client.post(
+                "/v1/messages",
+                json={
+                    "model": "claude-sonnet-4-5-20250929",
+                    "max_tokens": 100,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                },
+            )
+
+        assert resp.status_code == 200
+        text = resp.text
+        assert "content_block_start" in text
+        assert "content_block_delta" in text
+        assert "Authentication Error" in text
+        mock_reset.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_generic_client_error_mid_stream(self, async_client, monkeypatch):
+        """Non-expired ClientError during streaming should yield an error event."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+
+        generic_error = ClientError(
+            error_response={"Error": {"Code": "InternalServerException", "Message": "Internal error"}},
+            operation_name="InvokeModelWithResponseStream",
+        )
+
+        def failing_body():
+            chunk_data = json.dumps({"type": "message_start", "message": {}}).encode()
+            yield {"chunk": {"bytes": chunk_data}}
+            raise generic_error
+
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model_with_response_stream.return_value = {"body": failing_body()}
+
+        with patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock):
+            resp = await async_client.post(
+                "/v1/messages",
+                json={
+                    "model": "claude-sonnet-4-5-20250929",
+                    "max_tokens": 100,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                },
+            )
+
+        assert resp.status_code == 200
+        text = resp.text
+        assert "event: error" in text
+
+    @pytest.mark.anyio
+    async def test_generic_exception_mid_stream(self, async_client, monkeypatch):
+        """Non-ClientError exception during streaming should yield an error event."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+
+        def failing_body():
+            chunk_data = json.dumps({"type": "message_start", "message": {}}).encode()
+            yield {"chunk": {"bytes": chunk_data}}
+            raise RuntimeError("connection lost")
+
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model_with_response_stream.return_value = {"body": failing_body()}
+
+        with patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock):
+            resp = await async_client.post(
+                "/v1/messages",
+                json={
+                    "model": "claude-sonnet-4-5-20250929",
+                    "max_tokens": 100,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                },
+            )
+
+        assert resp.status_code == 200
+        text = resp.text
+        assert "event: error" in text
+        assert "connection lost" in text
+
+
+# --- Fallback Error Handlers (/v1/messages) ---
+
+
+class TestMessagesFallbackErrors:
+    """Cover fallback error branches in /v1/messages (lines 464-478)."""
+
+    @pytest.mark.anyio
+    async def test_fallback_copilot_http_error(self, async_client, monkeypatch):
+        """Primary transient -> fallback CopilotHttpError."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.side_effect = make_client_error("ThrottlingException", "rate limited")
+
+        mock_copilot = AsyncMock()
+        mock_copilot.handle_messages.side_effect = CopilotHttpError(403, "Forbidden")
+
+        with (
+            patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
+            patch("claudegate.app._copilot_backend", mock_copilot),
+        ):
+            resp = await async_client.post(
+                "/v1/messages",
+                json={
+                    "model": "claude-sonnet-4-5-20250929",
+                    "max_tokens": 100,
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+            )
+
+        assert resp.status_code == 403
+        assert resp.json()["error"]["message"] == "Forbidden"
+
+    @pytest.mark.anyio
+    async def test_fallback_runtime_error(self, async_client, monkeypatch):
+        """Primary transient -> fallback RuntimeError (auth)."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.side_effect = make_client_error("ThrottlingException", "rate limited")
+
+        mock_copilot = AsyncMock()
+        mock_copilot.handle_messages.side_effect = RuntimeError("Copilot backend not initialized")
+
+        with (
+            patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
+            patch("claudegate.app._copilot_backend", mock_copilot),
+        ):
+            resp = await async_client.post(
+                "/v1/messages",
+                json={
+                    "model": "claude-sonnet-4-5-20250929",
+                    "max_tokens": 100,
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+            )
+
+        assert resp.status_code == 401
+        assert "authentication_error" in resp.json()["error"]["type"]
+
+    @pytest.mark.anyio
+    async def test_fallback_generic_exception(self, async_client, monkeypatch):
+        """Primary transient -> fallback unexpected exception."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.side_effect = make_client_error("ThrottlingException", "rate limited")
+
+        mock_copilot = AsyncMock()
+        mock_copilot.handle_messages.side_effect = ValueError("something broke")
+
+        with (
+            patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
+            patch("claudegate.app._copilot_backend", mock_copilot),
+        ):
+            resp = await async_client.post(
+                "/v1/messages",
+                json={
+                    "model": "claude-sonnet-4-5-20250929",
+                    "max_tokens": 100,
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+            )
+
+        assert resp.status_code == 500
+        assert "something broke" in resp.json()["error"]["message"]
+
+
+# --- Fallback Error Handlers (/v1/chat/completions) ---
+
+
+class TestChatCompletionsFallbackErrors:
+    """Cover fallback error branches in /v1/chat/completions (lines 524-551)."""
+
+    @pytest.mark.anyio
+    async def test_no_fallback_configured(self, async_client, monkeypatch):
+        """Transient error with no fallback returns OpenAI-format error."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "")
+
+        mock_copilot = AsyncMock()
+        mock_copilot.handle_openai_messages.side_effect = TransientBackendError(
+            429, "rate_limit_error", "rate limited", "copilot"
+        )
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_copilot)
+
+        resp = await async_client.post(
+            "/v1/chat/completions",
+            json={"model": "claude-sonnet-4-5-20250929", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 429
+        body = resp.json()
+        assert "error" in body
+        assert body["error"]["type"] == "server_error"
+
+    @pytest.mark.anyio
+    async def test_fallback_both_fail_transient(self, async_client, monkeypatch):
+        """Primary transient -> fallback also transient."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "bedrock")
+
+        mock_copilot = AsyncMock()
+        mock_copilot.handle_openai_messages.side_effect = TransientBackendError(
+            429, "rate_limit_error", "rate limited", "copilot"
+        )
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_copilot)
+
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.side_effect = make_client_error("ThrottlingException", "also rate limited")
+
+        with patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock):
+            resp = await async_client.post(
+                "/v1/chat/completions",
+                json={"model": "claude-sonnet-4-5-20250929", "messages": [{"role": "user", "content": "hi"}]},
+            )
+
+        assert resp.status_code == 429
+        body = resp.json()
+        assert body["error"]["type"] == "server_error"
+
+    @pytest.mark.anyio
+    async def test_fallback_copilot_http_error(self, async_client, monkeypatch):
+        """Primary transient -> fallback CopilotHttpError (OpenAI format)."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.side_effect = make_client_error("ThrottlingException", "rate limited")
+
+        mock_copilot = AsyncMock()
+        mock_copilot.handle_openai_messages.side_effect = CopilotHttpError(403, "Forbidden")
+
+        with (
+            patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
+            patch("claudegate.app._copilot_backend", mock_copilot),
+        ):
+            resp = await async_client.post(
+                "/v1/chat/completions",
+                json={"model": "claude-sonnet-4-5-20250929", "messages": [{"role": "user", "content": "hi"}]},
+            )
+
+        assert resp.status_code == 403
+        body = resp.json()
+        assert body["error"]["message"] == "Forbidden"
+        assert body["error"]["type"] == "server_error"
+
+    @pytest.mark.anyio
+    async def test_fallback_runtime_error(self, async_client, monkeypatch):
+        """Primary transient -> fallback RuntimeError (auth, OpenAI format)."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.side_effect = make_client_error("ThrottlingException", "rate limited")
+
+        mock_copilot = AsyncMock()
+        mock_copilot.handle_openai_messages.side_effect = RuntimeError("not initialized")
+
+        with (
+            patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
+            patch("claudegate.app._copilot_backend", mock_copilot),
+        ):
+            resp = await async_client.post(
+                "/v1/chat/completions",
+                json={"model": "claude-sonnet-4-5-20250929", "messages": [{"role": "user", "content": "hi"}]},
+            )
+
+        assert resp.status_code == 401
+        body = resp.json()
+        assert body["error"]["type"] == "authentication_error"
+
+    @pytest.mark.anyio
+    async def test_fallback_generic_exception(self, async_client, monkeypatch):
+        """Primary transient -> fallback unexpected exception (OpenAI format)."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.side_effect = make_client_error("ThrottlingException", "rate limited")
+
+        mock_copilot = AsyncMock()
+        mock_copilot.handle_openai_messages.side_effect = ValueError("something broke")
+
+        with (
+            patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
+            patch("claudegate.app._copilot_backend", mock_copilot),
+        ):
+            resp = await async_client.post(
+                "/v1/chat/completions",
+                json={"model": "claude-sonnet-4-5-20250929", "messages": [{"role": "user", "content": "hi"}]},
+            )
+
+        assert resp.status_code == 500
+        body = resp.json()
+        assert "something broke" in body["error"]["message"]
+
+    @pytest.mark.anyio
+    async def test_primary_copilot_http_error(self, async_client, monkeypatch):
+        """Primary CopilotHttpError (non-transient) returns OpenAI-format error."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+
+        mock_copilot = AsyncMock()
+        mock_copilot.handle_openai_messages.side_effect = CopilotHttpError(403, "Forbidden")
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_copilot)
+
+        resp = await async_client.post(
+            "/v1/chat/completions",
+            json={"model": "claude-sonnet-4-5-20250929", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 403
+        body = resp.json()
+        assert body["error"]["type"] == "server_error"
+
+    @pytest.mark.anyio
+    async def test_primary_runtime_error(self, async_client, monkeypatch):
+        """Primary RuntimeError returns 401 in OpenAI format."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(app_module, "_copilot_backend", None)
+
+        resp = await async_client.post(
+            "/v1/chat/completions",
+            json={"model": "claude-sonnet-4-5-20250929", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 401
+        body = resp.json()
+        assert body["error"]["type"] == "authentication_error"
+
+    @pytest.mark.anyio
+    async def test_primary_generic_exception(self, async_client, monkeypatch):
+        """Primary unexpected exception returns 500 in OpenAI format."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+
+        mock_copilot = AsyncMock()
+        mock_copilot.handle_openai_messages.side_effect = ValueError("unexpected")
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_copilot)
+
+        resp = await async_client.post(
+            "/v1/chat/completions",
+            json={"model": "claude-sonnet-4-5-20250929", "messages": [{"role": "user", "content": "hi"}]},
+        )
+        assert resp.status_code == 500
+        body = resp.json()
+        assert "unexpected" in body["error"]["message"]
+
 
 # --- GET /health ---
 
@@ -295,6 +726,65 @@ class TestHealthRoute:
         body = resp.json()
         assert body["status"] == "degraded"
         assert "error" in body["bedrock"]
+
+    @pytest.mark.anyio
+    async def test_check_copilot_ok(self, async_client, monkeypatch):
+        """Deep copilot health check returns ok when token is valid."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+
+        mock_auth = AsyncMock()
+        mock_auth.get_token.return_value = "valid-token"
+        mock_backend = AsyncMock()
+        mock_backend._auth = mock_auth
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+
+        resp = await async_client.get("/health?check_copilot=true")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["copilot"] == "ok"
+
+    @pytest.mark.anyio
+    async def test_check_copilot_no_token(self, async_client, monkeypatch):
+        """Deep copilot health check returns 'no token' when token is None."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+
+        mock_auth = AsyncMock()
+        mock_auth.get_token.return_value = None
+        mock_backend = AsyncMock()
+        mock_backend._auth = mock_auth
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+
+        resp = await async_client.get("/health?check_copilot=true")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["copilot"] == "no token"
+
+    @pytest.mark.anyio
+    async def test_check_copilot_error(self, async_client, monkeypatch):
+        """Deep copilot health check returns degraded on exception."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+
+        mock_auth = AsyncMock()
+        mock_auth.get_token.side_effect = RuntimeError("auth failed")
+        mock_backend = AsyncMock()
+        mock_backend._auth = mock_auth
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+
+        resp = await async_client.get("/health?check_copilot=true")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["status"] == "degraded"
+        assert "error" in body["copilot"]
+
+    @pytest.mark.anyio
+    async def test_health_with_fallback(self, async_client, monkeypatch):
+        """Health check includes fallback field when configured."""
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+
+        resp = await async_client.get("/health")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["fallback"] == "copilot"
 
 
 # --- GET /version ---
