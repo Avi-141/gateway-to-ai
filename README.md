@@ -94,6 +94,7 @@ These models work via both endpoints when using the Copilot backend. On `/v1/cha
 ## Prerequisites
 
 - Python 3.11+
+- [uv](https://docs.astral.sh/uv/getting-started/installation/) — install with `curl -LsSf https://astral.sh/uv/install.sh | sh` (macOS/Linux) or `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"` (Windows)
 - **Copilot backend (default):** GitHub account with an active GitHub Copilot subscription
 - **Bedrock backend:** AWS credentials configured (via `aws configure`, environment variables, or IAM role) and access to Anthropic models in AWS Bedrock
 
