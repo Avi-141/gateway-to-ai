@@ -103,18 +103,33 @@ These models work via both endpoints when using the Copilot backend. On `/v1/cha
 ### Install globally with uv
 
 ```bash
-# Install as a global tool
-uv tool install git+https://github.com/Avi-141/gateway-to-ai.git
+# Install a specific version (recommended)
+uv tool install git+https://github.com/Avi-141/gateway-to-ai.git@v0.1.0
 
-# Run anytime
-claudegate
+# Install latest from master
+uv tool install git+https://github.com/Avi-141/gateway-to-ai.git
 ```
 
 ### Run without installing
 
 ```bash
-# One-liner using uvx
+# Specific version
+uvx --from git+https://github.com/Avi-141/gateway-to-ai.git@v0.1.0 claudegate
+
+# Latest from master
 uvx --from git+https://github.com/Avi-141/gateway-to-ai.git claudegate
+```
+
+After installing, run `claudegate` once manually in your terminal to complete the GitHub OAuth device flow. The token is persisted to `~/.config/claudegate/github_token` so subsequent starts (including autostart via `claudegate install`) authenticate automatically.
+
+### Upgrade
+
+```bash
+# Upgrade to a specific version
+uv tool install --force git+https://github.com/Avi-141/gateway-to-ai.git@v0.2.0
+
+# Upgrade to latest
+uv tool install --force git+https://github.com/Avi-141/gateway-to-ai.git
 ```
 
 ### Development
