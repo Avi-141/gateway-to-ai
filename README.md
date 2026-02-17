@@ -237,6 +237,14 @@ cp contrib/systemd/claudegate.service ~/.config/systemd/user/
 systemctl --user enable --now claudegate
 ```
 
+**Windows (Task Scheduler):**
+```powershell
+# Create a scheduled task that starts claudegate at logon
+$action = New-ScheduledTaskAction -Execute "claudegate"
+$trigger = New-ScheduledTaskTrigger -AtLogOn
+Register-ScheduledTask -TaskName "Claudegate" -Action $action -Trigger $trigger -Description "Claudegate - Anthropic API proxy"
+```
+
 ### Configure Open WebUI
 
 Point Open WebUI at claudegate as an OpenAI-compatible backend:
