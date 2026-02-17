@@ -1,5 +1,9 @@
 # claudegate
 
+![Version](https://img.shields.io/badge/version-0.1.0-blue)
+![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+![License](https://img.shields.io/badge/license-UNLICENSED-green)
+
 A lightweight proxy that translates Anthropic API requests to GitHub Copilot or AWS Bedrock, enabling Claude Code, Open WebUI, and other Anthropic or OpenAI API clients to use either backend.
 
 ## Use Cases
