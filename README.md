@@ -129,11 +129,11 @@ uv run claudegate
 ### Backend Selection
 
 ```bash
-# Use AWS Bedrock (default)
-export CLAUDEGATE_BACKEND="bedrock"
-
-# Use GitHub Copilot
+# Use GitHub Copilot (default)
 export CLAUDEGATE_BACKEND="copilot"
+
+# Use AWS Bedrock
+export CLAUDEGATE_BACKEND="bedrock"
 
 # Use Copilot with Bedrock as fallback (retries on 429, 5xx errors)
 export CLAUDEGATE_BACKEND="copilot,bedrock"
@@ -184,14 +184,14 @@ export CLAUDEGATE_LOG_LEVEL="INFO"  # default: INFO
 
 ### Start the proxy
 
-**With Bedrock (default):**
+**With Copilot (default):**
 ```bash
 claudegate
 ```
 
-**With Copilot:**
+**With Bedrock:**
 ```bash
-CLAUDEGATE_BACKEND=copilot claudegate
+CLAUDEGATE_BACKEND=bedrock claudegate
 ```
 
 **With fallback (Copilot primary, Bedrock fallback):**

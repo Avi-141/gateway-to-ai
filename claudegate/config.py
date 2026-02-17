@@ -96,7 +96,7 @@ logger = logging.getLogger("claudegate")
 BEDROCK_REGION_PREFIX = os.environ.get("BEDROCK_REGION_PREFIX", DEFAULT_BEDROCK_REGION_PREFIX)
 
 # Backend selection: "bedrock", "copilot", or comma-separated "copilot,bedrock" for fallback
-_backends = [b.strip() for b in os.environ.get("CLAUDEGATE_BACKEND", "bedrock").lower().split(",") if b.strip()]
+_backends = [b.strip() for b in os.environ.get("CLAUDEGATE_BACKEND", "copilot").lower().split(",") if b.strip()]
 BACKEND_TYPE = _backends[0]  # primary backend
 FALLBACK_BACKEND = _backends[1] if len(_backends) > 1 else ""  # optional fallback
 FALLBACK_ON_ERRORS = {429, 500, 502, 503, 504}
