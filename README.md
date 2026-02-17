@@ -67,9 +67,8 @@ When using the Copilot backend, non-Claude models are available via both `/v1/me
 | gpt-5 | OpenAI |
 | gpt-4.1 | OpenAI |
 | gpt-4o | OpenAI |
-| gpt-4o-mini | OpenAI |
-| gemini-3-pro | Google |
-| gemini-3-flash | Google |
+| gemini-3-pro-preview | Google |
+| gemini-3-flash-preview | Google |
 | gemini-2.5-pro | Google |
 | grok-code-fast-1 | xAI |
 | raptor-mini | Other |
