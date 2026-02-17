@@ -16,6 +16,9 @@ DEFAULT_READ_TIMEOUT = 300  # 5 minutes for slow models like Opus
 # Logging
 LOG_LEVEL = os.environ.get("CLAUDEGATE_LOG_LEVEL", DEFAULT_LOG_LEVEL).upper()
 
+# Respect NO_COLOR convention (https://no-color.org)
+USE_COLORS = "NO_COLOR" not in os.environ
+
 # Unified logging configuration using uvicorn's ColourizedFormatter
 # This ensures both uvicorn and app logs have the same rich format with colors
 LOGGING_CONFIG = {
@@ -26,13 +29,13 @@ LOGGING_CONFIG = {
             "()": "uvicorn.logging.ColourizedFormatter",
             "fmt": "%(levelprefix)s %(asctime)s - %(name)s - %(message)s",
             "datefmt": "%Y-%m-%d %H:%M:%S",
-            "use_colors": True,
+            "use_colors": USE_COLORS,
         },
         "access": {
             "()": "uvicorn.logging.AccessFormatter",
             "fmt": '%(levelprefix)s %(asctime)s - %(client_addr)s - "%(request_line)s" %(status_code)s',
             "datefmt": "%Y-%m-%d %H:%M:%S",
-            "use_colors": True,
+            "use_colors": USE_COLORS,
         },
     },
     "handlers": {

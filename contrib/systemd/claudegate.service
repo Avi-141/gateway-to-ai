@@ -11,6 +11,7 @@ RestartSec=5
 # Add AWS_REGION here if using the Bedrock backend
 # Environment=AWS_REGION=us-west-2
 Environment=CLAUDEGATE_LOG_LEVEL=INFO
+Environment=NO_COLOR=1
 
 # Logging
 StandardOutput=journal

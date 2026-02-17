@@ -178,6 +178,9 @@ export CLAUDEGATE_PORT="8080"     # default: 8080
 
 # Optional: Log level (DEBUG, INFO, WARNING, ERROR)
 export CLAUDEGATE_LOG_LEVEL="INFO"  # default: INFO
+
+# Optional: Disable colored log output (https://no-color.org)
+export NO_COLOR=1
 ```
 
 ## Usage
