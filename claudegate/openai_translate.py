@@ -249,6 +249,7 @@ class ReverseStreamTranslator:
         self.created = int(time.time())
         self.tool_call_index = 0
         self.sent_role = False
+        self.current_block_type: str | None = None
 
     def _chunk(self, delta: dict[str, Any], finish_reason: str | None = None) -> str:
         """Format an OpenAI SSE chunk."""
@@ -278,6 +279,7 @@ class ReverseStreamTranslator:
 
         elif event_type == "content_block_start":
             block = data.get("content_block", {})
+            self.current_block_type = block.get("type")
             if block.get("type") == "tool_use":
                 # Emit tool call start chunk
                 tool_call = {
@@ -305,9 +307,9 @@ class ReverseStreamTranslator:
                 chunks += self._chunk({"tool_calls": [tool_call]})
 
         elif event_type == "content_block_stop":
-            # If we were in a tool call block, advance the index
-            # (we check by looking at the block index in data, but simpler to just track)
-            pass
+            if self.current_block_type == "tool_use":
+                self.tool_call_index += 1
+            self.current_block_type = None
 
         elif event_type == "message_delta":
             delta_data = data.get("delta", {})

@@ -532,6 +532,57 @@ class TestReverseStreamTranslator:
         assert '"finish_reason": "tool_calls"' in all_output
         assert "data: [DONE]" in all_output
 
+    def test_multiple_tool_calls_sequential_indices(self):
+        t = ReverseStreamTranslator("model")
+        all_output = ""
+
+        all_output += t.translate_event("message_start", {"type": "message_start", "message": {}})
+        # First tool call
+        all_output += t.translate_event(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "tool_use", "id": "t1", "name": "fn1", "input": {}},
+            },
+        )
+        all_output += t.translate_event(
+            "content_block_delta",
+            {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{}"}},
+        )
+        all_output += t.translate_event("content_block_stop", {"type": "content_block_stop", "index": 0})
+        # Second tool call
+        all_output += t.translate_event(
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {"type": "tool_use", "id": "t2", "name": "fn2", "input": {}},
+            },
+        )
+        all_output += t.translate_event(
+            "content_block_delta",
+            {"type": "content_block_delta", "index": 1, "delta": {"type": "input_json_delta", "partial_json": "{}"}},
+        )
+        all_output += t.translate_event("content_block_stop", {"type": "content_block_stop", "index": 1})
+        all_output += t.translate_event(
+            "message_delta", {"type": "message_delta", "delta": {"stop_reason": "tool_use"}}
+        )
+        all_output += t.translate_event("message_stop", {"type": "message_stop"})
+
+        # Parse all SSE chunks and collect tool call indices
+        indices = []
+        for line in all_output.split("\n"):
+            if line.startswith("data: ") and line.strip() != "data: [DONE]":
+                chunk = json.loads(line[6:])
+                delta = chunk["choices"][0]["delta"]
+                if "tool_calls" in delta:
+                    indices.append(delta["tool_calls"][0]["index"])
+
+        # First tool call chunks should have index 0, second should have index 1
+        assert 0 in indices
+        assert 1 in indices
+
     def test_translate_sse_raw(self):
         t = ReverseStreamTranslator("model")
         raw = (
