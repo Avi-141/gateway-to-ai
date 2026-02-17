@@ -1,5 +1,5 @@
 [Unit]
-Description=Claudegate - Anthropic API to AWS Bedrock proxy
+Description=Claudegate - Anthropic API proxy
 After=network.target
 
 [Service]
@@ -8,7 +8,8 @@ User=%i
 ExecStart=%h/.local/bin/claudegate
 Restart=on-failure
 RestartSec=5
-Environment=AWS_REGION=us-west-2
+# Add AWS_REGION here if using the Bedrock backend
+# Environment=AWS_REGION=us-west-2
 Environment=CLAUDEGATE_LOG_LEVEL=INFO
 
 # Logging

@@ -1,19 +1,19 @@
 # claudegate
 
-A lightweight proxy that translates Anthropic API requests to AWS Bedrock or GitHub Copilot, enabling Claude Code, Open WebUI, and other Anthropic or OpenAI API clients to use either backend.
+A lightweight proxy that translates Anthropic API requests to GitHub Copilot or AWS Bedrock, enabling Claude Code, Open WebUI, and other Anthropic or OpenAI API clients to use either backend.
 
 ## Use Cases
 
+- **Claude Code + GitHub Copilot** - Run Claude Code using your GitHub Copilot subscription as the backend
 - **[Auto-Claude](https://github.com/AndyMik90/Auto-Claude)** - Run Auto-Claude with AWS Bedrock or GitHub Copilot
 - **Any Anthropic API client** - Redirect to Bedrock or Copilot without code changes
-- **GitHub Copilot users** - Use your Copilot subscription to power Claude Code
 - **[Open WebUI](https://github.com/open-webui/open-webui)** - Use Open WebUI with Bedrock or Copilot via the OpenAI-compatible API
 - **Any OpenAI API client** - Use the `/v1/chat/completions` endpoint with any OpenAI-format client
 
 ## Features
 
-- Two backends: **AWS Bedrock** (native Anthropic format) and **GitHub Copilot** (OpenAI-compatible, auto-translated)
-- Backend selected via `CLAUDEGATE_BACKEND=bedrock|copilot` environment variable
+- Two backends: **GitHub Copilot** (default, OpenAI-compatible, auto-translated) and **AWS Bedrock** (native Anthropic format)
+- Backend selected via `CLAUDEGATE_BACKEND=copilot|bedrock` environment variable
 - **Cross-backend fallback**: set `CLAUDEGATE_BACKEND=copilot,bedrock` to automatically retry on the other backend when the primary returns a transient error (429, 5xx)
 - Supports streaming and non-streaming responses
 - Extended thinking support (Bedrock)
@@ -30,25 +30,6 @@ A lightweight proxy that translates Anthropic API requests to AWS Bedrock or Git
 - **Direct Copilot passthrough** — zero-translation path for `/v1/chat/completions` when Copilot is the backend
 
 ## Supported Models
-
-### Bedrock Backend
-
-| Anthropic Model | Bedrock Model |
-|-----------------|---------------|
-| claude-opus-4-6-20250515 | us.anthropic.claude-opus-4-6-20250515-v1:0 |
-| claude-opus-4-5-20251101 | us.anthropic.claude-opus-4-5-20251101-v1:0 |
-| claude-opus-4-1-20250805 | us.anthropic.claude-opus-4-1-20250805-v1:0 |
-| claude-opus-4-20250514 | us.anthropic.claude-opus-4-20250514-v1:0 |
-| claude-sonnet-4-5-20250929 | us.anthropic.claude-sonnet-4-5-20250929-v1:0 |
-| claude-sonnet-4-20250514 | us.anthropic.claude-sonnet-4-20250514-v1:0 |
-| claude-3-7-sonnet-20250219 | us.anthropic.claude-3-7-sonnet-20250219-v1:0 |
-| claude-3-5-sonnet-20241022 | us.anthropic.claude-3-5-sonnet-20241022-v2:0 |
-| claude-3-5-sonnet-20240620 | us.anthropic.claude-3-5-sonnet-20240620-v1:0 |
-| claude-haiku-4-5-20251001 | us.anthropic.claude-haiku-4-5-20251001-v1:0 |
-| claude-3-5-haiku-20241022 | us.anthropic.claude-3-5-haiku-20241022-v1:0 |
-| claude-3-haiku-20240307 | us.anthropic.claude-3-haiku-20240307-v1:0 |
-| claude-3-opus-20240229 | us.anthropic.claude-3-opus-20240229-v1:0 |
-| claude-3-sonnet-20240229 | us.anthropic.claude-3-sonnet-20240229-v1:0 |
 
 ### Copilot Backend (Claude Models)
 
@@ -91,11 +72,30 @@ When using the Copilot backend, non-Claude models are available via both `/v1/me
 
 These models work via both endpoints when using the Copilot backend. On `/v1/chat/completions`, they pass through directly with zero format translations. On `/v1/messages`, requests are translated to OpenAI format and responses are translated back to Anthropic format. Model availability depends on your Copilot plan.
 
+### Bedrock Backend
+
+| Anthropic Model | Bedrock Model |
+|-----------------|---------------|
+| claude-opus-4-6-20250515 | us.anthropic.claude-opus-4-6-20250515-v1:0 |
+| claude-opus-4-5-20251101 | us.anthropic.claude-opus-4-5-20251101-v1:0 |
+| claude-opus-4-1-20250805 | us.anthropic.claude-opus-4-1-20250805-v1:0 |
+| claude-opus-4-20250514 | us.anthropic.claude-opus-4-20250514-v1:0 |
+| claude-sonnet-4-5-20250929 | us.anthropic.claude-sonnet-4-5-20250929-v1:0 |
+| claude-sonnet-4-20250514 | us.anthropic.claude-sonnet-4-20250514-v1:0 |
+| claude-3-7-sonnet-20250219 | us.anthropic.claude-3-7-sonnet-20250219-v1:0 |
+| claude-3-5-sonnet-20241022 | us.anthropic.claude-3-5-sonnet-20241022-v2:0 |
+| claude-3-5-sonnet-20240620 | us.anthropic.claude-3-5-sonnet-20240620-v1:0 |
+| claude-haiku-4-5-20251001 | us.anthropic.claude-haiku-4-5-20251001-v1:0 |
+| claude-3-5-haiku-20241022 | us.anthropic.claude-3-5-haiku-20241022-v1:0 |
+| claude-3-haiku-20240307 | us.anthropic.claude-3-haiku-20240307-v1:0 |
+| claude-3-opus-20240229 | us.anthropic.claude-3-opus-20240229-v1:0 |
+| claude-3-sonnet-20240229 | us.anthropic.claude-3-sonnet-20240229-v1:0 |
+
 ## Prerequisites
 
 - Python 3.11+
+- **Copilot backend (default):** GitHub account with an active GitHub Copilot subscription
 - **Bedrock backend:** AWS credentials configured (via `aws configure`, environment variables, or IAM role) and access to Anthropic models in AWS Bedrock
-- **Copilot backend:** GitHub account with an active GitHub Copilot subscription
 
 ## Installation
 
@@ -142,6 +142,16 @@ export CLAUDEGATE_BACKEND="copilot,bedrock"
 export CLAUDEGATE_BACKEND="bedrock,copilot"
 ```
 
+### Copilot Configuration
+
+```bash
+# GitHub OAuth token (if not set, interactive device flow runs at startup)
+export GITHUB_TOKEN="gho_xxxxxxxxxxxx"
+
+# Optional: HTTP timeout for Copilot requests
+export COPILOT_TIMEOUT="300"  # default: 300 (seconds)
+```
+
 ### Bedrock Configuration
 
 ```bash
@@ -157,16 +167,6 @@ export BEDROCK_REGION_PREFIX="us"  # default: us (options: us, eu, apac)
 
 # Optional: Read timeout for slow models (Opus can be slow)
 export BEDROCK_READ_TIMEOUT="300"  # default: 300 (seconds)
-```
-
-### Copilot Configuration
-
-```bash
-# GitHub OAuth token (if not set, interactive device flow runs at startup)
-export GITHUB_TOKEN="gho_xxxxxxxxxxxx"
-
-# Optional: HTTP timeout for Copilot requests
-export COPILOT_TIMEOUT="300"  # default: 300 (seconds)
 ```
 
 ### General Configuration
@@ -226,14 +226,12 @@ nohup claudegate > ~/.claudegate.log 2>&1 &
 
 **macOS (auto-start on login):**
 ```bash
-# Edit the plist to set your AWS_REGION, then:
 cp contrib/launchd/com.claudegate.plist ~/Library/LaunchAgents/
 launchctl load ~/Library/LaunchAgents/com.claudegate.plist
 ```
 
 **Linux (systemd user service):**
 ```bash
-# Edit the service file to set your AWS_REGION, then:
 mkdir -p ~/.config/systemd/user
 cp contrib/systemd/claudegate.service ~/.config/systemd/user/
 systemctl --user enable --now claudegate

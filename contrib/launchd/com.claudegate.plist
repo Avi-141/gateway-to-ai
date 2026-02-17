@@ -18,10 +18,9 @@
     <string>/tmp/claudegate.log</string>
     <key>StandardErrorPath</key>
     <string>/tmp/claudegate.log</string>
+    <!-- Add AWS_REGION here if using the Bedrock backend -->
     <key>EnvironmentVariables</key>
     <dict>
-        <key>AWS_REGION</key>
-        <string>us-west-2</string>
         <key>PATH</key>
         <string>/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin</string>
     </dict>
