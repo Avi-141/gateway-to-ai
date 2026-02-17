@@ -70,6 +70,7 @@ ignore = ["S104"]  # 0.0.0.0 binding — intentional for proxy server
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105"]  # assert and test fixture strings are expected in tests
+"claudegate/service.py" = ["S603", "S607"]  # subprocess calls for service management
 
 [tool.hatch.build.targets.wheel]
 packages = ["claudegate"]

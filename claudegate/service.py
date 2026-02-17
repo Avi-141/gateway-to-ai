@@ -1,0 +1,464 @@
+"""Service management for claudegate autostart (install/uninstall/status)."""
+
+import os
+import platform
+import shutil
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+from xml.sax.saxutils import escape as xml_escape
+
+# Environment variable prefixes to capture with --env
+_ENV_PREFIXES = ("CLAUDEGATE_", "AWS_", "BEDROCK_")
+_ENV_EXACT = ("GITHUB_TOKEN",)
+
+# Service identifiers
+_LAUNCHD_LABEL = "com.claudegate"
+_SYSTEMD_UNIT = "claudegate.service"
+_SCHTASKS_NAME = "Claudegate"
+
+
+# -- Output helpers ----------------------------------------------------------
+
+
+def _header(msg: str) -> None:
+    print(f"\n{msg}")
+
+
+def _step(msg: str) -> None:
+    print(f"  {msg}", end="", flush=True)
+
+
+def _ok(msg: str = "") -> None:
+    suffix = f" {msg}" if msg else ""
+    print(f"  done.{suffix}")
+
+
+def _err(msg: str) -> None:
+    print(f"  ERROR: {msg}", file=sys.stderr)
+
+
+# -- Internal helpers --------------------------------------------------------
+
+
+def _detect_platform() -> str:
+    s = platform.system()
+    if s == "Darwin":
+        return "macos"
+    if s == "Linux":
+        return "linux"
+    if s == "Windows":
+        return "windows"
+    return s.lower()
+
+
+def _resolve_binary() -> str | None:
+    return shutil.which("claudegate")
+
+
+def _capture_env_vars() -> dict[str, str]:
+    captured: dict[str, str] = {}
+    for key, val in sorted(os.environ.items()):
+        if any(key.startswith(p) for p in _ENV_PREFIXES) or key in _ENV_EXACT:
+            captured[key] = val
+    return captured
+
+
+# -- Plist generation (macOS) ------------------------------------------------
+
+
+def _generate_plist(binary: str, env_vars: dict[str, str] | None = None) -> str:
+    env_dict: dict[str, str] = {
+        "PATH": "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin",
+        "NO_COLOR": "1",
+    }
+    if env_vars:
+        env_dict.update(env_vars)
+
+    env_xml = ""
+    for key, val in sorted(env_dict.items()):
+        env_xml += f"        <key>{xml_escape(key)}</key>\n"
+        env_xml += f"        <string>{xml_escape(val)}</string>\n"
+
+    return textwrap.dedent(f"""\
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0">
+        <dict>
+            <key>Label</key>
+            <string>{_LAUNCHD_LABEL}</string>
+            <key>ProgramArguments</key>
+            <array>
+                <string>{xml_escape(binary)}</string>
+            </array>
+            <key>RunAtLoad</key>
+            <true/>
+            <key>KeepAlive</key>
+            <true/>
+            <key>StandardOutPath</key>
+            <string>/tmp/claudegate.log</string>
+            <key>StandardErrorPath</key>
+            <string>/tmp/claudegate.log</string>
+            <key>EnvironmentVariables</key>
+            <dict>
+        {env_xml.rstrip()}
+            </dict>
+        </dict>
+        </plist>
+    """)
+
+
+def _plist_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{_LAUNCHD_LABEL}.plist"
+
+
+# -- Systemd unit generation (Linux) ----------------------------------------
+
+
+def _generate_systemd_unit(binary: str, env_vars: dict[str, str] | None = None) -> str:
+    env_lines = "Environment=NO_COLOR=1\n"
+    if env_vars:
+        for key, val in sorted(env_vars.items()):
+            env_lines += f"Environment={key}={val}\n"
+
+    return textwrap.dedent(f"""\
+        [Unit]
+        Description=Claudegate - Anthropic API proxy
+        After=network.target
+
+        [Service]
+        Type=simple
+        ExecStart={binary}
+        Restart=on-failure
+        RestartSec=5
+        {env_lines.rstrip()}
+
+        StandardOutput=journal
+        StandardError=journal
+
+        [Install]
+        WantedBy=default.target
+    """)
+
+
+def _systemd_unit_path() -> Path:
+    return Path.home() / ".config" / "systemd" / "user" / _SYSTEMD_UNIT
+
+
+# -- Install -----------------------------------------------------------------
+
+
+def install_service(*, capture_env: bool = False) -> int:
+    _header("Installing claudegate as a system service...")
+
+    plat = _detect_platform()
+    _step(f"Detecting platform... {plat}")
+    print()
+
+    binary = _resolve_binary()
+    if not binary:
+        _err("Could not find 'claudegate' on PATH. Is it installed?")
+        return 1
+    _step(f"Resolving binary path... {binary}")
+    print()
+
+    env_vars: dict[str, str] | None = None
+    if capture_env:
+        env_vars = _capture_env_vars()
+        if env_vars:
+            names = ", ".join(env_vars)
+            _step(f"Capturing environment variables: {names}")
+            print()
+        else:
+            _step("No CLAUDEGATE_*/AWS_*/GITHUB_TOKEN environment variables found")
+            print()
+
+    if plat == "macos":
+        return _install_macos(binary, env_vars)
+    if plat == "linux":
+        return _install_linux(binary, env_vars)
+    if plat == "windows":
+        return _install_windows(binary)
+
+    _err(f"Unsupported platform: {plat}")
+    return 1
+
+
+def _install_macos(binary: str, env_vars: dict[str, str] | None) -> int:
+    path = _plist_path()
+    if path.exists():
+        _err(f"Service file already exists: {path}")
+        _err("Run 'claudegate uninstall' first, or remove the file manually.")
+        return 1
+
+    plist = _generate_plist(binary, env_vars)
+
+    _step(f"Writing service file to {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(plist)
+    _ok()
+
+    _step("Loading service...")
+    result = subprocess.run(
+        ["launchctl", "load", str(path)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        _err(f"launchctl load failed: {result.stderr.strip()}")
+        return 1
+    _ok()
+
+    print("\nDone! claudegate is now running as a system service.")
+    print("Logs: /tmp/claudegate.log")
+    return 0
+
+
+def _install_linux(binary: str, env_vars: dict[str, str] | None) -> int:
+    path = _systemd_unit_path()
+    if path.exists():
+        _err(f"Service file already exists: {path}")
+        _err("Run 'claudegate uninstall' first, or remove the file manually.")
+        return 1
+
+    unit = _generate_systemd_unit(binary, env_vars)
+
+    _step(f"Writing service file to {path}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(unit)
+    _ok()
+
+    _step("Reloading systemd...")
+    result = subprocess.run(
+        ["systemctl", "--user", "daemon-reload"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        _err(f"daemon-reload failed: {result.stderr.strip()}")
+        return 1
+    _ok()
+
+    _step("Enabling and starting service...")
+    result = subprocess.run(
+        ["systemctl", "--user", "enable", "--now", _SYSTEMD_UNIT],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        _err(f"enable --now failed: {result.stderr.strip()}")
+        return 1
+    _ok()
+
+    print("\nDone! claudegate is now running as a system service.")
+    print("Logs: journalctl --user -u claudegate.service -f")
+    return 0
+
+
+def _install_windows(binary: str) -> int:
+    _step("Creating scheduled task...")
+    result = subprocess.run(
+        [
+            "schtasks",
+            "/Create",
+            "/TN",
+            _SCHTASKS_NAME,
+            "/SC",
+            "ONLOGON",
+            "/TR",
+            binary,
+            "/F",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        _err(f"schtasks failed: {result.stderr.strip()}")
+        return 1
+    _ok()
+
+    _step("Starting task...")
+    result = subprocess.run(
+        ["schtasks", "/Run", "/TN", _SCHTASKS_NAME],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        _err(f"schtasks run failed: {result.stderr.strip()}")
+        return 1
+    _ok()
+
+    print("\nDone! claudegate is now running as a scheduled task.")
+    return 0
+
+
+# -- Uninstall ---------------------------------------------------------------
+
+
+def uninstall_service() -> int:
+    _header("Uninstalling claudegate system service...")
+
+    plat = _detect_platform()
+    _step(f"Detecting platform... {plat}")
+    print()
+
+    if plat == "macos":
+        return _uninstall_macos()
+    if plat == "linux":
+        return _uninstall_linux()
+    if plat == "windows":
+        return _uninstall_windows()
+
+    _err(f"Unsupported platform: {plat}")
+    return 1
+
+
+def _uninstall_macos() -> int:
+    path = _plist_path()
+    if not path.exists():
+        _err(f"Service file not found: {path}")
+        _err("Nothing to uninstall.")
+        return 1
+
+    _step("Unloading service...")
+    subprocess.run(
+        ["launchctl", "unload", str(path)],
+        capture_output=True,
+        text=True,
+    )
+    _ok()
+
+    _step(f"Removing {path}")
+    path.unlink()
+    _ok()
+
+    print("\nDone! claudegate service has been removed.")
+    return 0
+
+
+def _uninstall_linux() -> int:
+    path = _systemd_unit_path()
+    if not path.exists():
+        _err(f"Service file not found: {path}")
+        _err("Nothing to uninstall.")
+        return 1
+
+    _step("Stopping and disabling service...")
+    subprocess.run(
+        ["systemctl", "--user", "disable", "--now", _SYSTEMD_UNIT],
+        capture_output=True,
+        text=True,
+    )
+    _ok()
+
+    _step(f"Removing {path}")
+    path.unlink()
+    _ok()
+
+    _step("Reloading systemd...")
+    subprocess.run(
+        ["systemctl", "--user", "daemon-reload"],
+        capture_output=True,
+        text=True,
+    )
+    _ok()
+
+    print("\nDone! claudegate service has been removed.")
+    return 0
+
+
+def _uninstall_windows() -> int:
+    _step("Stopping task...")
+    subprocess.run(
+        ["schtasks", "/End", "/TN", _SCHTASKS_NAME],
+        capture_output=True,
+        text=True,
+    )
+    _ok()
+
+    _step("Deleting scheduled task...")
+    result = subprocess.run(
+        ["schtasks", "/Delete", "/TN", _SCHTASKS_NAME, "/F"],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        _err(f"schtasks delete failed: {result.stderr.strip()}")
+        return 1
+    _ok()
+
+    print("\nDone! claudegate scheduled task has been removed.")
+    return 0
+
+
+# -- Status ------------------------------------------------------------------
+
+
+def service_status() -> int:
+    plat = _detect_platform()
+
+    if plat == "macos":
+        return _status_macos()
+    if plat == "linux":
+        return _status_linux()
+    if plat == "windows":
+        return _status_windows()
+
+    _err(f"Unsupported platform: {plat}")
+    return 1
+
+
+def _status_macos() -> int:
+    path = _plist_path()
+    if not path.exists():
+        print("claudegate is not installed as a system service.")
+        return 1
+
+    print(f"Service file: {path}")
+    result = subprocess.run(
+        ["launchctl", "list", _LAUNCHD_LABEL],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        print("Status: running")
+        # Parse PID from launchctl output
+        for line in result.stdout.splitlines():
+            if "PID" in line:
+                print(f"  {line.strip()}")
+    else:
+        print("Status: stopped")
+    return 0
+
+
+def _status_linux() -> int:
+    path = _systemd_unit_path()
+    if not path.exists():
+        print("claudegate is not installed as a system service.")
+        return 1
+
+    print(f"Service file: {path}")
+    result = subprocess.run(
+        ["systemctl", "--user", "is-active", _SYSTEMD_UNIT],
+        capture_output=True,
+        text=True,
+    )
+    state = result.stdout.strip()
+    print(f"Status: {state}")
+    return 0
+
+
+def _status_windows() -> int:
+    result = subprocess.run(
+        ["schtasks", "/Query", "/TN", _SCHTASKS_NAME],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print("claudegate is not installed as a scheduled task.")
+        return 1
+
+    print(f"Scheduled task: {_SCHTASKS_NAME}")
+    print(result.stdout.strip())
+    return 0

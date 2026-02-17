@@ -216,7 +216,38 @@ Authorization successful!
 
 The token is persisted to `~/.config/claudegate/github_token` for subsequent startups.
 
-### Run in background
+### Autostart as a system service
+
+The `install` command sets up claudegate to start automatically on login and starts it immediately:
+
+```bash
+claudegate install
+```
+
+To also capture your current environment variables (`CLAUDEGATE_*`, `AWS_*`, `GITHUB_TOKEN`) into the service file:
+
+```bash
+claudegate install --env
+```
+
+This works on all platforms:
+- **macOS** — creates a launchd plist in `~/Library/LaunchAgents/`
+- **Linux** — creates a systemd user unit in `~/.config/systemd/user/`
+- **Windows** — creates a scheduled task via `schtasks`
+
+**Other service commands:**
+
+```bash
+# Check if the service is installed and running
+claudegate status
+
+# Stop and remove the service
+claudegate uninstall
+```
+
+### Run in background (manual)
+
+If you prefer not to use the service installer:
 
 **Quick (terminal session):**
 ```bash
@@ -228,26 +259,7 @@ claudegate &
 nohup claudegate > ~/.claudegate.log 2>&1 &
 ```
 
-**macOS (auto-start on login):**
-```bash
-cp contrib/launchd/com.claudegate.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.claudegate.plist
-```
-
-**Linux (systemd user service):**
-```bash
-mkdir -p ~/.config/systemd/user
-cp contrib/systemd/claudegate.service ~/.config/systemd/user/
-systemctl --user enable --now claudegate
-```
-
-**Windows (Task Scheduler):**
-```powershell
-# Create a scheduled task that starts claudegate at logon
-$action = New-ScheduledTaskAction -Execute "claudegate"
-$trigger = New-ScheduledTaskTrigger -AtLogOn
-Register-ScheduledTask -TaskName "Claudegate" -Action $action -Trigger $trigger -Description "Claudegate - Anthropic API proxy"
-```
+Manual service templates are available in the `contrib/` directory for customization.
 
 ### Configure Open WebUI
 
