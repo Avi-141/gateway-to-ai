@@ -174,10 +174,16 @@ def test_install_macos_already_exists(tmp_path):
         patch("claudegate.service._detect_platform", return_value="macos"),
         patch("claudegate.service._resolve_binary", return_value="/usr/local/bin/claudegate"),
         patch("claudegate.service._plist_path", return_value=plist_path),
+        patch("claudegate.service.subprocess.run") as mock_run,
     ):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
         result = install_service(capture_env=False)
 
-    assert result == 1
+    assert result == 0
+    content = plist_path.read_text()
+    assert "com.claudegate" in content
+    # unload (old) + load (new)
+    assert mock_run.call_count == 2
 
 
 def test_install_macos_with_env(tmp_path):
@@ -244,10 +250,16 @@ def test_install_linux_already_exists(tmp_path):
         patch("claudegate.service._detect_platform", return_value="linux"),
         patch("claudegate.service._resolve_binary", return_value="/usr/local/bin/claudegate"),
         patch("claudegate.service._systemd_unit_path", return_value=unit_path),
+        patch("claudegate.service.subprocess.run") as mock_run,
     ):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
         result = install_service(capture_env=False)
 
-    assert result == 1
+    assert result == 0
+    content = unit_path.read_text()
+    assert "ExecStart=/usr/local/bin/claudegate" in content
+    # stop (old) + daemon-reload + enable --now
+    assert mock_run.call_count == 3
 
 
 # -- Install (common error paths) -------------------------------------------

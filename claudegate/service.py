@@ -188,9 +188,14 @@ def install_service(*, capture_env: bool = False) -> int:
 def _install_macos(binary: str, env_vars: dict[str, str] | None) -> int:
     path = _plist_path()
     if path.exists():
-        _err(f"Service file already exists: {path}")
-        _err("Run 'claudegate uninstall' first, or remove the file manually.")
-        return 1
+        _step("Existing service found, reinstalling...")
+        print()
+        # Unload before overwriting
+        subprocess.run(
+            ["launchctl", "unload", str(path)],
+            capture_output=True,
+            text=True,
+        )
 
     plist = _generate_plist(binary, env_vars)
 
@@ -218,9 +223,14 @@ def _install_macos(binary: str, env_vars: dict[str, str] | None) -> int:
 def _install_linux(binary: str, env_vars: dict[str, str] | None) -> int:
     path = _systemd_unit_path()
     if path.exists():
-        _err(f"Service file already exists: {path}")
-        _err("Run 'claudegate uninstall' first, or remove the file manually.")
-        return 1
+        _step("Existing service found, reinstalling...")
+        print()
+        # Stop before overwriting
+        subprocess.run(
+            ["systemctl", "--user", "stop", _SYSTEMD_UNIT],
+            capture_output=True,
+            text=True,
+        )
 
     unit = _generate_systemd_unit(binary, env_vars)
 

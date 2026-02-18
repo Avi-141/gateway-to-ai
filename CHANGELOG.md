@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+
+- `claudegate install` is now idempotent — if a service is already installed, it automatically stops and reinstalls instead of erroring out. This makes upgrades simpler (`uv tool install --force ... && claudegate install`).
+
 ## [0.3.0] - 2026-02-18
 
 ### Added
