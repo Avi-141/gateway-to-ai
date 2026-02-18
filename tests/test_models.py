@@ -533,4 +533,3 @@ class TestModelRequiresResponsesApi:
             ]
         )
         assert model_requires_responses_api("gpt-5.2") is False
-

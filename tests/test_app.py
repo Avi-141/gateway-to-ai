@@ -650,7 +650,9 @@ class TestCopilotResponsesRouting:
                 "object": "chat.completion",
                 "created": 1700000000,
                 "model": "gpt-5.3-codex",
-                "choices": [{"index": 0, "message": {"role": "assistant", "content": "via responses"}, "finish_reason": "stop"}],
+                "choices": [
+                    {"index": 0, "message": {"role": "assistant", "content": "via responses"}, "finish_reason": "stop"}
+                ],
                 "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
             }
         )
