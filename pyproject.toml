@@ -1,6 +1,6 @@
 [project]
 name = "claudegate"
-version = "0.2.0"
+version = "0.3.0"
 description = "Anthropic API proxy for AWS Bedrock and GitHub Copilot backends"
 readme = "README.md"
 requires-python = ">=3.11"

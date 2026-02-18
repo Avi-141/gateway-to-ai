@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-02-18
+
 ### Added
 
 - Non-Claude models (GPT, Gemini, Grok, etc.) are now accessible via `/v1/messages` (Anthropic API) when the Copilot backend is available. Previously these models were only reachable through `/v1/chat/completions`. When Bedrock is the primary backend with Copilot as fallback, non-Claude model requests route directly to Copilot. Bedrock-only configurations return a clear 400 error for unsupported models.
