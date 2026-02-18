@@ -34,6 +34,7 @@ from .models import (
     get_copilot_model,
     get_copilot_openai_model,
     is_claude_model,
+    model_requires_responses_api,
     set_copilot_models,
 )
 from .openai_translate import (
@@ -391,6 +392,11 @@ async def _call_copilot(body: dict[str, Any], request_id: str, stream: bool) -> 
     copilot_model, anthropic_model = get_copilot_model(body["model"])
     log_prefix = f"[{request_id}] " if request_id else ""
     logger.info(f"{log_prefix}Request - model: {body['model']} -> {copilot_model} (copilot), stream: {stream}")
+    if model_requires_responses_api(copilot_model):
+        logger.info(f"{log_prefix}Routing to Responses API for {copilot_model}")
+        return await _copilot_backend.handle_responses_messages(
+            body, request_id, stream, copilot_model, anthropic_model
+        )
     return await _copilot_backend.handle_messages(body, request_id, stream, copilot_model, anthropic_model)
 
 
@@ -407,6 +413,9 @@ async def _call_copilot_openai(body: dict[str, Any], request_id: str, stream: bo
     logger.info(
         f"{log_prefix}OpenAI passthrough - model: {body['model']} -> {copilot_model} (copilot), stream: {stream}"
     )
+    if model_requires_responses_api(copilot_model):
+        logger.info(f"{log_prefix}Routing to Responses API for {copilot_model}")
+        return await _copilot_backend.handle_openai_responses_messages(body, request_id, stream, copilot_model)
     return await _copilot_backend.handle_openai_messages(body, request_id, stream, copilot_model)
 
 

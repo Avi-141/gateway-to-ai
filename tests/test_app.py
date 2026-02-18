@@ -593,6 +593,119 @@ class TestMessagesFallbackErrors:
 # --- Fallback Error Handlers (/v1/chat/completions) ---
 
 
+class TestCopilotResponsesRouting:
+    @pytest.mark.anyio
+    async def test_messages_route_uses_responses_backend_for_responses_only_model(self, async_client, monkeypatch):
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+
+        from fastapi.responses import JSONResponse
+
+        from claudegate.models import set_copilot_models
+
+        set_copilot_models([{"id": "gpt-5.3-codex", "supported_endpoints": ["/responses"]}])
+
+        mock_backend = AsyncMock()
+        mock_backend.handle_responses_messages.return_value = JSONResponse(
+            content={
+                "id": "msg_123",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "via responses"}],
+                "model": "gpt-5.3-codex",
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }
+        )
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+
+        resp = await async_client.post(
+            "/v1/messages",
+            json={
+                "model": "gpt-5.3-codex",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+        assert resp.status_code == 200
+        mock_backend.handle_responses_messages.assert_called_once()
+        mock_backend.handle_messages.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_chat_completions_route_uses_responses_backend_for_responses_only_model(
+        self, async_client, monkeypatch
+    ):
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+
+        from fastapi.responses import JSONResponse
+
+        from claudegate.models import set_copilot_models
+
+        set_copilot_models([{"id": "gpt-5.3-codex", "supported_endpoints": ["/responses"]}])
+
+        mock_backend = AsyncMock()
+        mock_backend.handle_openai_responses_messages.return_value = JSONResponse(
+            content={
+                "id": "chatcmpl_123",
+                "object": "chat.completion",
+                "created": 1700000000,
+                "model": "gpt-5.3-codex",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": "via responses"}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+        )
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+
+        resp = await async_client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "gpt-5.3-codex",
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+        assert resp.status_code == 200
+        mock_backend.handle_openai_responses_messages.assert_called_once()
+        mock_backend.handle_openai_messages.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_messages_route_uses_chat_backend_when_chat_completions_supported(self, async_client, monkeypatch):
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+
+        from fastapi.responses import JSONResponse
+
+        from claudegate.models import set_copilot_models
+
+        set_copilot_models([{"id": "gpt-5.2", "supported_endpoints": ["/chat/completions", "/responses"]}])
+
+        mock_backend = AsyncMock()
+        mock_backend.handle_messages.return_value = JSONResponse(
+            content={
+                "id": "msg_123",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "via chat"}],
+                "model": "gpt-5.2",
+                "stop_reason": "end_turn",
+                "usage": {"input_tokens": 1, "output_tokens": 1},
+            }
+        )
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+
+        resp = await async_client.post(
+            "/v1/messages",
+            json={
+                "model": "gpt-5.2",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+
+        assert resp.status_code == 200
+        mock_backend.handle_messages.assert_called_once()
+        mock_backend.handle_responses_messages.assert_not_called()
+
+
 class TestChatCompletionsFallbackErrors:
     """Cover fallback error branches in /v1/chat/completions (lines 524-551)."""
 

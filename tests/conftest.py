@@ -177,3 +177,45 @@ def make_client_error(code: str = "InternalError", message: str = "Something fai
         error_response={"Error": {"Code": code, "Message": message}},
         operation_name="InvokeModel",
     )
+
+
+@pytest.fixture
+def responses_api_response() -> dict[str, Any]:
+    """Sample Responses API non-streaming response (text only)."""
+    return {
+        "id": "resp_abc123",
+        "object": "response",
+        "created_at": 1700000000,
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": "Hello there!"}],
+            }
+        ],
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    }
+
+
+@pytest.fixture
+def responses_api_tool_response() -> dict[str, Any]:
+    """Sample Responses API non-streaming response with a tool call."""
+    return {
+        "id": "resp_tool456",
+        "object": "response",
+        "created_at": 1700000000,
+        "status": "completed",
+        "output": [
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": "Let me check the weather."}],
+            },
+            {
+                "type": "function_call",
+                "name": "get_weather",
+                "arguments": '{"location":"NYC"}',
+                "call_id": "call_weather_1",
+            },
+        ],
+        "usage": {"input_tokens": 15, "output_tokens": 25},
+    }

@@ -59,6 +59,13 @@ BEDROCK_MODEL_MAP = {
 }
 
 
+def _strip_model_prefix(model: str) -> str:
+    """Strip known provider prefixes from model names (e.g., 'github-copilot/gpt-5.3-codex' -> 'gpt-5.3-codex')."""
+    if "/" in model:
+        return model.split("/", 1)[1]
+    return model
+
+
 def add_region_prefix(model_id: str) -> str:
     """Add region prefix to model ID for cross-region inference."""
     if BEDROCK_REGION_PREFIX:
@@ -68,6 +75,7 @@ def add_region_prefix(model_id: str) -> str:
 
 def get_bedrock_model(model: str) -> str:
     """Map Anthropic model name to Bedrock model ID."""
+    model = _strip_model_prefix(model)
     # Direct match
     if model in BEDROCK_MODEL_MAP:
         return add_region_prefix(BEDROCK_MODEL_MAP[model])
@@ -134,6 +142,7 @@ COPILOT_OPENAI_MODEL_MAP: dict[str, str] = {
     "claude-sonnet-4": "claude-sonnet-4",
     "claude-haiku-4.5": "claude-haiku-4.5",
     # GPT-5.x series
+    "gpt-5.3-codex": "gpt-5.3-codex",
     "gpt-5.2-codex": "gpt-5.2-codex",
     "gpt-5.2": "gpt-5.2",
     "gpt-5.1-codex-max": "gpt-5.1-codex-max",
@@ -161,13 +170,27 @@ COPILOT_OPENAI_MODEL_MAP: dict[str, str] = {
 # Populated at startup from the Copilot /models endpoint
 _copilot_models: list[dict[str, Any]] = []
 _copilot_model_ids: set[str] = set()
+_copilot_model_endpoints: dict[str, list[str]] = {}
 
 
 def set_copilot_models(models: list[dict[str, Any]]) -> None:
     """Store models fetched from the Copilot API."""
-    global _copilot_models, _copilot_model_ids
+    global _copilot_models, _copilot_model_ids, _copilot_model_endpoints
     _copilot_models = models
     _copilot_model_ids = {m["id"] for m in models if "id" in m}
+    _copilot_model_endpoints = {
+        m["id"]: [ep for ep in m["supported_endpoints"] if isinstance(ep, str)]
+        for m in models
+        if "id" in m and isinstance(m.get("supported_endpoints"), list)
+    }
+
+
+def model_requires_responses_api(model_id: str) -> bool:
+    """Return True if the model only supports /responses (not /chat/completions)."""
+    endpoints = _copilot_model_endpoints.get(model_id, [])
+    if not endpoints:
+        return False
+    return "/responses" in endpoints and "/chat/completions" not in endpoints
 
 
 def get_available_copilot_models() -> list[dict[str, Any]]:
@@ -184,6 +207,7 @@ def get_copilot_openai_model(model: str) -> str:
 
     When no dynamic models are available, falls back to hardcoded maps.
     """
+    model = _strip_model_prefix(model)
     # Check dynamic registry (exact match on model id)
     if _copilot_model_ids:
         if model in _copilot_model_ids:
@@ -278,6 +302,7 @@ def get_copilot_model(model: str) -> tuple[str, str]:
     When dynamic models are available, validates against them and uses smart
     fallback to find the newest compatible Claude model version.
     """
+    model = _strip_model_prefix(model)
     if _copilot_model_ids:
         # --- Dynamic models available: validate all lookups against registry ---
 

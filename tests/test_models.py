@@ -13,6 +13,7 @@ from claudegate.models import (
     get_copilot_model,
     get_copilot_openai_model,
     is_claude_model,
+    model_requires_responses_api,
     set_copilot_models,
 )
 
@@ -405,3 +406,131 @@ class TestIsClaudeModel:
 
     def test_empty_string(self):
         assert is_claude_model("") is False
+
+
+# --- Prefix Stripping Integration ---
+
+
+class TestPrefixStrippingIntegration:
+    """Test that provider prefixes (e.g. github-copilot/) are stripped in all lookup functions."""
+
+    @pytest.fixture(autouse=True)
+    def reset_registry(self):
+        set_copilot_models([])
+        yield
+        set_copilot_models([])
+
+    def test_get_copilot_model_strips_prefix_claude(self):
+        model_id, name = get_copilot_model("github-copilot/claude-sonnet-4-5")
+        assert model_id == "claude-sonnet-4.5"
+        assert name == "claude-sonnet-4-5"
+
+    def test_get_copilot_model_strips_prefix_openai(self):
+        model_id, name = get_copilot_model("github-copilot/gpt-5.3-codex")
+        assert model_id == "gpt-5.3-codex"
+        assert name == "gpt-5.3-codex"
+
+    def test_get_copilot_openai_model_strips_prefix(self):
+        assert get_copilot_openai_model("github-copilot/gpt-5.3-codex") == "gpt-5.3-codex"
+
+    def test_get_copilot_openai_model_strips_prefix_claude(self):
+        assert get_copilot_openai_model("github-copilot/claude-sonnet-4-5-20250929") == "claude-sonnet-4.5"
+
+    def test_get_bedrock_model_strips_prefix(self, monkeypatch):
+        monkeypatch.setattr("claudegate.models.BEDROCK_REGION_PREFIX", "")
+        result = get_bedrock_model("github-copilot/claude-sonnet-4-5-20250929")
+        assert result == "anthropic.claude-sonnet-4-5-20250929-v1:0"
+
+    def test_dynamic_registry_with_prefix(self):
+        """Prefix stripping works together with dynamic registry lookups."""
+        set_copilot_models([{"id": "claude-sonnet-4.5"}, {"id": "gpt-5.3-codex"}])
+
+        model_id, name = get_copilot_model("github-copilot/claude-sonnet-4-5")
+        assert model_id == "claude-sonnet-4.5"
+        assert name == "claude-sonnet-4-5"
+
+        assert get_copilot_openai_model("github-copilot/gpt-5.3-codex") == "gpt-5.3-codex"
+
+
+# --- model_requires_responses_api ---
+
+
+class TestModelRequiresResponsesApi:
+    @pytest.fixture(autouse=True)
+    def reset_registry(self):
+        set_copilot_models([])
+        yield
+        set_copilot_models([])
+
+    def test_codex_model_responses_only(self):
+        """Codex models that only support /responses return True."""
+        set_copilot_models(
+            [
+                {"id": "gpt-5.2-codex", "supported_endpoints": ["/responses"]},
+            ]
+        )
+        assert model_requires_responses_api("gpt-5.2-codex") is True
+
+    def test_dual_endpoint_model(self):
+        """Models supporting both /chat/completions and /responses return False."""
+        set_copilot_models(
+            [
+                {"id": "gpt-5.2", "supported_endpoints": ["/chat/completions", "/responses"]},
+            ]
+        )
+        assert model_requires_responses_api("gpt-5.2") is False
+
+    def test_chat_completions_only(self):
+        """Models supporting only /chat/completions return False."""
+        set_copilot_models(
+            [
+                {"id": "claude-sonnet-4.5", "supported_endpoints": ["/chat/completions", "/v1/messages"]},
+            ]
+        )
+        assert model_requires_responses_api("claude-sonnet-4.5") is False
+
+    def test_no_metadata(self):
+        """Models with no supported_endpoints field return False."""
+        set_copilot_models(
+            [
+                {"id": "gpt-4o"},
+            ]
+        )
+        assert model_requires_responses_api("gpt-4o") is False
+
+    def test_unknown_model(self):
+        """Models not in the registry return False."""
+        set_copilot_models(
+            [
+                {"id": "gpt-5.2-codex", "supported_endpoints": ["/responses"]},
+            ]
+        )
+        assert model_requires_responses_api("totally-unknown") is False
+
+    def test_empty_registry(self):
+        """Empty registry returns False for any model."""
+        assert model_requires_responses_api("gpt-5.2-codex") is False
+
+    def test_invalid_supported_endpoints_ignored(self):
+        """Non-list endpoint metadata is ignored safely."""
+        set_copilot_models([{"id": "gpt-5.2-codex", "supported_endpoints": "/responses"}])
+        assert model_requires_responses_api("gpt-5.2-codex") is False
+
+    def test_non_string_endpoints_filtered(self):
+        """Endpoint list keeps only string entries."""
+        set_copilot_models(
+            [
+                {"id": "gpt-5.2-codex", "supported_endpoints": ["/responses", 123, None]},
+            ]
+        )
+        assert model_requires_responses_api("gpt-5.2-codex") is True
+
+    def test_chat_endpoint_with_invalid_entries(self):
+        """Valid /chat/completions entry still disables responses-only routing."""
+        set_copilot_models(
+            [
+                {"id": "gpt-5.2", "supported_endpoints": ["/responses", {}, "/chat/completions"]},
+            ]
+        )
+        assert model_requires_responses_api("gpt-5.2") is False
+
