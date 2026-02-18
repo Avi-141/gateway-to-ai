@@ -224,7 +224,7 @@ class CopilotBackend:
 
             # If translator never got a finish_reason, ensure cleanup
             if translator.current_block_type is not None:
-                yield translator._emit_content_block_stop()
+                yield translator.emit_content_block_stop()
 
             logger.info(f"{log_prefix}Copilot stream complete, {chunk_count} chunks")
             yield "event: done\ndata: [DONE]\n\n"
@@ -466,7 +466,7 @@ class CopilotBackend:
 
             # Cleanup
             if translator.current_block_type is not None:
-                yield translator._emit_content_block_stop()
+                yield translator.emit_content_block_stop()
 
             logger.info(f"{log_prefix}Copilot Responses stream complete, {chunk_count} chunks")
             yield "event: done\ndata: [DONE]\n\n"

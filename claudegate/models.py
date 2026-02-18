@@ -61,8 +61,10 @@ BEDROCK_MODEL_MAP = {
 
 def _strip_model_prefix(model: str) -> str:
     """Strip known provider prefixes from model names (e.g., 'github-copilot/gpt-5.3-codex' -> 'gpt-5.3-codex')."""
-    if "/" in model:
-        return model.split("/", 1)[1]
+    known_prefixes = ("github-copilot/",)
+    for prefix in known_prefixes:
+        if model.startswith(prefix):
+            return model[len(prefix) :]
     return model
 
 

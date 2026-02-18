@@ -577,6 +577,18 @@ class TestResponsesToOpenAIStreamTranslator:
         )
         assert '"finish_reason": "tool_calls"' in events
 
+    def test_incomplete_status_returns_length(self):
+        translator = ResponsesToOpenAIStreamTranslator("gpt-5.2-codex")
+        translator.translate_event("response.created", {})
+        translator.translate_event("response.output_text.delta", {"delta": "partial"})
+
+        events = translator.translate_event(
+            "response.completed",
+            {"response": {"status": "incomplete", "output": [], "usage": {}}},
+        )
+        assert '"finish_reason": "length"' in events
+        assert "[DONE]" in events
+
 
 # --- Round-trip tests ---
 

@@ -327,7 +327,7 @@ class StreamTranslator:
             },
         )
 
-    def _emit_content_block_stop(self) -> str:
+    def emit_content_block_stop(self) -> str:
         """Emit content_block_stop event."""
         event = self._sse(
             "content_block_stop",
@@ -377,7 +377,7 @@ class StreamTranslator:
             if tc_index not in self.tool_calls:
                 # New tool call - close text block if open
                 if self.has_text_block and self.current_block_type == "text":
-                    events += self._emit_content_block_stop()
+                    events += self.emit_content_block_stop()
 
                 # Start new tool_use block
                 tc_id = tc.get("id", f"toolu_{uuid.uuid4().hex[:24]}")
@@ -408,7 +408,7 @@ class StreamTranslator:
         if finish_reason is not None:
             # Close current block if open
             if self.current_block_type is not None:
-                events += self._emit_content_block_stop()
+                events += self.emit_content_block_stop()
 
             # Capture final usage
             usage = chunk.get("usage", {})

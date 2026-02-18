@@ -466,7 +466,7 @@ class ResponsesStreamTranslator:
             },
         )
 
-    def _emit_content_block_stop(self) -> str:
+    def emit_content_block_stop(self) -> str:
         event = self._sse(
             "content_block_stop",
             {"type": "content_block_stop", "index": self.block_index},
@@ -512,7 +512,7 @@ class ResponsesStreamTranslator:
             if item.get("type") == "function_call":
                 # Close text block if open
                 if self.has_text_block and self.current_block_type == "text":
-                    events += self._emit_content_block_stop()
+                    events += self.emit_content_block_stop()
                 call_id = item.get("call_id", f"toolu_{uuid.uuid4().hex[:24]}")
                 name = item.get("name", "")
                 events += self._emit_content_block_start("tool_use", id=call_id, name=name)
@@ -531,12 +531,12 @@ class ResponsesStreamTranslator:
 
         elif event_type == "response.output_item.done":
             if self.current_block_type is not None:
-                events += self._emit_content_block_stop()
+                events += self.emit_content_block_stop()
 
         elif event_type == "response.completed":
             # Close any open block
             if self.current_block_type is not None:
-                events += self._emit_content_block_stop()
+                events += self.emit_content_block_stop()
 
             resp_obj = data.get("response") or {}
             usage = resp_obj.get("usage") or {}
@@ -641,7 +641,12 @@ class ResponsesToOpenAIStreamTranslator:
             resp_obj = data.get("response") or {}
             output = resp_obj.get("output") or []
             has_tool = any(item.get("type") == "function_call" for item in output)
-            finish_reason = "tool_calls" if has_tool else "stop"
+            if resp_obj.get("status") == "incomplete":
+                finish_reason = "length"
+            elif has_tool:
+                finish_reason = "tool_calls"
+            else:
+                finish_reason = "stop"
             chunks += self._chunk({}, finish_reason=finish_reason)
             chunks += "data: [DONE]\n\n"
 

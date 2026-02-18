@@ -451,6 +451,17 @@ class TestPrefixStrippingIntegration:
 
         assert get_copilot_openai_model("github-copilot/gpt-5.3-codex") == "gpt-5.3-codex"
 
+    def test_unknown_prefix_not_stripped(self):
+        """Only known prefixes (github-copilot/) are stripped; unknown prefixes pass through."""
+        # Non-Claude model with unknown prefix — passes through as-is
+        result = get_copilot_openai_model("custom-provider/some-model")
+        assert result == "custom-provider/some-model"
+
+    def test_slash_in_model_name_preserved(self):
+        """Model names containing slashes that aren't known prefixes are preserved."""
+        result = get_copilot_openai_model("org/model-name")
+        assert result == "org/model-name"
+
 
 # --- model_requires_responses_api ---
 
