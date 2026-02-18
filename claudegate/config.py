@@ -4,7 +4,7 @@ import logging.config
 import os
 
 # Server defaults
-DEFAULT_HOST = "0.0.0.0"
+DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8080
 DEFAULT_LOG_LEVEL = "INFO"
 

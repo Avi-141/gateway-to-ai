@@ -192,7 +192,7 @@ export BEDROCK_READ_TIMEOUT="300"  # default: 300 (seconds)
 
 ```bash
 # Optional: Server configuration
-export CLAUDEGATE_HOST="0.0.0.0"  # default: 0.0.0.0
+export CLAUDEGATE_HOST="0.0.0.0"  # default: 127.0.0.1 (localhost only)
 export CLAUDEGATE_PORT="8080"     # default: 8080
 
 # Optional: Log level (DEBUG, INFO, WARNING, ERROR)

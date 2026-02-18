@@ -14,7 +14,7 @@ from claudegate.config import (
 
 class TestDefaultValues:
     def test_default_host(self):
-        assert DEFAULT_HOST == "0.0.0.0"
+        assert DEFAULT_HOST == "127.0.0.1"
 
     def test_default_port(self):
         assert DEFAULT_PORT == 8080
