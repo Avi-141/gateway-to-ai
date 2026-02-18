@@ -56,6 +56,7 @@ When using the Copilot backend, non-Claude models are available via both `/v1/me
 
 | Model | Provider |
 |-------|----------|
+| gpt-5.3-codex | OpenAI |
 | gpt-5.2-codex | OpenAI |
 | gpt-5.2 | OpenAI |
 | gpt-5.1-codex-max | OpenAI |
@@ -73,7 +74,7 @@ When using the Copilot backend, non-Claude models are available via both `/v1/me
 | grok-code-fast-1 | xAI |
 | raptor-mini | Other |
 
-These models work via both endpoints when using the Copilot backend. On `/v1/chat/completions`, they pass through directly with zero format translations. On `/v1/messages`, requests are translated to OpenAI format and responses are translated back to Anthropic format. Model availability depends on your Copilot plan.
+These models work via both endpoints when using the Copilot backend. On `/v1/chat/completions`, they pass through directly with zero format translations. On `/v1/messages`, requests are translated to OpenAI format and responses are translated back to Anthropic format. Codex models (`gpt-5.x-codex`) that only support the Responses API are handled automatically — the proxy detects the required endpoint and translates accordingly. Model availability depends on your Copilot plan.
 
 ### Bedrock Backend
 
@@ -107,7 +108,7 @@ These models work via both endpoints when using the Copilot backend. On `/v1/cha
 
 ```bash
 # Install a specific version (recommended)
-uv tool install git+https://github.com/Avi-141/gateway-to-ai.git@v0.1.0
+uv tool install git+https://github.com/Avi-141/gateway-to-ai.git@v0.3.0
 
 # Install latest from master
 uv tool install git+https://github.com/Avi-141/gateway-to-ai.git
@@ -117,7 +118,7 @@ uv tool install git+https://github.com/Avi-141/gateway-to-ai.git
 
 ```bash
 # Specific version
-uvx --from git+https://github.com/Avi-141/gateway-to-ai.git@v0.1.0 claudegate
+uvx --from git+https://github.com/Avi-141/gateway-to-ai.git@v0.3.0 claudegate
 
 # Latest from master
 uvx --from git+https://github.com/Avi-141/gateway-to-ai.git claudegate
@@ -129,7 +130,7 @@ After installing, run `claudegate` once manually in your terminal to complete th
 
 ```bash
 # Upgrade to a specific version
-uv tool install --force git+https://github.com/Avi-141/gateway-to-ai.git@v0.2.0
+uv tool install --force git+https://github.com/Avi-141/gateway-to-ai.git@v0.3.0
 
 # Upgrade to latest
 uv tool install --force git+https://github.com/Avi-141/gateway-to-ai.git
