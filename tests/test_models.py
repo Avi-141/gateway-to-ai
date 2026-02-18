@@ -77,6 +77,13 @@ class TestGetBedrockModel:
 
 
 class TestGetCopilotModel:
+    @pytest.fixture(autouse=True)
+    def reset_registry(self):
+        """Reset the dynamic model registry before and after each test."""
+        set_copilot_models([])
+        yield
+        set_copilot_models([])
+
     @pytest.mark.parametrize("anthropic_name,copilot_id", list(COPILOT_MODEL_MAP.items()))
     def test_all_map_entries(self, anthropic_name, copilot_id):
         model_id, returned_name = get_copilot_model(anthropic_name)
@@ -113,6 +120,91 @@ class TestGetCopilotModel:
         assert model_id == DEFAULT_COPILOT_MODEL
         assert returned_name == "claude-sonnet-4-5-20250929"
 
+    def test_smart_fallback_sonnet_4_6(self):
+        """Regression: claude-sonnet-4-6 was incorrectly matching claude-sonnet-4."""
+        set_copilot_models(
+            [
+                {"id": "claude-sonnet-4.5"},
+                {"id": "claude-sonnet-4"},
+                {"id": "claude-haiku-4.5"},
+            ]
+        )
+
+        # Without date suffix
+        model_id, returned_name = get_copilot_model("claude-sonnet-4-6")
+        assert model_id == "claude-sonnet-4.5"
+        assert returned_name == "claude-sonnet-4-6"
+
+        # With date suffix
+        model_id, returned_name = get_copilot_model("claude-sonnet-4-6-20250115")
+        assert model_id == "claude-sonnet-4.5"
+        assert returned_name == "claude-sonnet-4-6-20250115"
+
+    def test_smart_fallback_all_families(self):
+        """Smart fallback works independently for opus, sonnet, and haiku."""
+        set_copilot_models(
+            [
+                {"id": "claude-opus-4.5"},
+                {"id": "claude-sonnet-4.6"},
+                {"id": "claude-haiku-4.5"},
+            ]
+        )
+
+        # Opus: 4.6 unavailable, falls back to 4.5
+        model_id, _ = get_copilot_model("claude-opus-4-6")
+        assert model_id == "claude-opus-4.5"
+
+        # Sonnet: 4.6 available, exact match
+        model_id, _ = get_copilot_model("claude-sonnet-4-6")
+        assert model_id == "claude-sonnet-4.6"
+
+        # Haiku: future 5.0 unavailable, falls back to 4.5
+        model_id, _ = get_copilot_model("claude-haiku-5-0")
+        assert model_id == "claude-haiku-4.5"
+
+    def test_smart_fallback_unknown_family(self):
+        """Smart fallback works for model families not in any hardcoded map."""
+        set_copilot_models(
+            [
+                {"id": "claude-couplet-2.1"},
+                {"id": "claude-couplet-1.5"},
+                {"id": "claude-quatrain-3.2"},
+            ]
+        )
+
+        # Fallback to newest available
+        model_id, returned_name = get_copilot_model("claude-couplet-3-0")
+        assert model_id == "claude-couplet-2.1"
+        assert returned_name == "claude-couplet-3-0"
+
+        # Exact match
+        model_id, _ = get_copilot_model("claude-quatrain-3-2")
+        assert model_id == "claude-quatrain-3.2"
+
+    def test_smart_fallback_version_lower_than_available(self):
+        """When requested version is older than all available, use newest."""
+        set_copilot_models(
+            [
+                {"id": "claude-sonnet-10.7"},
+                {"id": "claude-sonnet-9.12"},
+            ]
+        )
+
+        model_id, _ = get_copilot_model("claude-sonnet-8-0")
+        assert model_id == "claude-sonnet-10.7"
+
+    def test_hardcoded_map_trusted_when_not_in_dynamic_registry(self):
+        """Hardcoded map target is trusted even if not yet in the dynamic registry."""
+        # Simulate startup timing: dynamic models loaded but incomplete
+        set_copilot_models([{"id": "gpt-4o"}])
+
+        # claude-sonnet-4-5 is in COPILOT_MODEL_MAP -> claude-sonnet-4.5,
+        # but claude-sonnet-4.5 is NOT in the dynamic registry.
+        # Should still return the hardcoded target, not fall to default.
+        model_id, returned_name = get_copilot_model("claude-sonnet-4-5")
+        assert model_id == "claude-sonnet-4.5"
+        assert returned_name == "claude-sonnet-4-5"
+
     def test_empty_string_falls_back_to_default(self):
         model_id, returned_name = get_copilot_model("")
         assert model_id == DEFAULT_COPILOT_MODEL
@@ -123,6 +215,13 @@ class TestGetCopilotModel:
 
 
 class TestGetCopilotOpenAIModel:
+    @pytest.fixture(autouse=True)
+    def reset_registry(self):
+        """Reset the dynamic model registry before and after each test."""
+        set_copilot_models([])
+        yield
+        set_copilot_models([])
+
     @pytest.mark.parametrize("model_name,expected", list(COPILOT_OPENAI_MODEL_MAP.items()))
     def test_all_openai_map_entries(self, model_name, expected):
         assert get_copilot_openai_model(model_name) == expected
@@ -134,7 +233,7 @@ class TestGetCopilotOpenAIModel:
         assert get_copilot_openai_model("claude-sonnet-4.5") == "claude-sonnet-4.5"
 
     def test_anthropic_name_mapping(self):
-        # Anthropic versioned name should map via COPILOT_MODEL_MAP
+        # Anthropic versioned name should map via COPILOT_MODEL_MAP (no dynamic models)
         assert get_copilot_openai_model("claude-sonnet-4-5-20250929") == "claude-sonnet-4.5"
 
     def test_anthropic_partial_match(self):
@@ -219,6 +318,38 @@ class TestDynamicCopilotModels:
         """Partial Anthropic name matches resolve when target is in dynamic registry."""
         set_copilot_models([{"id": "claude-sonnet-4.5"}])
         assert get_copilot_openai_model("prefix-claude-sonnet-4-5-20250929-suffix") == "claude-sonnet-4.5"
+
+    def test_openai_smart_fallback_for_claude_models(self):
+        """Test that OpenAI endpoint also gets smart fallback for Claude models."""
+        # Mock available models without Sonnet 4.6
+        set_copilot_models(
+            [
+                {"id": "claude-sonnet-4.5"},
+                {"id": "claude-opus-4.5"},
+                {"id": "gpt-4o"},
+            ]
+        )
+
+        # Test Sonnet 4.6 fallback
+        assert get_copilot_openai_model("claude-sonnet-4-6") == "claude-sonnet-4.5"
+
+        # Test Opus 4.6 fallback
+        assert get_copilot_openai_model("claude-opus-4-6") == "claude-opus-4.5"
+
+        # Non-Claude models should pass through
+        assert get_copilot_openai_model("gpt-4o") == "gpt-4o"
+
+    def test_openai_substring_bug_regression(self):
+        """Regression: partial match must not match claude-sonnet-4 for claude-sonnet-4-6."""
+        set_copilot_models(
+            [
+                {"id": "claude-sonnet-4.5"},
+                {"id": "claude-sonnet-4"},
+            ]
+        )
+
+        # Should get 4.5 via smart fallback, NOT 4 via substring match
+        assert get_copilot_openai_model("claude-sonnet-4-6") == "claude-sonnet-4.5"
 
     def test_get_copilot_model_checks_dynamic_registry(self):
         """get_copilot_model() finds models in the dynamic registry."""

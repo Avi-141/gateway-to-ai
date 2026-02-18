@@ -171,7 +171,7 @@ def get_copilot_openai_model(model: str) -> str:
 
     When dynamic models are available (fetched from Copilot API at startup),
     checks the dynamic registry first, then COPILOT_MODEL_MAP for Anthropic
-    versioned names. Models not found anywhere pass through as-is.
+    versioned names. Uses smart fallback for Claude models not found in registry.
 
     When no dynamic models are available, falls back to hardcoded maps.
     """
@@ -184,12 +184,17 @@ def get_copilot_openai_model(model: str) -> str:
             resolved = COPILOT_MODEL_MAP[model]
             if resolved in _copilot_model_ids:
                 return resolved
+        # Smart fallback: find newest available version for Claude models.
+        # This runs before partial match to avoid e.g. "claude-sonnet-4" in
+        # "claude-sonnet-4-6" incorrectly matching the older model.
+        fallback = _find_newest_available_claude_model(model)
+        if fallback:
+            return fallback[0]
         # Partial match in Anthropic->Copilot map
         for key, value in COPILOT_MODEL_MAP.items():
             if key in model and value in _copilot_model_ids:
                 return value
-        # Not found in dynamic registry — pass through as-is
-        # (let Copilot API reject if invalid, avoids sending wrong guessed IDs)
+        # Not found — pass through as-is
         return model
     # No dynamic models: fall back to hardcoded maps
     if model in COPILOT_OPENAI_MODEL_MAP:
@@ -205,25 +210,117 @@ def get_copilot_openai_model(model: str) -> str:
     return model
 
 
+def _find_newest_available_claude_model(requested_model: str) -> tuple[str, str] | None:
+    """Find the newest available Claude model compatible with the requested one.
+
+    Parses the Anthropic model name (claude-{family}-{major}-{minor}[-{date}])
+    and finds the best match from dynamically fetched Copilot models
+    (claude-{family}-{major}.{minor}).
+
+    Returns (copilot_model_id, original_requested_model) or None.
+    """
+    if not _copilot_model_ids or not requested_model.startswith("claude-"):
+        return None
+
+    parts = requested_model[7:].split("-")  # Remove "claude-" prefix
+    if len(parts) < 3:
+        return None
+
+    family = parts[0]
+    try:
+        major = int(parts[1])
+        minor = int(parts[2])
+    except ValueError:
+        return None
+
+    # Find all available versions of this family in the dynamic registry
+    family_prefix = f"claude-{family}-"
+    available: list[tuple[int, int, str]] = []
+    for model_id in _copilot_model_ids:
+        if model_id.startswith(family_prefix):
+            version_parts = model_id[len(family_prefix) :].split(".")
+            if len(version_parts) >= 2:
+                try:
+                    available.append((int(version_parts[0]), int(version_parts[1]), model_id))
+                except ValueError:
+                    continue
+
+    if not available:
+        return None
+
+    # Sort highest first
+    available.sort(reverse=True)
+
+    # Prefer the newest version that doesn't exceed the requested version
+    for avail_major, avail_minor, model_id in available:
+        if avail_major < major or (avail_major == major and avail_minor <= minor):
+            return model_id, requested_model
+
+    # Requested version is older than everything available; use the newest
+    return available[0][2], requested_model
+
+
 def get_copilot_model(model: str) -> tuple[str, str]:
     """Map Anthropic model name to Copilot model ID.
 
     Returns (copilot_model_id, anthropic_model_name) tuple.
     The anthropic_model_name is used for response translation (model label only).
 
-    When dynamic models are available, validates against them.
+    When dynamic models are available, validates against them and uses smart
+    fallback to find the newest compatible Claude model version.
     """
-    # Direct match in COPILOT_MODEL_MAP (Anthropic versioned names)
+    if _copilot_model_ids:
+        # --- Dynamic models available: validate all lookups against registry ---
+
+        # Direct match in COPILOT_MODEL_MAP, target confirmed available
+        if model in COPILOT_MODEL_MAP:
+            target = COPILOT_MODEL_MAP[model]
+            if target in _copilot_model_ids:
+                return target, model
+            # Target not in registry — try smart fallback, but trust the
+            # hardcoded map if no better match exists (handles startup timing
+            # where the registry may not have populated yet).
+            fallback = _find_newest_available_claude_model(model)
+            if fallback:
+                return fallback
+            return target, model
+
+        # Exact match in dynamic registry (covers Copilot display names)
+        if model in _copilot_model_ids:
+            return model, model
+
+        # Smart fallback: find newest available version for Claude models.
+        # This runs before partial match to avoid e.g. "claude-sonnet-4" in
+        # "claude-sonnet-4-6" incorrectly matching the older model.
+        fallback = _find_newest_available_claude_model(model)
+        if fallback:
+            return fallback
+
+        # Partial match in COPILOT_MODEL_MAP, target confirmed available
+        for key, value in COPILOT_MODEL_MAP.items():
+            if key in model and value in _copilot_model_ids:
+                return value, key
+
+        # Non-Claude models in COPILOT_OPENAI_MODEL_MAP, confirmed available
+        if model in COPILOT_OPENAI_MODEL_MAP and COPILOT_OPENAI_MODEL_MAP[model] in _copilot_model_ids:
+            return COPILOT_OPENAI_MODEL_MAP[model], model
+        for key, value in COPILOT_OPENAI_MODEL_MAP.items():
+            if key in model and value in _copilot_model_ids:
+                return value, key
+
+        # Default (dynamic models loaded but nothing matched)
+        return DEFAULT_COPILOT_MODEL, "claude-sonnet-4-5-20250929"
+
+    # --- No dynamic models: use hardcoded maps ---
+
+    # Direct match in COPILOT_MODEL_MAP
     if model in COPILOT_MODEL_MAP:
         return COPILOT_MODEL_MAP[model], model
     # Partial match in COPILOT_MODEL_MAP
     for key, value in COPILOT_MODEL_MAP.items():
         if key in model:
             return value, key
-    # Check dynamic registry for non-Anthropic models
-    if _copilot_model_ids and model in _copilot_model_ids:
-        return model, model
-    # Direct match in COPILOT_OPENAI_MODEL_MAP (GPT, Gemini, Grok, etc.)
+    # Direct match in COPILOT_OPENAI_MODEL_MAP
     if model in COPILOT_OPENAI_MODEL_MAP:
         return COPILOT_OPENAI_MODEL_MAP[model], model
     # Partial match in COPILOT_OPENAI_MODEL_MAP
