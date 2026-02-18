@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - Non-Claude models (GPT, Gemini, Grok, etc.) are now accessible via `/v1/messages` (Anthropic API) when the Copilot backend is available. Previously these models were only reachable through `/v1/chat/completions`. When Bedrock is the primary backend with Copilot as fallback, non-Claude model requests route directly to Copilot. Bedrock-only configurations return a clear 400 error for unsupported models.
 - `/v1/models` now includes non-Claude models when Bedrock is the primary backend with Copilot as fallback.
+- OpenAI Responses API support for codex models (`gpt-5.x-codex`) that only support the `/responses` endpoint. Requests are automatically translated between Anthropic/OpenAI and Responses API formats, with full streaming support.
 
 ### Fixed
 
