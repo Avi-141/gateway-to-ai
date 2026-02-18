@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -15,7 +16,7 @@ from .copilot_translate import (
     anthropic_to_openai_request,
     openai_to_anthropic_response,
 )
-from .errors import CopilotHttpError, TransientBackendError
+from .errors import ContextWindowExceededError, CopilotHttpError, TransientBackendError
 
 COPILOT_CHAT_URL = "https://api.githubcopilot.com/chat/completions"
 COPILOT_MODELS_URL = "https://api.githubcopilot.com/models"
@@ -28,6 +29,30 @@ _ERROR_TYPE_MAP: dict[int, str] = {
     503: "api_error",
     504: "timeout_error",
 }
+
+
+# Pattern to extract token counts from Copilot's token limit error
+# e.g. "prompt token count of 145794 exceeds the limit of 128000"
+_TOKEN_LIMIT_PATTERN = re.compile(r"prompt token count of (\d+) exceeds the limit of (\d+)")
+
+
+def _parse_token_limit_error(status_code: int, detail: str) -> ContextWindowExceededError | None:
+    """Check if a Copilot error is a token limit exceeded error.
+
+    Returns ContextWindowExceededError if matched, None otherwise.
+    When the regex matches, exact token counts are extracted.
+    When only the error code matches, the original detail is preserved
+    so callers can pass it through rather than fabricating numbers.
+    """
+    if status_code != 400:
+        return None
+    match = _TOKEN_LIMIT_PATTERN.search(detail)
+    if match:
+        return ContextWindowExceededError(int(match.group(1)), int(match.group(2)), "copilot")
+    # Fallback: check for the error code without parseable numbers
+    if "model_max_prompt_tokens_exceeded" in detail:
+        return ContextWindowExceededError(0, 0, "copilot", detail)
+    return None
 
 
 class CopilotBackend:
@@ -117,6 +142,9 @@ class CopilotBackend:
             if resp.status_code != 200:
                 detail = resp.text[:500]
                 logger.error(f"{log_prefix}Copilot error {resp.status_code}: {detail}")
+                token_err = _parse_token_limit_error(resp.status_code, detail)
+                if token_err:
+                    raise token_err
                 if resp.status_code in FALLBACK_ON_ERRORS:
                     error_type = _ERROR_TYPE_MAP.get(resp.status_code, "api_error")
                     raise TransientBackendError(resp.status_code, error_type, detail, "copilot")
@@ -145,6 +173,9 @@ class CopilotBackend:
             detail = body.decode()[:500]
             await stream_cm.__aexit__(None, None, None)
             logger.error(f"{log_prefix}Copilot stream error {resp.status_code}: {detail}")
+            token_err = _parse_token_limit_error(resp.status_code, detail)
+            if token_err:
+                raise token_err
             if resp.status_code in FALLBACK_ON_ERRORS:
                 error_type = _ERROR_TYPE_MAP.get(resp.status_code, "api_error")
                 raise TransientBackendError(resp.status_code, error_type, detail, "copilot")
@@ -230,6 +261,9 @@ class CopilotBackend:
             if resp.status_code != 200:
                 detail = resp.text[:500]
                 logger.error(f"{log_prefix}Copilot error {resp.status_code}: {detail}")
+                token_err = _parse_token_limit_error(resp.status_code, detail)
+                if token_err:
+                    raise token_err
                 if resp.status_code in FALLBACK_ON_ERRORS:
                     error_type = _ERROR_TYPE_MAP.get(resp.status_code, "api_error")
                     raise TransientBackendError(resp.status_code, error_type, detail, "copilot")

@@ -1,6 +1,6 @@
 # claudegate
 
-![Version](https://img.shields.io/badge/version-0.1.0-blue)
+![Version](https://img.shields.io/badge/version-0.2.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-UNLICENSED-green)
 
@@ -415,7 +415,7 @@ The `/v1/chat/completions` endpoint returns OpenAI-compatible error responses:
 
 ### Fallback behavior
 
-**Fallback:** When a fallback backend is configured (`CLAUDEGATE_BACKEND=copilot,bedrock`), transient errors (429, 500, 502, 503, 504) on the primary backend automatically trigger a retry on the fallback. Non-transient errors (400, 401, 403) are returned immediately without fallback. For streaming requests, fallback only works for pre-stream errors (connection failures, HTTP status errors before the first chunk is sent). Mid-stream errors are delivered as SSE error events as usual.
+**Fallback:** When a fallback backend is configured (`CLAUDEGATE_BACKEND=copilot,bedrock`), transient errors (429, 500, 502, 503, 504) on the primary backend automatically trigger a retry on the fallback. Context window exceeded errors (e.g., Copilot's 128K limit) also trigger fallback, and if fallback fails, return an error in the format that Claude Code recognises for auto-compaction. Other non-transient errors (400, 401, 403) are returned immediately without fallback. For streaming requests, fallback only works for pre-stream errors (connection failures, HTTP status errors before the first chunk is sent). Mid-stream errors are delivered as SSE error events as usual.
 
 **Bedrock:** The proxy detects expired AWS credentials and resets the credential cache. If credentials are still expired (e.g., SSO session expired), refresh them manually:
 

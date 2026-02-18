@@ -1,6 +1,6 @@
 """Tests for claudegate/errors.py."""
 
-from claudegate.errors import CopilotHttpError, TransientBackendError
+from claudegate.errors import ContextWindowExceededError, CopilotHttpError, TransientBackendError
 
 
 class TestTransientBackendError:
@@ -35,4 +35,22 @@ class TestCopilotHttpError:
 
     def test_is_exception(self):
         err = CopilotHttpError(404, "not found")
+        assert isinstance(err, Exception)
+
+
+class TestContextWindowExceededError:
+    def test_attributes(self):
+        err = ContextWindowExceededError(145794, 128000, "copilot")
+        assert err.prompt_tokens == 145794
+        assert err.context_limit == 128000
+        assert err.backend == "copilot"
+
+    def test_str(self):
+        err = ContextWindowExceededError(145794, 128000, "copilot")
+        assert "145794" in str(err)
+        assert "128000" in str(err)
+        assert "copilot" in str(err)
+
+    def test_is_exception(self):
+        err = ContextWindowExceededError(145794, 128000, "copilot")
         assert isinstance(err, Exception)

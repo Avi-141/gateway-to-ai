@@ -6,8 +6,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from claudegate.copilot_client import CopilotBackend
-from claudegate.errors import CopilotHttpError, TransientBackendError
+from claudegate.copilot_client import CopilotBackend, _parse_token_limit_error
+from claudegate.errors import ContextWindowExceededError, CopilotHttpError, TransientBackendError
+
+# Copilot token limit error payload used across multiple tests
+_TOKEN_LIMIT_DETAIL = (
+    '{"error":{"message":"prompt token count of 145794 exceeds the limit of 128000",'
+    '"code":"model_max_prompt_tokens_exceeded"}}'
+)
 
 
 @pytest.fixture
@@ -70,6 +76,107 @@ class TestListModels:
             result = await backend.list_models()
 
         assert result == []
+
+
+# --- _parse_token_limit_error ---
+
+
+class TestParseTokenLimitError:
+    def test_matches_standard_copilot_error(self):
+        detail = _TOKEN_LIMIT_DETAIL
+        err = _parse_token_limit_error(400, detail)
+        assert err is not None
+        assert err.prompt_tokens == 145794
+        assert err.context_limit == 128000
+        assert err.backend == "copilot"
+
+    def test_matches_error_code_without_numbers(self):
+        detail = '{"error":{"message":"request too large","code":"model_max_prompt_tokens_exceeded"}}'
+        err = _parse_token_limit_error(400, detail)
+        assert err is not None
+        assert err.prompt_tokens == 0
+        assert err.context_limit == 0
+        assert err.raw_detail == detail
+
+    def test_returns_none_for_non_400(self):
+        detail = "prompt token count of 145794 exceeds the limit of 128000"
+        assert _parse_token_limit_error(429, detail) is None
+
+    def test_returns_none_for_unrelated_400(self):
+        detail = '{"error":{"message":"invalid model","code":"invalid_request"}}'
+        assert _parse_token_limit_error(400, detail) is None
+
+    def test_returns_none_for_empty_detail(self):
+        assert _parse_token_limit_error(400, "") is None
+
+
+# --- handle_messages token limit ---
+
+
+class TestHandleMessagesTokenLimit:
+    @pytest.mark.anyio
+    async def test_non_streaming_token_limit_raises_context_window_error(self, backend):
+        """400 with token limit exceeded raises ContextWindowExceededError."""
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_response.text = _TOKEN_LIMIT_DETAIL
+
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
+            body = {"model": "x", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]}
+            with pytest.raises(ContextWindowExceededError) as exc_info:
+                await backend.handle_messages(body, "", False, "m", "x")
+
+        assert exc_info.value.prompt_tokens == 145794
+        assert exc_info.value.context_limit == 128000
+
+    @pytest.mark.anyio
+    async def test_streaming_token_limit_raises_context_window_error(self, backend):
+        """400 with token limit in stream open raises ContextWindowExceededError."""
+        mock_resp = AsyncMock()
+        mock_resp.status_code = 400
+        mock_resp.aread = AsyncMock(return_value=_TOKEN_LIMIT_DETAIL.encode())
+
+        mock_stream_ctx = AsyncMock()
+        mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        with (
+            patch.object(backend._client, "stream", return_value=mock_stream_ctx),
+            pytest.raises(ContextWindowExceededError) as exc_info,
+        ):
+            await backend._open_stream({"model": "m"}, "")
+
+        assert exc_info.value.prompt_tokens == 145794
+
+    @pytest.mark.anyio
+    async def test_non_streaming_regular_400_still_raises_copilot_http(self, backend):
+        """A regular 400 (not token limit) still raises CopilotHttpError."""
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_response.text = '{"error":{"message":"invalid model","code":"invalid_request"}}'
+
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
+            body = {"model": "x", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]}
+            with pytest.raises(CopilotHttpError) as exc_info:
+                await backend.handle_messages(body, "", False, "m", "x")
+
+        assert exc_info.value.status_code == 400
+
+
+class TestHandleOpenAIMessagesTokenLimit:
+    @pytest.mark.anyio
+    async def test_token_limit_raises_context_window_error(self, backend):
+        """400 with token limit exceeded raises ContextWindowExceededError for OpenAI path."""
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_response.text = _TOKEN_LIMIT_DETAIL
+
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
+            body = {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}
+            with pytest.raises(ContextWindowExceededError) as exc_info:
+                await backend.handle_openai_messages(body, "", False, "gpt-4o")
+
+        assert exc_info.value.prompt_tokens == 145794
 
 
 # --- _map_http_error ---

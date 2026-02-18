@@ -23,7 +23,7 @@ from .config import (
     LOG_LEVEL,
     logger,
 )
-from .errors import CopilotHttpError, TransientBackendError
+from .errors import ContextWindowExceededError, CopilotHttpError, TransientBackendError
 from .models import (
     BEDROCK_MODEL_MAP,
     COPILOT_MODEL_MAP,
@@ -162,6 +162,37 @@ def _validate_request(body: dict[str, Any]) -> JSONResponse | None:
     if not body["messages"]:
         return _error_response(400, "invalid_request_error", "messages must not be empty")
     return None
+
+
+def _context_window_error_response(err: ContextWindowExceededError, max_tokens: int = 0) -> JSONResponse:
+    """Return an Anthropic-format error that triggers Claude Code's auto-compaction.
+
+    Claude Code recognises errors matching the pattern:
+      "input length and `max_tokens` exceed context limit: X + Y > Z"
+    and responds by compacting/summarizing context before retrying.
+
+    When exact token counts aren't available, falls back to the raw backend
+    error message rather than fabricating incorrect numbers.
+    """
+    if err.prompt_tokens > 0 and err.context_limit > 0:
+        message = (
+            f"input length and `max_tokens` exceed context limit: "
+            f"{err.prompt_tokens} + {max_tokens} > {err.context_limit}, "
+            f"decrease input length or `max_tokens` and try again"
+        )
+    else:
+        # No exact numbers — use a message that still triggers compaction
+        message = (
+            "input length and `max_tokens` exceed context limit, decrease input length or `max_tokens` and try again"
+        )
+    return _error_response(400, "invalid_request_error", message)
+
+
+def _openai_context_window_message(err: ContextWindowExceededError) -> str:
+    """Build an OpenAI-style error message for context window exceeded."""
+    if err.prompt_tokens > 0 and err.context_limit > 0:
+        return f"prompt token count of {err.prompt_tokens} exceeds the limit of {err.context_limit}"
+    return "prompt exceeds the model's maximum context window"
 
 
 def _count_content_tokens(content: Any) -> int:
@@ -446,6 +477,34 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
 
     try:
         return await primary_call()
+    except ContextWindowExceededError as e:
+        max_tokens = body.get("max_tokens", 0)
+        if FALLBACK_BACKEND:
+            logger.warning(
+                f"{log_prefix}Context window exceeded on {e.backend} "
+                f"({e.prompt_tokens} > {e.context_limit}), falling back to {FALLBACK_BACKEND}"
+            )
+            fallback_call = _get_backend_caller(FALLBACK_BACKEND)
+            try:
+                return await fallback_call()
+            except ContextWindowExceededError:
+                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) also exceeded context window")
+                return _context_window_error_response(e, max_tokens)
+            except TransientBackendError as fallback_err:
+                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) failed with {fallback_err.status_code}")
+                return _context_window_error_response(e, max_tokens)
+            except CopilotHttpError as fallback_err:
+                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) HTTP error: {fallback_err}")
+                return _context_window_error_response(e, max_tokens)
+            except RuntimeError as fallback_err:
+                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) auth error: {fallback_err}")
+                return _context_window_error_response(e, max_tokens)
+        else:
+            logger.error(
+                f"{log_prefix}Context window exceeded on {e.backend} "
+                f"({e.prompt_tokens} > {e.context_limit}), no fallback configured"
+            )
+            return _context_window_error_response(e, max_tokens)
     except TransientBackendError as e:
         if not FALLBACK_BACKEND:
             logger.error(f"{log_prefix}{e.backend} transient error {e.status_code}, no fallback configured")
@@ -519,6 +578,34 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
 
     try:
         return await primary_call()
+    except ContextWindowExceededError as e:
+        _ctx_msg = _openai_context_window_message(e)
+        if FALLBACK_BACKEND:
+            logger.warning(
+                f"{log_prefix}Context window exceeded on {e.backend} "
+                f"({e.prompt_tokens} > {e.context_limit}), falling back to {FALLBACK_BACKEND}"
+            )
+            fallback_call = _get_backend_caller(FALLBACK_BACKEND)
+            try:
+                return await fallback_call()
+            except ContextWindowExceededError:
+                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) also exceeded context window")
+                return _openai_error_response(400, _ctx_msg)
+            except TransientBackendError as fallback_err:
+                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) failed with {fallback_err.status_code}")
+                return _openai_error_response(400, _ctx_msg)
+            except CopilotHttpError as fallback_err:
+                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) HTTP error: {fallback_err}")
+                return _openai_error_response(400, _ctx_msg)
+            except RuntimeError as fallback_err:
+                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) auth error: {fallback_err}")
+                return _openai_error_response(400, _ctx_msg)
+        else:
+            logger.error(
+                f"{log_prefix}Context window exceeded on {e.backend} "
+                f"({e.prompt_tokens} > {e.context_limit}), no fallback configured"
+            )
+            return _openai_error_response(400, _ctx_msg)
     except TransientBackendError as e:
         if not FALLBACK_BACKEND:
             logger.error(f"{log_prefix}{e.backend} transient error {e.status_code}, no fallback configured")

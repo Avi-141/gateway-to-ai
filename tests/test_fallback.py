@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from claudegate.app import app
-from claudegate.errors import TransientBackendError
+from claudegate.errors import ContextWindowExceededError, TransientBackendError
 
 
 @pytest.fixture
@@ -213,6 +213,148 @@ class TestFallbackStreaming:
 
         assert resp.status_code == 200
         assert "text/event-stream" in resp.headers.get("content-type", "")
+
+
+class TestContextWindowFallback:
+    """Context window exceeded -> fallback scenarios."""
+
+    @pytest.mark.anyio
+    async def test_copilot_token_limit_fallback_to_bedrock(self, fallback_client, minimal_body):
+        """Copilot token limit exceeded -> fallback to bedrock succeeds."""
+        mock_copilot = AsyncMock()
+        mock_copilot.handle_messages.side_effect = ContextWindowExceededError(145794, 128000, "copilot")
+        mock_copilot.close = AsyncMock()
+
+        mock_bedrock = _mock_bedrock_success()
+
+        with (
+            patch("claudegate.app.BACKEND_TYPE", "copilot"),
+            patch("claudegate.app.FALLBACK_BACKEND", "bedrock"),
+            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
+        ):
+            resp = await fallback_client.post("/v1/messages", json=minimal_body)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["content"][0]["text"] == "Hello from bedrock"
+
+    @pytest.mark.anyio
+    async def test_copilot_token_limit_no_fallback_returns_anthropic_format(self, fallback_client, minimal_body):
+        """Copilot token limit exceeded, no fallback -> returns Anthropic-format error."""
+        mock_copilot = AsyncMock()
+        mock_copilot.handle_messages.side_effect = ContextWindowExceededError(145794, 128000, "copilot")
+        mock_copilot.close = AsyncMock()
+
+        with (
+            patch("claudegate.app.BACKEND_TYPE", "copilot"),
+            patch("claudegate.app.FALLBACK_BACKEND", ""),
+            patch("claudegate.app._copilot_backend", mock_copilot),
+        ):
+            resp = await fallback_client.post("/v1/messages", json=minimal_body)
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body["type"] == "error"
+        assert body["error"]["type"] == "invalid_request_error"
+        # Must contain the pattern Claude Code recognises for auto-compaction
+        msg = body["error"]["message"]
+        assert "input length and `max_tokens` exceed context limit" in msg
+        assert "145794" in msg
+        assert "128000" in msg
+
+    @pytest.mark.anyio
+    async def test_copilot_token_limit_fallback_also_fails(self, fallback_client, minimal_body):
+        """Copilot token limit exceeded -> fallback bedrock also fails -> returns compaction error."""
+        mock_copilot = AsyncMock()
+        mock_copilot.handle_messages.side_effect = ContextWindowExceededError(145794, 128000, "copilot")
+        mock_copilot.close = AsyncMock()
+
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.side_effect = make_client_error("ThrottlingException", "rate limited")
+
+        with (
+            patch("claudegate.app.BACKEND_TYPE", "copilot"),
+            patch("claudegate.app.FALLBACK_BACKEND", "bedrock"),
+            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
+        ):
+            resp = await fallback_client.post("/v1/messages", json=minimal_body)
+
+        # Should return the context window error (for auto-compaction) not the bedrock error
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "input length and `max_tokens` exceed context limit" in body["error"]["message"]
+
+    @pytest.mark.anyio
+    async def test_openai_compat_token_limit_fallback(self, fallback_client):
+        """OpenAI compat endpoint: Copilot token limit exceeded -> fallback to bedrock."""
+        mock_copilot = AsyncMock()
+        mock_copilot.handle_openai_messages.side_effect = ContextWindowExceededError(145794, 128000, "copilot")
+        mock_copilot.close = AsyncMock()
+
+        mock_bedrock = _mock_bedrock_success()
+
+        openai_body = {
+            "model": "claude-sonnet-4-5",
+            "messages": [{"role": "user", "content": "Hello"}],
+        }
+
+        with (
+            patch("claudegate.app.BACKEND_TYPE", "copilot"),
+            patch("claudegate.app.FALLBACK_BACKEND", "bedrock"),
+            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
+        ):
+            resp = await fallback_client.post("/v1/chat/completions", json=openai_body)
+
+        assert resp.status_code == 200
+
+    @pytest.mark.anyio
+    async def test_openai_compat_token_limit_no_fallback(self, fallback_client):
+        """OpenAI compat endpoint: Copilot token limit exceeded, no fallback -> OpenAI error format."""
+        mock_copilot = AsyncMock()
+        mock_copilot.handle_openai_messages.side_effect = ContextWindowExceededError(145794, 128000, "copilot")
+        mock_copilot.close = AsyncMock()
+
+        openai_body = {
+            "model": "claude-sonnet-4-5",
+            "messages": [{"role": "user", "content": "Hello"}],
+        }
+
+        with (
+            patch("claudegate.app.BACKEND_TYPE", "copilot"),
+            patch("claudegate.app.FALLBACK_BACKEND", ""),
+            patch("claudegate.app._copilot_backend", mock_copilot),
+        ):
+            resp = await fallback_client.post("/v1/chat/completions", json=openai_body)
+
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "error" in body
+        assert "145794" in body["error"]["message"]
+        assert "128000" in body["error"]["message"]
+
+    @pytest.mark.anyio
+    async def test_no_exact_numbers_returns_generic_compaction_message(self, fallback_client, minimal_body):
+        """When token counts aren't parseable, error message avoids fabricating numbers."""
+        mock_copilot = AsyncMock()
+        mock_copilot.handle_messages.side_effect = ContextWindowExceededError(0, 0, "copilot", "request too large")
+        mock_copilot.close = AsyncMock()
+
+        with (
+            patch("claudegate.app.BACKEND_TYPE", "copilot"),
+            patch("claudegate.app.FALLBACK_BACKEND", ""),
+            patch("claudegate.app._copilot_backend", mock_copilot),
+        ):
+            resp = await fallback_client.post("/v1/messages", json=minimal_body)
+
+        assert resp.status_code == 400
+        body = resp.json()
+        msg = body["error"]["message"]
+        assert "exceed context limit" in msg
+        # Should NOT contain fabricated "0" counts
+        assert "0 +" not in msg
 
 
 def _parse_backends(env_val: str) -> list[str]:
