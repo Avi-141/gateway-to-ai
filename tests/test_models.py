@@ -6,13 +6,13 @@ from claudegate.models import (
     BEDROCK_MODEL_MAP,
     COPILOT_MODEL_MAP,
     COPILOT_OPENAI_MODEL_MAP,
-    DEFAULT_COPILOT_MODEL,
     DEFAULT_MODEL,
     add_region_prefix,
     get_available_copilot_models,
     get_bedrock_model,
     get_copilot_model,
     get_copilot_openai_model,
+    is_claude_model,
     set_copilot_models,
 )
 
@@ -115,10 +115,10 @@ class TestGetCopilotModel:
         assert model_id == "gpt-4o"
         assert returned_name == "gpt-4o"
 
-    def test_unknown_falls_back_to_default(self):
+    def test_unknown_non_claude_passes_through(self):
         model_id, returned_name = get_copilot_model("totally-unknown")
-        assert model_id == DEFAULT_COPILOT_MODEL
-        assert returned_name == "claude-sonnet-4-5-20250929"
+        assert model_id == "totally-unknown"
+        assert returned_name == "totally-unknown"
 
     def test_smart_fallback_sonnet_4_6(self):
         """Regression: claude-sonnet-4-6 was incorrectly matching claude-sonnet-4."""
@@ -205,10 +205,10 @@ class TestGetCopilotModel:
         assert model_id == "claude-sonnet-4.5"
         assert returned_name == "claude-sonnet-4-5"
 
-    def test_empty_string_falls_back_to_default(self):
+    def test_empty_string_passes_through(self):
         model_id, returned_name = get_copilot_model("")
-        assert model_id == DEFAULT_COPILOT_MODEL
-        assert returned_name == "claude-sonnet-4-5-20250929"
+        assert model_id == ""
+        assert returned_name == ""
 
 
 # --- get_copilot_openai_model ---
@@ -359,3 +359,49 @@ class TestDynamicCopilotModels:
         model_id, name = get_copilot_model("gemini-2.5-pro")
         assert model_id == "gemini-2.5-pro"
         assert name == "gemini-2.5-pro"
+
+    def test_get_copilot_model_non_claude_passthrough_dynamic(self):
+        """Non-Claude models not in any map pass through as-is with dynamic models."""
+        set_copilot_models([{"id": "claude-sonnet-4.5"}, {"id": "some-custom-model"}])
+        model_id, name = get_copilot_model("some-custom-model")
+        assert model_id == "some-custom-model"
+        assert name == "some-custom-model"
+
+    def test_get_copilot_model_non_claude_passthrough_static(self):
+        """Non-Claude models not in any map pass through as-is without dynamic models."""
+        model_id, name = get_copilot_model("my-custom-llm")
+        assert model_id == "my-custom-llm"
+        assert name == "my-custom-llm"
+
+    def test_get_copilot_model_unknown_claude_defaults(self):
+        """Unknown Claude models still default to the Claude default."""
+        model_id, name = get_copilot_model("claude-unknown-99-0")
+        # Falls through Claude-specific lookups, but is_claude_model is True,
+        # so it hits the Claude default
+        assert model_id == "claude-sonnet-4.5"
+        assert name == "claude-sonnet-4-5-20250929"
+
+
+# --- is_claude_model ---
+
+
+class TestIsClaudeModel:
+    def test_claude_anthropic_names(self):
+        assert is_claude_model("claude-sonnet-4-5-20250929") is True
+        assert is_claude_model("claude-opus-4-6") is True
+        assert is_claude_model("claude-haiku-4-5") is True
+        assert is_claude_model("claude-3-5-sonnet-20241022") is True
+
+    def test_bedrock_model_ids(self):
+        assert is_claude_model("anthropic.claude-sonnet-4-5-20250929-v1:0") is True
+        assert is_claude_model("us.anthropic.claude-3-haiku-20240307-v1:0") is True
+
+    def test_non_claude_models(self):
+        assert is_claude_model("gpt-4o") is False
+        assert is_claude_model("gpt-5.1-codex") is False
+        assert is_claude_model("gemini-2.5-pro") is False
+        assert is_claude_model("grok-code-fast-1") is False
+        assert is_claude_model("totally-unknown") is False
+
+    def test_empty_string(self):
+        assert is_claude_model("") is False

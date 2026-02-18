@@ -33,6 +33,7 @@ from .models import (
     get_bedrock_model,
     get_copilot_model,
     get_copilot_openai_model,
+    is_claude_model,
     set_copilot_models,
 )
 from .openai_translate import (
@@ -467,6 +468,34 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
     stream = body.get("stream", False)
     log_prefix = f"[{request_id}] " if request_id else ""
 
+    # Route non-Claude models (GPT, Gemini, Grok, etc.) to Copilot when available.
+    # Bedrock only supports Claude models, so non-Claude models need Copilot.
+    requested_model = body["model"]
+    if not is_claude_model(requested_model):
+        copilot_available = BACKEND_TYPE == "copilot" or FALLBACK_BACKEND == "copilot"
+        if not copilot_available:
+            return _error_response(
+                400,
+                "invalid_request_error",
+                f"Model '{requested_model}' is not supported on the Bedrock backend. "
+                "Non-Claude models require the Copilot backend.",
+            )
+        # Force route to Copilot for non-Claude models
+        try:
+            return await _call_copilot(body, request_id, stream)
+        except ContextWindowExceededError as e:
+            return _context_window_error_response(e, body.get("max_tokens", 0))
+        except TransientBackendError as e:
+            return _error_response(e.status_code, e.error_type, e.message)
+        except CopilotHttpError as e:
+            return _error_response(e.status_code, "api_error", e.detail)
+        except RuntimeError as e:
+            logger.error(f"{log_prefix}Auth error: {e}")
+            return _error_response(401, "authentication_error", str(e))
+        except Exception as e:
+            logger.error(f"{log_prefix}Unexpected error: {e}")
+            return _error_response(500, "api_error", str(e))
+
     # Map backend name to call function
     def _get_backend_caller(backend_name: str):
         if backend_name == "copilot":
@@ -744,6 +773,33 @@ async def list_models() -> dict[str, Any]:
             }
             for model_id in BEDROCK_MODEL_MAP
         ]
+        # When Copilot is a fallback, also include non-Claude models from Copilot
+        if FALLBACK_BACKEND == "copilot":
+            bedrock_ids = set(BEDROCK_MODEL_MAP.keys())
+            dynamic_models = get_available_copilot_models()
+            if dynamic_models:
+                for m in dynamic_models:
+                    mid = m.get("id", "")
+                    if mid and not is_claude_model(mid) and mid not in bedrock_ids:
+                        models.append(
+                            {
+                                "id": mid,
+                                "object": "model",
+                                "created": m.get("created_at", 1700000000),
+                                "owned_by": m.get("owned_by", _infer_owned_by(mid)),
+                            }
+                        )
+            else:
+                for model_id in COPILOT_OPENAI_MODEL_MAP:
+                    if not is_claude_model(model_id) and model_id not in bedrock_ids:
+                        models.append(
+                            {
+                                "id": model_id,
+                                "object": "model",
+                                "created": 1700000000,
+                                "owned_by": _infer_owned_by(model_id),
+                            }
+                        )
     return {
         "object": "list",
         "data": models,

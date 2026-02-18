@@ -316,6 +316,80 @@ class TestMessagesRoute:
         assert resp.status_code == 500
         assert "unexpected" in resp.json()["error"]["message"]
 
+    @pytest.mark.anyio
+    async def test_non_claude_model_bedrock_only_returns_error(self, async_client, monkeypatch):
+        """Non-Claude model with Bedrock-only backend returns 400 error."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "")
+
+        resp = await async_client.post(
+            "/v1/messages",
+            json={
+                "model": "gpt-5.1-codex",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert resp.status_code == 400
+        body = resp.json()
+        assert "not supported" in body["error"]["message"]
+        assert "Bedrock" in body["error"]["message"]
+        assert "Copilot" in body["error"]["message"]
+
+    @pytest.mark.anyio
+    async def test_non_claude_model_bedrock_with_copilot_fallback(self, async_client, monkeypatch):
+        """Non-Claude model with Bedrock primary + Copilot fallback routes to Copilot."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+
+        mock_backend = AsyncMock()
+        from fastapi.responses import JSONResponse
+
+        anthropic_resp = {
+            "id": "msg_456",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Gemini response"}],
+            "model": "gemini-2.5-pro",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 3},
+        }
+        mock_backend.handle_messages.return_value = JSONResponse(content=anthropic_resp)
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+
+        resp = await async_client.post(
+            "/v1/messages",
+            json={
+                "model": "gemini-2.5-pro",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["content"][0]["text"] == "Gemini response"
+        mock_backend.handle_messages.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_non_claude_model_copilot_error_handling(self, async_client, monkeypatch):
+        """Non-Claude model routing to Copilot handles errors correctly."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+
+        mock_backend = AsyncMock()
+        mock_backend.handle_messages.side_effect = CopilotHttpError(429, "Rate limited")
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+
+        resp = await async_client.post(
+            "/v1/messages",
+            json={
+                "model": "gpt-4o",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        )
+        assert resp.status_code == 429
+        assert "Rate limited" in resp.json()["error"]["message"]
+
 
 # --- Streaming Error Handling ---
 
@@ -863,6 +937,53 @@ class TestModelsRoute:
         body = resp.json()
         # Should have entries from the hardcoded maps
         assert len(body["data"]) > 0
+
+    @pytest.mark.anyio
+    async def test_bedrock_with_copilot_fallback_includes_non_claude(self, async_client, monkeypatch):
+        """When Bedrock is primary with Copilot fallback, /v1/models includes non-Claude models."""
+        from claudegate.models import set_copilot_models
+
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+        dynamic = [
+            {"id": "claude-sonnet-4.5", "owned_by": "anthropic"},
+            {"id": "gpt-4o", "owned_by": "openai"},
+            {"id": "gemini-2.5-pro"},
+        ]
+        set_copilot_models(dynamic)
+        try:
+            resp = await async_client.get("/v1/models")
+            assert resp.status_code == 200
+            body = resp.json()
+            ids = [m["id"] for m in body["data"]]
+            # Should include Bedrock Claude models
+            assert "claude-sonnet-4-5-20250929" in ids
+            # Should include non-Claude models from Copilot
+            assert "gpt-4o" in ids
+            assert "gemini-2.5-pro" in ids
+            # Should NOT include Claude models from Copilot (already in Bedrock)
+            assert ids.count("claude-sonnet-4.5") == 0  # Copilot display name not in Bedrock map
+        finally:
+            set_copilot_models([])
+
+    @pytest.mark.anyio
+    async def test_bedrock_with_copilot_fallback_hardcoded(self, async_client, monkeypatch):
+        """When no dynamic models, Bedrock+Copilot fallback uses hardcoded non-Claude models."""
+        from claudegate.models import set_copilot_models
+
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+        set_copilot_models([])
+
+        resp = await async_client.get("/v1/models")
+        assert resp.status_code == 200
+        body = resp.json()
+        ids = [m["id"] for m in body["data"]]
+        # Should include non-Claude models from COPILOT_OPENAI_MODEL_MAP
+        assert "gpt-4o" in ids
+        assert "gemini-2.5-pro" in ids
+        # Should include Bedrock Claude models
+        assert "claude-sonnet-4-5-20250929" in ids
 
 
 # --- POST /v1/messages/count_tokens ---

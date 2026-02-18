@@ -4,6 +4,15 @@ from typing import Any
 
 from .config import BEDROCK_REGION_PREFIX
 
+
+def is_claude_model(model: str) -> bool:
+    """Check if a model name refers to a Claude model.
+
+    Returns True for Anthropic model names (claude-*) and Bedrock model IDs (anthropic.*).
+    """
+    return model.startswith("claude-") or model.startswith("claude ") or "anthropic." in model
+
+
 # Default model when no match found
 DEFAULT_MODEL = "anthropic.claude-sonnet-4-5-20250929-v1:0"
 
@@ -308,7 +317,11 @@ def get_copilot_model(model: str) -> tuple[str, str]:
             if key in model and value in _copilot_model_ids:
                 return value, key
 
-        # Default (dynamic models loaded but nothing matched)
+        # Non-Claude models: pass through as-is (Copilot may support them directly)
+        if not is_claude_model(model):
+            return model, model
+
+        # Default (dynamic models loaded but no Claude match found)
         return DEFAULT_COPILOT_MODEL, "claude-sonnet-4-5-20250929"
 
     # --- No dynamic models: use hardcoded maps ---
@@ -327,5 +340,8 @@ def get_copilot_model(model: str) -> tuple[str, str]:
     for key, value in COPILOT_OPENAI_MODEL_MAP.items():
         if key in model:
             return value, key
+    # Non-Claude models: pass through as-is
+    if not is_claude_model(model):
+        return model, model
     # Default
     return DEFAULT_COPILOT_MODEL, "claude-sonnet-4-5-20250929"
