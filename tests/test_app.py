@@ -1189,3 +1189,200 @@ class TestEventLoggingRoute:
         resp = await async_client.post("/api/event_logging/batch", json={})
         assert resp.status_code == 200
         assert resp.json()["status"] == "ok"
+
+
+# --- Server-Side Tool Routing ---
+
+
+class TestServerToolRouting:
+    """Tests for server-side tool (e.g. web_search) routing in /v1/messages."""
+
+    @pytest.mark.anyio
+    async def test_copilot_with_bedrock_fallback_routes_to_bedrock(
+        self, async_client, mock_bedrock_client, monkeypatch
+    ):
+        """Copilot primary + Bedrock fallback: server tools route to Bedrock."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "bedrock")
+
+        mock_response = {
+            "body": BytesIO(
+                json.dumps(
+                    {
+                        "id": "msg_123",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Search result"}],
+                        "stop_reason": "end_turn",
+                        "usage": {"input_tokens": 5, "output_tokens": 2},
+                    }
+                ).encode()
+            )
+        }
+        mock_bedrock_client.invoke_model.return_value = mock_response
+
+        resp = await async_client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-sonnet-4-5-20250929",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "search the web"}],
+                "tools": [
+                    {"type": "web_search_20250305", "name": "web_search"},
+                    {"name": "get_weather", "description": "d", "input_schema": {}},
+                ],
+            },
+        )
+        assert resp.status_code == 200
+        # Bedrock should have been called (not Copilot)
+        mock_bedrock_client.invoke_model.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_copilot_only_strips_server_tools(self, async_client, monkeypatch):
+        """Copilot primary with no fallback: server tools are stripped."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "")
+
+        mock_backend = AsyncMock()
+        from fastapi.responses import JSONResponse
+
+        anthropic_resp = {
+            "id": "msg_123",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Response without search"}],
+            "model": "claude-sonnet-4-5-20250929",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 3},
+        }
+        mock_backend.handle_messages.return_value = JSONResponse(content=anthropic_resp)
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+
+        resp = await async_client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-sonnet-4-5-20250929",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "search the web"}],
+                "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+            },
+        )
+        assert resp.status_code == 200
+        # Copilot should have been called
+        mock_backend.handle_messages.assert_called_once()
+        # The body passed to handle_messages should not contain server tools
+        call_body = mock_backend.handle_messages.call_args[0][0]
+        assert "tools" not in call_body
+
+    @pytest.mark.anyio
+    async def test_copilot_with_bedrock_fallback_falls_back_on_bedrock_error(self, async_client, monkeypatch):
+        """Copilot primary + Bedrock fallback: if Bedrock fails, strips tools and uses Copilot."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "bedrock")
+
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.side_effect = make_client_error("ThrottlingException", "rate limited")
+
+        mock_copilot = AsyncMock()
+        from fastapi.responses import JSONResponse
+
+        anthropic_resp = {
+            "id": "msg_456",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Fallback response"}],
+            "model": "claude-sonnet-4-5-20250929",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 3},
+        }
+        mock_copilot.handle_messages.return_value = JSONResponse(content=anthropic_resp)
+
+        with (
+            patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
+            patch("claudegate.app._copilot_backend", mock_copilot),
+        ):
+            resp = await async_client.post(
+                "/v1/messages",
+                json={
+                    "model": "claude-sonnet-4-5-20250929",
+                    "max_tokens": 100,
+                    "messages": [{"role": "user", "content": "search the web"}],
+                    "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+                },
+            )
+
+        assert resp.status_code == 200
+        assert resp.json()["content"][0]["text"] == "Fallback response"
+        # Copilot should have been called with stripped tools
+        call_body = mock_copilot.handle_messages.call_args[0][0]
+        assert "tools" not in call_body
+
+    @pytest.mark.anyio
+    async def test_bedrock_primary_passes_server_tools_through(self, async_client, mock_bedrock_client, monkeypatch):
+        """Bedrock primary: server tools pass through natively (no stripping)."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+
+        mock_response = {
+            "body": BytesIO(
+                json.dumps(
+                    {
+                        "id": "msg_123",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Search result"}],
+                        "stop_reason": "end_turn",
+                        "usage": {"input_tokens": 5, "output_tokens": 2},
+                    }
+                ).encode()
+            )
+        }
+        mock_bedrock_client.invoke_model.return_value = mock_response
+
+        resp = await async_client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-sonnet-4-5-20250929",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "search the web"}],
+                "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+            },
+        )
+        assert resp.status_code == 200
+        # Bedrock gets the request with tools intact
+        call_args = mock_bedrock_client.invoke_model.call_args
+        sent_body = json.loads(call_args[1]["body"])
+        assert any(t.get("type") == "web_search_20250305" for t in sent_body.get("tools", []))
+
+    @pytest.mark.anyio
+    async def test_no_server_tools_no_rerouting(self, async_client, monkeypatch):
+        """Requests without server tools follow normal routing."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "bedrock")
+
+        mock_backend = AsyncMock()
+        from fastapi.responses import JSONResponse
+
+        anthropic_resp = {
+            "id": "msg_123",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Normal response"}],
+            "model": "claude-sonnet-4-5-20250929",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 3},
+        }
+        mock_backend.handle_messages.return_value = JSONResponse(content=anthropic_resp)
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+
+        resp = await async_client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-sonnet-4-5-20250929",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "hi"}],
+                "tools": [{"name": "fn", "description": "d", "input_schema": {}}],
+            },
+        )
+        assert resp.status_code == 200
+        # Should use Copilot (primary), not Bedrock
+        mock_backend.handle_messages.assert_called_once()

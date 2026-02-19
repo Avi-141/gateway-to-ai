@@ -23,6 +23,7 @@ from .config import (
     LOG_LEVEL,
     logger,
 )
+from .copilot_translate import has_server_tools, strip_server_tools
 from .errors import ContextWindowExceededError, CopilotHttpError, TransientBackendError
 from .models import (
     BEDROCK_MODEL_MAP,
@@ -510,6 +511,29 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
         except Exception as e:
             logger.error(f"{log_prefix}Unexpected error: {e}")
             return _error_response(500, "api_error", str(e))
+
+    # Route requests with server-side tools (e.g. web_search) appropriately.
+    # Copilot doesn't support server-side tools, so route to Bedrock if available,
+    # or strip them from the request if Copilot-only.
+    if has_server_tools(body) and BACKEND_TYPE == "copilot":
+        if FALLBACK_BACKEND == "bedrock":
+            logger.info(f"{log_prefix}Server-side tools detected, routing to Bedrock fallback")
+            try:
+                return await _call_bedrock(body, request, request_id, stream)
+            except TransientBackendError as e:
+                logger.warning(
+                    f"{log_prefix}Bedrock fallback failed ({e.status_code}), "
+                    "stripping server tools and falling back to Copilot"
+                )
+                body = strip_server_tools(body)
+            except Exception as e:
+                logger.warning(
+                    f"{log_prefix}Bedrock fallback failed ({e}), stripping server tools and falling back to Copilot"
+                )
+                body = strip_server_tools(body)
+        else:
+            logger.info(f"{log_prefix}Server-side tools detected but no Bedrock fallback, stripping from request")
+            body = strip_server_tools(body)
 
     # Map backend name to call function
     def _get_backend_caller(backend_name: str):

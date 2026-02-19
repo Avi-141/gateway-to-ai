@@ -9,7 +9,9 @@ from claudegate.copilot_translate import (
     _translate_tool_choice,
     _translate_tools,
     anthropic_to_openai_request,
+    has_server_tools,
     openai_to_anthropic_response,
+    strip_server_tools,
 )
 
 # --- _translate_content_to_openai ---
@@ -485,3 +487,228 @@ class TestStreamTranslator:
             assert len(parts) >= 2
             assert parts[0].startswith("event: ")
             assert parts[1].startswith("data: ")
+
+
+# --- has_server_tools ---
+
+
+class TestHasServerTools:
+    def test_no_tools(self):
+        assert has_server_tools({}) is False
+        assert has_server_tools({"tools": []}) is False
+
+    def test_only_custom_tools(self):
+        body = {
+            "tools": [
+                {"name": "get_weather", "description": "d", "input_schema": {}},
+                {"type": "custom", "name": "fn2", "description": "d", "input_schema": {}},
+            ]
+        }
+        assert has_server_tools(body) is False
+
+    def test_web_search_tool(self):
+        body = {
+            "tools": [
+                {"type": "web_search_20250305", "name": "web_search"},
+            ]
+        }
+        assert has_server_tools(body) is True
+
+    def test_mixed_tools(self):
+        body = {
+            "tools": [
+                {"name": "get_weather", "description": "d", "input_schema": {}},
+                {"type": "web_search_20250305", "name": "web_search"},
+            ]
+        }
+        assert has_server_tools(body) is True
+
+
+# --- strip_server_tools ---
+
+
+class TestStripServerTools:
+    def test_removes_server_tools_keeps_custom(self):
+        body = {
+            "tools": [
+                {"name": "get_weather", "description": "d", "input_schema": {}},
+                {"type": "web_search_20250305", "name": "web_search"},
+            ],
+            "tool_choice": {"type": "auto"},
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        result = strip_server_tools(body)
+        assert len(result["tools"]) == 1
+        assert result["tools"][0]["name"] == "get_weather"
+        assert "tool_choice" in result
+
+    def test_removes_tools_and_tool_choice_when_all_server(self):
+        body = {
+            "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+            "tool_choice": {"type": "auto"},
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        result = strip_server_tools(body)
+        assert "tools" not in result
+        assert "tool_choice" not in result
+
+    def test_strips_server_tool_use_from_assistant_messages(self):
+        body = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "Let me search"},
+                        {"type": "server_tool_use", "id": "st_1", "name": "web_search"},
+                    ],
+                },
+            ]
+        }
+        result = strip_server_tools(body)
+        assert len(result["messages"]) == 1
+        assert len(result["messages"][0]["content"]) == 1
+        assert result["messages"][0]["content"][0]["type"] == "text"
+
+    def test_strips_web_search_tool_result_from_user_messages(self):
+        body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "web_search_tool_result", "tool_use_id": "st_1", "content": []},
+                        {"type": "text", "text": "What did you find?"},
+                    ],
+                },
+            ]
+        }
+        result = strip_server_tools(body)
+        assert len(result["messages"]) == 1
+        assert len(result["messages"][0]["content"]) == 1
+        assert result["messages"][0]["content"][0]["type"] == "text"
+
+    def test_drops_empty_messages_after_stripping(self):
+        body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "web_search_tool_result", "tool_use_id": "st_1", "content": []},
+                    ],
+                },
+                {"role": "user", "content": "follow up"},
+            ]
+        }
+        result = strip_server_tools(body)
+        assert len(result["messages"]) == 1
+        assert result["messages"][0]["content"] == "follow up"
+
+    def test_does_not_mutate_original(self):
+        body = {
+            "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+            "tool_choice": {"type": "auto"},
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        strip_server_tools(body)
+        # Original should be untouched
+        assert len(body["tools"]) == 1
+        assert "tool_choice" in body
+
+    def test_string_content_messages_unaffected(self):
+        body = {
+            "messages": [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "hi there"},
+            ]
+        }
+        result = strip_server_tools(body)
+        assert len(result["messages"]) == 2
+
+
+# --- _translate_tools with server tools ---
+
+
+class TestTranslateToolsServerToolFiltering:
+    def test_skips_server_tools(self):
+        tools = [
+            {"name": "fn", "description": "does stuff", "input_schema": {"type": "object"}},
+            {"type": "web_search_20250305", "name": "web_search"},
+        ]
+        result = _translate_tools(tools)
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "fn"
+
+    def test_all_server_tools_returns_empty(self):
+        tools = [{"type": "web_search_20250305", "name": "web_search"}]
+        result = _translate_tools(tools)
+        assert result == []
+
+
+# --- anthropic_to_openai_request with server tools ---
+
+
+class TestAnthropicToOpenAIRequestServerTools:
+    def test_server_tools_filtered_no_tools_or_tool_choice_in_output(self):
+        body = {
+            "model": "x",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "search for cats"}],
+            "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+            "tool_choice": {"type": "auto"},
+        }
+        result = anthropic_to_openai_request(body, "m")
+        assert "tools" not in result
+        assert "tool_choice" not in result
+
+    def test_mixed_tools_keeps_custom_in_output(self):
+        body = {
+            "model": "x",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "search for cats"}],
+            "tools": [
+                {"name": "fn", "description": "d", "input_schema": {}},
+                {"type": "web_search_20250305", "name": "web_search"},
+            ],
+            "tool_choice": {"type": "auto"},
+        }
+        result = anthropic_to_openai_request(body, "m")
+        assert len(result["tools"]) == 1
+        assert result["tools"][0]["function"]["name"] == "fn"
+        assert result["tool_choice"] == "auto"
+
+    def test_server_tool_use_blocks_dropped_from_assistant(self):
+        body = {
+            "model": "x",
+            "max_tokens": 100,
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "result"},
+                        {"type": "server_tool_use", "id": "st_1", "name": "web_search"},
+                    ],
+                },
+            ],
+        }
+        result = anthropic_to_openai_request(body, "m")
+        msg = result["messages"][0]
+        assert msg["content"] == "result"
+        assert "tool_calls" not in msg
+
+    def test_web_search_tool_result_dropped_from_user(self):
+        body = {
+            "model": "x",
+            "max_tokens": 100,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "web_search_tool_result", "tool_use_id": "st_1", "content": []},
+                        {"type": "text", "text": "What did you find?"},
+                    ],
+                },
+            ],
+        }
+        result = anthropic_to_openai_request(body, "m")
+        # Only the text part should remain as a user message
+        assert len(result["messages"]) == 1
+        assert result["messages"][0]["role"] == "user"

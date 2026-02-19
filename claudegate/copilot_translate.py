@@ -54,10 +54,70 @@ def _translate_tool_choice(tool_choice: Any) -> Any:
     return "auto"
 
 
+def _is_server_tool(tool: dict[str, Any]) -> bool:
+    """Check if a tool is a server-side tool (e.g. web_search).
+
+    Server-side tools have a type field that is NOT "custom" (the default
+    for regular function-calling tools). They are executed by the API server,
+    not the client, so they cannot be translated to OpenAI function-calling format.
+    """
+    return tool.get("type", "custom") != "custom"
+
+
+def has_server_tools(body: dict[str, Any]) -> bool:
+    """Check if a request body contains any server-side tools."""
+    return any(_is_server_tool(tool) for tool in body.get("tools", []))
+
+
+def strip_server_tools(body: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of the request body with server-side tools removed.
+
+    Also strips server_tool_use and web_search_tool_result content blocks
+    from conversation history, and removes tools/tool_choice if no tools remain.
+    """
+    body = {**body}
+
+    # Filter tools
+    if "tools" in body:
+        client_tools = [t for t in body["tools"] if not _is_server_tool(t)]
+        if client_tools:
+            body["tools"] = client_tools
+        else:
+            del body["tools"]
+            body.pop("tool_choice", None)
+
+    # Strip server tool content blocks from messages
+    if "messages" in body:
+        cleaned_messages = []
+        for msg in body["messages"]:
+            content = msg.get("content")
+            if isinstance(content, list):
+                cleaned_blocks = [
+                    block
+                    for block in content
+                    if not isinstance(block, dict)
+                    or block.get("type") not in ("server_tool_use", "web_search_tool_result")
+                ]
+                if cleaned_blocks:
+                    cleaned_messages.append({**msg, "content": cleaned_blocks})
+                # Drop messages that become empty after stripping
+            else:
+                cleaned_messages.append(msg)
+        body["messages"] = cleaned_messages
+
+    return body
+
+
 def _translate_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Translate Anthropic tool definitions to OpenAI format."""
+    """Translate Anthropic tool definitions to OpenAI format.
+
+    Skips server-side tools (e.g. web_search) which cannot be converted
+    to OpenAI function-calling format.
+    """
     openai_tools = []
     for tool in tools:
+        if _is_server_tool(tool):
+            continue
         openai_tool = {
             "type": "function",
             "function": {
@@ -119,8 +179,8 @@ def anthropic_to_openai_request(body: dict[str, Any], openai_model: str) -> dict
                             )
                         elif block.get("type") == "text":
                             text_parts.append(block["text"])
-                        elif block.get("type") == "thinking":
-                            # Drop thinking blocks - no direct OpenAI equivalent
+                        elif block.get("type") in ("thinking", "server_tool_use"):
+                            # Drop thinking/server_tool_use blocks - no OpenAI equivalent
                             continue
             elif isinstance(content, str):
                 text_parts.append(content)
@@ -158,6 +218,9 @@ def anthropic_to_openai_request(body: dict[str, Any], openai_model: str) -> dict
                                 "content": tool_content,
                             }
                         )
+                    elif isinstance(block, dict) and block.get("type") == "web_search_tool_result":
+                        # Drop web_search_tool_result blocks - server-side tool result
+                        continue
                     else:
                         regular_parts.append(block)
 
@@ -180,11 +243,13 @@ def anthropic_to_openai_request(body: dict[str, Any], openai_model: str) -> dict
 
     openai_body["messages"] = messages
 
-    # Tools
+    # Tools (skip if all tools are server-side and got filtered out)
     if "tools" in body:
-        openai_body["tools"] = _translate_tools(body["tools"])
-    if "tool_choice" in body:
-        openai_body["tool_choice"] = _translate_tool_choice(body["tool_choice"])
+        translated = _translate_tools(body["tools"])
+        if translated:
+            openai_body["tools"] = translated
+            if "tool_choice" in body:
+                openai_body["tool_choice"] = _translate_tool_choice(body["tool_choice"])
 
     # Simple field mappings
     if "temperature" in body:
