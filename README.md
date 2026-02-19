@@ -6,6 +6,9 @@
 
 A lightweight proxy that translates Anthropic API requests to GitHub Copilot or AWS Bedrock, enabling Claude Code, Open WebUI, and other Anthropic or OpenAI API clients to use either backend.
 
+> [!IMPORTANT]
+> **New here?** Follow the **[Getting Started Guide](docs/getting-started.md)** for step-by-step setup instructions.
+
 ## Use Cases
 
 - **Claude Code + GitHub Copilot** - Run Claude Code using your GitHub Copilot subscription as the backend
