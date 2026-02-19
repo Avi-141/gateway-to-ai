@@ -305,6 +305,17 @@ export ANTHROPIC_API_KEY="sk-ant-dummy-key"  # Any value starting with sk-ant-
 export ANTHROPIC_BASE_URL="http://localhost:8080"
 ```
 
+#### /models Plugin
+
+Install the `/models` plugin to list available models and their token limits directly in Claude Code:
+
+```
+/plugin marketplace add github.com/Avi-141/gateway-to-ai
+/plugin install models@claudegate
+```
+
+Then type `/models` to see a table of available models.
+
 ### Test the proxy
 
 **Anthropic format:**

@@ -1,0 +1,11 @@
+{
+  "name": "claudegate",
+  "owner": "Avi-141",
+  "plugins": [
+    {
+      "name": "models",
+      "source": "git",
+      "path": "./plugins/models"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "models",
+  "description": "List available models from a claudegate proxy instance",
+  "version": "1.0.0",
+  "author": {
+    "name": "claudegate"
+  },
+  "repository": "https://github.com/Avi-141/gateway-to-ai",
+  "license": "MIT"
+}
