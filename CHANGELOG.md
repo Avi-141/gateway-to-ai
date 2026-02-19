@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - `claudegate install` is now idempotent — if a service is already installed, it automatically stops and reinstalls instead of erroring out. This makes upgrades simpler (`uv tool install --force ... && claudegate install`).
 
+### Fixed
+
+- Clamp `max_output_tokens` to a minimum of 16 for the Responses API. Claude Code occasionally sends `max_tokens: 1` (probe requests), which the Responses API rejects. This fixes errors when using codex models (`gpt-5.x-codex`).
+
 ## [0.3.0] - 2026-02-18
 
 ### Added

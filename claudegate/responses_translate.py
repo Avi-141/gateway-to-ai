@@ -30,9 +30,9 @@ def anthropic_to_responses_request(body: dict[str, Any], model: str) -> dict[str
             if text_parts:
                 responses_body["instructions"] = "\n".join(text_parts)
 
-    # max_tokens -> max_output_tokens
+    # max_tokens -> max_output_tokens (Responses API requires >= 16)
     if "max_tokens" in body:
-        responses_body["max_output_tokens"] = body["max_tokens"]
+        responses_body["max_output_tokens"] = max(body["max_tokens"], 16)
 
     # Translate messages to input items
     input_items: list[dict[str, Any]] = []
@@ -246,9 +246,9 @@ def openai_chat_to_responses_request(body: dict[str, Any], model: str) -> dict[s
 
     responses_body["input"] = input_items
 
-    # max_tokens -> max_output_tokens
+    # max_tokens -> max_output_tokens (Responses API requires >= 16)
     if "max_tokens" in body:
-        responses_body["max_output_tokens"] = body["max_tokens"]
+        responses_body["max_output_tokens"] = max(body["max_tokens"], 16)
 
     # Tools
     if "tools" in body:
