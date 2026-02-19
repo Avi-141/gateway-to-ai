@@ -10,7 +10,7 @@ from typing import Any
 import tiktoken
 from botocore.exceptions import ClientError, ReadTimeoutError
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from .bedrock_client import get_bedrock_client, reset_bedrock_client
 from .config import (
@@ -67,6 +67,12 @@ _copilot_backend = None
 async def lifespan(app: FastAPI):
     """Handle startup and shutdown events."""
     global _copilot_backend
+
+    # Attach ring buffer handler to loggers (must happen here, after
+    # uvicorn's dictConfig has run and replaced all handler lists)
+    from .log_buffer import attach_log_buffer
+
+    attach_log_buffer()
 
     # Validate fallback config
     if FALLBACK_BACKEND:
@@ -847,3 +853,53 @@ async def count_tokens(request: Request) -> dict[str, int]:
 async def event_logging() -> dict[str, str]:
     """Stub for telemetry - just acknowledge."""
     return {"status": "ok"}
+
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard() -> HTMLResponse:
+    """Serve the dashboard HTML page."""
+    from .dashboard import DASHBOARD_HTML
+
+    return HTMLResponse(content=DASHBOARD_HTML)
+
+
+@app.get("/api/status")
+async def api_status(log_level: str | None = None) -> dict[str, Any]:
+    """Combined status endpoint for the dashboard.
+
+    Returns health info, service status, available models, and recent logs.
+    """
+    from .log_buffer import log_buffer
+    from .service import get_service_status
+
+    # Health info (reuse logic from /health)
+    health: dict[str, Any] = {"status": "ok", "version": __version__, "backend": BACKEND_TYPE}
+    if FALLBACK_BACKEND:
+        health["fallback"] = FALLBACK_BACKEND
+
+    # Models (reuse logic from /v1/models), deduplicated and sorted by owner then model ID
+    models_response = await list_models()
+    all_models = models_response.get("data", [])
+    # Prefer entries with limits (richer data) when deduplicating
+    all_models.sort(key=lambda m: (0 if m.get("limits") else 1, m.get("owned_by", ""), m.get("id", "")))
+    seen_ids: set[str] = set()
+    models_data: list[dict[str, Any]] = []
+    for m in all_models:
+        mid = m.get("id", "")
+        if mid not in seen_ids:
+            seen_ids.add(mid)
+            models_data.append(m)
+    models_data.sort(key=lambda m: (m.get("owned_by", ""), m.get("id", "")))
+
+    # Service status
+    service = get_service_status()
+
+    # Recent logs
+    logs = log_buffer.get_entries(limit=200, level_filter=log_level)
+
+    return {
+        "health": health,
+        "service": service,
+        "models": models_data,
+        "logs": logs,
+    }

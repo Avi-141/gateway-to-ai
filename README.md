@@ -30,6 +30,7 @@ A lightweight proxy that translates Anthropic API requests to GitHub Copilot or 
 - Anthropic-compatible error responses
 - Request ID tracking (`x-request-id` header)
 - Deep health checks with backend connectivity verification
+- **Web dashboard** at `/` with live status, models, and log viewer
 - Graceful startup/shutdown with configuration logging
 - GitHub OAuth device flow for easy Copilot authentication
 - **OpenAI-compatible API** (`/v1/chat/completions`) for Open WebUI and other OpenAI-format clients
@@ -331,6 +332,8 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/` | GET | Web dashboard with live status, models, and log viewer |
+| `/api/status` | GET | Combined JSON status (health, service, models, logs) |
 | `/v1/messages` | POST | Anthropic Messages API endpoint |
 | `/v1/chat/completions` | POST | OpenAI-compatible Chat Completions endpoint |
 | `/v1/models` | GET | List available models (OpenAI-compatible format) |

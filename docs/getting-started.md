@@ -73,7 +73,7 @@ This registers claudegate to start automatically on login:
 | Linux | systemd user unit (`~/.config/systemd/user/`) |
 | Windows | Scheduled task |
 
-Manage the service with `claudegate status` and `claudegate uninstall`.
+Manage the service with `claudegate status` and `claudegate uninstall`. You can also open [http://localhost:8080](http://localhost:8080) in your browser to see the dashboard with live status, available models, and logs.
 
 **Logs:**
 

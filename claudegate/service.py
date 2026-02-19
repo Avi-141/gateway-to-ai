@@ -405,6 +405,46 @@ def _uninstall_windows() -> int:
 # -- Status ------------------------------------------------------------------
 
 
+def get_service_status() -> dict:
+    """Return structured service status data for the dashboard API."""
+    plat = _detect_platform()
+    result: dict = {"platform": plat, "installed": False, "running": False, "service_file": None}
+
+    if plat == "macos":
+        path = _plist_path()
+        if path.exists():
+            result["installed"] = True
+            result["service_file"] = str(path)
+            proc = subprocess.run(
+                ["launchctl", "list", _LAUNCHD_LABEL],
+                capture_output=True,
+                text=True,
+            )
+            result["running"] = proc.returncode == 0
+    elif plat == "linux":
+        path = _systemd_unit_path()
+        if path.exists():
+            result["installed"] = True
+            result["service_file"] = str(path)
+            proc = subprocess.run(
+                ["systemctl", "--user", "is-active", _SYSTEMD_UNIT],
+                capture_output=True,
+                text=True,
+            )
+            result["running"] = proc.stdout.strip() == "active"
+    elif plat == "windows":
+        proc = subprocess.run(
+            ["schtasks", "/Query", "/TN", _SCHTASKS_NAME],
+            capture_output=True,
+            text=True,
+        )
+        if proc.returncode == 0:
+            result["installed"] = True
+            result["running"] = "Running" in proc.stdout
+
+    return result
+
+
 def service_status() -> int:
     plat = _detect_platform()
 

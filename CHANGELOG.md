@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Added
 
 - `/v1/models` now passes through `limits` (context_window, max_prompt, max_output) from the Copilot API when available.
+- **Web dashboard** — a self-contained HTML page showing server status, service info, available models with token limits, and a live log viewer with level filtering.
 
 ### Changed
 
