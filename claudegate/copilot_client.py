@@ -9,7 +9,7 @@ from typing import Any
 import httpx
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .config import FALLBACK_ON_ERRORS, logger
+from .config import FALLBACK_ON_ERRORS, SSL_CONTEXT, logger
 from .copilot_auth import COPILOT_HEADERS, CopilotAuth
 from .copilot_translate import (
     StreamTranslator,
@@ -69,7 +69,7 @@ class CopilotBackend:
 
     def __init__(self, auth: CopilotAuth, timeout: int = 300):
         self._auth = auth
-        self._client = httpx.AsyncClient(timeout=httpx.Timeout(timeout, connect=30.0))
+        self._client = httpx.AsyncClient(verify=SSL_CONTEXT, timeout=httpx.Timeout(timeout, connect=30.0))
 
     async def _get_headers(self) -> dict[str, str]:
         """Build request headers with fresh Copilot token."""

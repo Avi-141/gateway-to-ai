@@ -7,7 +7,7 @@ from pathlib import Path
 
 import httpx
 
-from .config import logger
+from .config import SSL_CONTEXT, logger
 
 # GitHub OAuth app client ID used by Copilot
 COPILOT_CLIENT_ID = "Iv1.b507a08c87ecfe98"
@@ -61,7 +61,7 @@ def device_flow_login() -> str:
     Displays a URL and code for the user to authorize in their browser,
     then polls until authorization is complete.
     """
-    with httpx.Client() as client:
+    with httpx.Client(verify=SSL_CONTEXT) as client:
         # Request device code
         resp = client.post(
             GITHUB_DEVICE_CODE_URL,
@@ -150,7 +150,7 @@ class CopilotAuth:
         self._copilot_token: str | None = None
         self._expires_at: float = 0
         self._lock = asyncio.Lock()
-        self._client = httpx.AsyncClient()
+        self._client = httpx.AsyncClient(verify=SSL_CONTEXT)
 
     async def get_token(self) -> str:
         """Get a valid Copilot token, refreshing if needed."""
