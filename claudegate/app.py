@@ -744,16 +744,19 @@ async def list_models() -> dict[str, Any]:
     if BACKEND_TYPE == "copilot":
         dynamic_models = get_available_copilot_models()
         if dynamic_models:
-            models = [
-                {
+            models = []
+            for m in dynamic_models:
+                if "id" not in m:
+                    continue
+                entry = {
                     "id": m["id"],
                     "object": "model",
                     "created": m.get("created_at", 1700000000),
                     "owned_by": m.get("owned_by", _infer_owned_by(m["id"])),
                 }
-                for m in dynamic_models
-                if "id" in m
-            ]
+                if "limits" in m:
+                    entry["limits"] = m["limits"]
+                models.append(entry)
         else:
             # Fallback to hardcoded maps
             all_model_ids: dict[str, str] = {}
@@ -790,14 +793,15 @@ async def list_models() -> dict[str, Any]:
                 for m in dynamic_models:
                     mid = m.get("id", "")
                     if mid and not is_claude_model(mid) and mid not in bedrock_ids:
-                        models.append(
-                            {
-                                "id": mid,
-                                "object": "model",
-                                "created": m.get("created_at", 1700000000),
-                                "owned_by": m.get("owned_by", _infer_owned_by(mid)),
-                            }
-                        )
+                        entry = {
+                            "id": mid,
+                            "object": "model",
+                            "created": m.get("created_at", 1700000000),
+                            "owned_by": m.get("owned_by", _infer_owned_by(mid)),
+                        }
+                        if "limits" in m:
+                            entry["limits"] = m["limits"]
+                        models.append(entry)
             else:
                 for model_id in COPILOT_OPENAI_MODEL_MAP:
                     if not is_claude_model(model_id) and model_id not in bedrock_ids:

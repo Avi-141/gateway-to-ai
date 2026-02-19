@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- `/v1/models` now passes through `limits` (context_window, max_prompt, max_output) from the Copilot API when available.
+
 ### Changed
 
 - `claudegate install` is now idempotent — if a service is already installed, it automatically stops and reinstalls instead of erroring out. This makes upgrades simpler (`uv tool install --force ... && claudegate install`).

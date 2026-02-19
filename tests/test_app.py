@@ -1018,7 +1018,16 @@ class TestModelsRoute:
 
         monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
         dynamic = [
-            {"id": "claude-sonnet-4.5", "owned_by": "anthropic", "created_at": 1700000001},
+            {
+                "id": "claude-sonnet-4.5",
+                "owned_by": "anthropic",
+                "created_at": 1700000001,
+                "limits": {
+                    "context_window": 200000,
+                    "max_prompt": 190000,
+                    "max_output": 16384,
+                },
+            },
             {"id": "gpt-4o", "owned_by": "openai", "created_at": 1700000002},
             {"id": "gemini-2.5-pro-preview"},
         ]
@@ -1037,6 +1046,16 @@ class TestModelsRoute:
             # Check explicit owned_by is used
             gpt = next(m for m in body["data"] if m["id"] == "gpt-4o")
             assert gpt["owned_by"] == "openai"
+            # Check limits are passed through when present
+            claude = next(m for m in body["data"] if m["id"] == "claude-sonnet-4.5")
+            assert claude["limits"] == {
+                "context_window": 200000,
+                "max_prompt": 190000,
+                "max_output": 16384,
+            }
+            # Check limits are omitted when not present
+            assert "limits" not in gpt
+            assert "limits" not in gemini
         finally:
             set_copilot_models([])
 
@@ -1062,7 +1081,15 @@ class TestModelsRoute:
         monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
         dynamic = [
             {"id": "claude-sonnet-4.5", "owned_by": "anthropic"},
-            {"id": "gpt-4o", "owned_by": "openai"},
+            {
+                "id": "gpt-4o",
+                "owned_by": "openai",
+                "limits": {
+                    "context_window": 128000,
+                    "max_prompt": 120000,
+                    "max_output": 16384,
+                },
+            },
             {"id": "gemini-2.5-pro"},
         ]
         set_copilot_models(dynamic)
@@ -1078,6 +1105,16 @@ class TestModelsRoute:
             assert "gemini-2.5-pro" in ids
             # Should NOT include Claude models from Copilot (already in Bedrock)
             assert ids.count("claude-sonnet-4.5") == 0  # Copilot display name not in Bedrock map
+            # Check limits are passed through for non-Claude Copilot models
+            gpt = next(m for m in body["data"] if m["id"] == "gpt-4o")
+            assert gpt["limits"] == {
+                "context_window": 128000,
+                "max_prompt": 120000,
+                "max_output": 16384,
+            }
+            # Check limits are omitted when not present
+            gemini = next(m for m in body["data"] if m["id"] == "gemini-2.5-pro")
+            assert "limits" not in gemini
         finally:
             set_copilot_models([])
 
