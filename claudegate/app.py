@@ -754,8 +754,9 @@ async def list_models() -> dict[str, Any]:
                     "created": m.get("created_at", 1700000000),
                     "owned_by": m.get("owned_by", _infer_owned_by(m["id"])),
                 }
-                if "limits" in m:
-                    entry["limits"] = m["limits"]
+                limits = m.get("capabilities", {}).get("limits")
+                if limits:
+                    entry["limits"] = limits
                 models.append(entry)
         else:
             # Fallback to hardcoded maps
@@ -799,8 +800,9 @@ async def list_models() -> dict[str, Any]:
                             "created": m.get("created_at", 1700000000),
                             "owned_by": m.get("owned_by", _infer_owned_by(mid)),
                         }
-                        if "limits" in m:
-                            entry["limits"] = m["limits"]
+                        limits = m.get("capabilities", {}).get("limits")
+                        if limits:
+                            entry["limits"] = limits
                         models.append(entry)
             else:
                 for model_id in COPILOT_OPENAI_MODEL_MAP:

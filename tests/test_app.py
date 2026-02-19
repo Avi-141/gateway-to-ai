@@ -1022,10 +1022,12 @@ class TestModelsRoute:
                 "id": "claude-sonnet-4.5",
                 "owned_by": "anthropic",
                 "created_at": 1700000001,
-                "limits": {
-                    "context_window": 200000,
-                    "max_prompt": 190000,
-                    "max_output": 16384,
+                "capabilities": {
+                    "limits": {
+                        "max_context_window_tokens": 200000,
+                        "max_prompt_tokens": 190000,
+                        "max_output_tokens": 16384,
+                    }
                 },
             },
             {"id": "gpt-4o", "owned_by": "openai", "created_at": 1700000002},
@@ -1049,9 +1051,9 @@ class TestModelsRoute:
             # Check limits are passed through when present
             claude = next(m for m in body["data"] if m["id"] == "claude-sonnet-4.5")
             assert claude["limits"] == {
-                "context_window": 200000,
-                "max_prompt": 190000,
-                "max_output": 16384,
+                "max_context_window_tokens": 200000,
+                "max_prompt_tokens": 190000,
+                "max_output_tokens": 16384,
             }
             # Check limits are omitted when not present
             assert "limits" not in gpt
@@ -1084,10 +1086,12 @@ class TestModelsRoute:
             {
                 "id": "gpt-4o",
                 "owned_by": "openai",
-                "limits": {
-                    "context_window": 128000,
-                    "max_prompt": 120000,
-                    "max_output": 16384,
+                "capabilities": {
+                    "limits": {
+                        "max_context_window_tokens": 128000,
+                        "max_prompt_tokens": 120000,
+                        "max_output_tokens": 16384,
+                    }
                 },
             },
             {"id": "gemini-2.5-pro"},
@@ -1108,9 +1112,9 @@ class TestModelsRoute:
             # Check limits are passed through for non-Claude Copilot models
             gpt = next(m for m in body["data"] if m["id"] == "gpt-4o")
             assert gpt["limits"] == {
-                "context_window": 128000,
-                "max_prompt": 120000,
-                "max_output": 16384,
+                "max_context_window_tokens": 128000,
+                "max_prompt_tokens": 120000,
+                "max_output_tokens": 16384,
             }
             # Check limits are omitted when not present
             gemini = next(m for m in body["data"] if m["id"] == "gemini-2.5-pro")
