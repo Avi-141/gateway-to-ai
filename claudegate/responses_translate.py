@@ -65,10 +65,25 @@ def anthropic_to_responses_request(body: dict[str, Any], model: str) -> dict[str
                                 }
                             )
                         elif block.get("type") == "text":
+                            user_content_parts: list[dict[str, Any]] = [{"type": "input_text", "text": block["text"]}]
                             input_items.append(
                                 {
                                     "role": "user",
-                                    "content": [{"type": "input_text", "text": block["text"]}],
+                                    "content": user_content_parts,
+                                }
+                            )
+                        elif block.get("type") == "image":
+                            source = block.get("source", {})
+                            if source.get("type") == "base64":
+                                media_type = source.get("media_type", "image/png")
+                                data = source.get("data", "")
+                                image_url = f"data:{media_type};base64,{data}"
+                            else:
+                                image_url = source.get("url", "")
+                            input_items.append(
+                                {
+                                    "role": "user",
+                                    "content": [{"type": "input_image", "image_url": image_url}],
                                 }
                             )
                     elif isinstance(block, str):
@@ -197,17 +212,21 @@ def openai_chat_to_responses_request(body: dict[str, Any], model: str) -> dict[s
                     }
                 )
             elif isinstance(content, list):
-                text_parts = []
+                content_parts: list[dict[str, Any]] = []
                 for part in content:
                     if isinstance(part, dict) and part.get("type") == "text":
-                        text_parts.append(part["text"])
+                        content_parts.append({"type": "input_text", "text": part.get("text", "")})
+                    elif isinstance(part, dict) and part.get("type") == "image_url":
+                        image_url = part.get("image_url", {})
+                        url = image_url.get("url", "") if isinstance(image_url, dict) else ""
+                        content_parts.append({"type": "input_image", "image_url": url})
                     elif isinstance(part, str):
-                        text_parts.append(part)
-                if text_parts:
+                        content_parts.append({"type": "input_text", "text": part})
+                if content_parts:
                     input_items.append(
                         {
                             "role": "user",
-                            "content": [{"type": "input_text", "text": "\n".join(text_parts)}],
+                            "content": content_parts,
                         }
                     )
 
@@ -717,18 +736,40 @@ def responses_to_anthropic_request(body: dict[str, Any]) -> dict[str, Any]:
 
             if role == "user":
                 content = item.get("content", [])
-                # Convert input_text blocks to text blocks
-                text_parts = []
+                # Convert input_text and input_image blocks
+                anthropic_blocks: list[dict[str, Any]] = []
                 if isinstance(content, list):
                     for block in content:
                         if isinstance(block, dict) and block.get("type") == "input_text":
-                            text_parts.append(block.get("text", ""))
+                            anthropic_blocks.append({"type": "text", "text": block.get("text", "")})
+                        elif isinstance(block, dict) and block.get("type") == "input_image":
+                            image_url = block.get("image_url", "")
+                            if isinstance(image_url, str) and image_url.startswith("data:"):
+                                header, _, data = image_url.partition(",")
+                                media_type = header.split(":")[1].split(";")[0] if ":" in header else "image/png"
+                                anthropic_blocks.append(
+                                    {
+                                        "type": "image",
+                                        "source": {"type": "base64", "media_type": media_type, "data": data},
+                                    }
+                                )
+                            elif isinstance(image_url, str) and image_url:
+                                anthropic_blocks.append(
+                                    {
+                                        "type": "image",
+                                        "source": {"type": "url", "url": image_url},
+                                    }
+                                )
                         elif isinstance(block, str):
-                            text_parts.append(block)
+                            anthropic_blocks.append({"type": "text", "text": block})
                 elif isinstance(content, str):
-                    text_parts.append(content)
-                if text_parts:
-                    messages.append({"role": "user", "content": "\n".join(text_parts)})
+                    anthropic_blocks.append({"type": "text", "text": content})
+                if anthropic_blocks:
+                    # Use list content to preserve image blocks
+                    if len(anthropic_blocks) == 1 and anthropic_blocks[0].get("type") == "text":
+                        messages.append({"role": "user", "content": anthropic_blocks[0]["text"]})
+                    else:
+                        messages.append({"role": "user", "content": anthropic_blocks})
 
             elif role == "assistant":
                 content = item.get("content", [])
@@ -863,16 +904,25 @@ def responses_to_openai_chat_request(body: dict[str, Any], model: str) -> dict[s
 
             if role == "user":
                 content = item.get("content", [])
-                text_parts = []
+                openai_parts: list[dict[str, Any]] = []
+                text_parts: list[str] = []
+                has_images = False
                 if isinstance(content, list):
                     for block in content:
                         if isinstance(block, dict) and block.get("type") == "input_text":
                             text_parts.append(block.get("text", ""))
+                            openai_parts.append({"type": "text", "text": block.get("text", "")})
+                        elif isinstance(block, dict) and block.get("type") == "input_image":
+                            has_images = True
+                            openai_parts.append({"type": "image_url", "image_url": {"url": block.get("image_url", "")}})
                         elif isinstance(block, str):
                             text_parts.append(block)
+                            openai_parts.append({"type": "text", "text": block})
                 elif isinstance(content, str):
                     text_parts.append(content)
-                if text_parts:
+                if has_images:
+                    messages.append({"role": "user", "content": openai_parts})
+                elif text_parts:
                     messages.append({"role": "user", "content": "\n".join(text_parts)})
 
             elif role == "assistant":

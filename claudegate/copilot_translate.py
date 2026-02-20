@@ -58,6 +58,8 @@ def estimate_input_tokens(body: dict[str, Any]) -> int:
                 elif block_type == "tool_use":
                     total += len(tokenizer.encode(block.get("name", "")))
                     total += len(tokenizer.encode(json.dumps(block.get("input", {}))))
+                elif block_type == "image":
+                    total += 1600  # rough estimate per image
                 elif block_type == "tool_result":
                     tc = block.get("content", "")
                     if isinstance(tc, str):
@@ -79,21 +81,38 @@ def estimate_input_tokens(body: dict[str, Any]) -> int:
 
 
 def _translate_content_to_openai(content: Any) -> str | list[dict[str, Any]]:
-    """Translate Anthropic content blocks to OpenAI message content."""
+    """Translate Anthropic content blocks to OpenAI message content.
+
+    Returns a string when the content is text-only, or a list of content parts
+    when images are present (OpenAI vision format).
+    """
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        # If all blocks are text, join them
-        texts = []
+        text_parts: list[str] = []
+        image_parts: list[dict[str, Any]] = []
         for block in content:
             if isinstance(block, dict):
                 if block.get("type") == "text":
-                    texts.append(block["text"])
+                    text_parts.append(block["text"])
                 elif block.get("type") == "image":
-                    # OpenAI vision format
                     source = block.get("source", {})
                     if source.get("type") == "base64":
-                        texts.append(f"[image: {source.get('media_type', 'image')}]")
+                        media_type = source.get("media_type", "image/png")
+                        data = source.get("data", "")
+                        image_parts.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{media_type};base64,{data}"},
+                            }
+                        )
+                    elif source.get("type") == "url":
+                        image_parts.append(
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": source.get("url", "")},
+                            }
+                        )
                 elif block.get("type") == "tool_use":
                     # Handled separately in assistant messages
                     continue
@@ -101,8 +120,15 @@ def _translate_content_to_openai(content: Any) -> str | list[dict[str, Any]]:
                     # Handled separately
                     continue
             elif isinstance(block, str):
-                texts.append(block)
-        return "\n".join(texts) if texts else ""
+                text_parts.append(block)
+        if image_parts:
+            # Return list of content parts for OpenAI vision format
+            parts: list[dict[str, Any]] = []
+            for text in text_parts:
+                parts.append({"type": "text", "text": text})
+            parts.extend(image_parts)
+            return parts
+        return "\n".join(text_parts) if text_parts else ""
     return str(content) if content else ""
 
 

@@ -26,6 +26,7 @@ A lightweight proxy that translates Anthropic API requests to GitHub Copilot or 
 - Supports streaming and non-streaming responses
 - Extended thinking support (Bedrock)
 - Full tool use round-trip translation (Copilot)
+- **Multimodal image support** — images in user messages are translated between Anthropic, OpenAI, and Responses API formats
 - Token counting via tiktoken
 - Model mapping from Anthropic model names to backend-specific IDs
 - Anthropic-compatible error responses

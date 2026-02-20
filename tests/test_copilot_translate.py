@@ -26,10 +26,53 @@ class TestTranslateContentToOpenAI:
         blocks = [{"type": "text", "text": "foo"}, {"type": "text", "text": "bar"}]
         assert _translate_content_to_openai(blocks) == "foo\nbar"
 
-    def test_image_block(self):
-        blocks = [{"type": "image", "source": {"type": "base64", "media_type": "image/png"}}]
+    def test_image_block_base64(self):
+        blocks = [
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png", "data": "iVBOR..."},
+            }
+        ]
         result = _translate_content_to_openai(blocks)
-        assert "image/png" in result
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0]["type"] == "image_url"
+        assert result[0]["image_url"]["url"] == "data:image/png;base64,iVBOR..."
+
+    def test_image_block_url(self):
+        blocks = [
+            {
+                "type": "image",
+                "source": {"type": "url", "url": "https://example.com/img.png"},
+            }
+        ]
+        result = _translate_content_to_openai(blocks)
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert result[0]["type"] == "image_url"
+        assert result[0]["image_url"]["url"] == "https://example.com/img.png"
+
+    def test_mixed_text_and_image(self):
+        blocks = [
+            {"type": "text", "text": "What is in this image?"},
+            {
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/jpeg", "data": "abc123"},
+            },
+        ]
+        result = _translate_content_to_openai(blocks)
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert result[0] == {"type": "text", "text": "What is in this image?"}
+        assert result[1]["type"] == "image_url"
+        assert result[1]["image_url"]["url"] == "data:image/jpeg;base64,abc123"
+
+    def test_text_only_returns_string(self):
+        """When no images are present, returns a joined string (not a list)."""
+        blocks = [{"type": "text", "text": "hello"}, {"type": "text", "text": "world"}]
+        result = _translate_content_to_openai(blocks)
+        assert isinstance(result, str)
+        assert result == "hello\nworld"
 
     def test_mixed_blocks(self):
         blocks = [
@@ -830,6 +873,20 @@ class TestEstimateInputTokens:
         result = estimate_input_tokens(body)
         # Should be roughly the same (both count "hello" once)
         assert result == text_only
+
+    def test_image_block_token_estimate(self):
+        body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "abc"}},
+                    ],
+                }
+            ]
+        }
+        result = estimate_input_tokens(body)
+        assert result == 1600
 
 
 # --- Additional StreamTranslator tests ---

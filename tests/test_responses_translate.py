@@ -1537,3 +1537,285 @@ class TestResponsesAPIRoundTrip:
         # Verify call_id is preserved as tool_use_id
         user_msg = anthropic_req["messages"][2]
         assert user_msg["content"][0]["tool_use_id"] == "call_orig_123"
+
+
+# --- Image Support Tests ---
+
+
+class TestAnthropicToResponsesRequestImages:
+    def test_base64_image(self):
+        body = {
+            "model": "x",
+            "max_tokens": 100,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": "image/png", "data": "iVBOR..."},
+                        }
+                    ],
+                }
+            ],
+        }
+        result = anthropic_to_responses_request(body, "gpt-5.2-codex")
+        assert len(result["input"]) == 1
+        item = result["input"][0]
+        assert item["role"] == "user"
+        assert item["content"][0]["type"] == "input_image"
+        assert item["content"][0]["image_url"] == "data:image/png;base64,iVBOR..."
+
+    def test_url_image(self):
+        body = {
+            "model": "x",
+            "max_tokens": 100,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {"type": "url", "url": "https://example.com/img.png"},
+                        }
+                    ],
+                }
+            ],
+        }
+        result = anthropic_to_responses_request(body, "gpt-5.2-codex")
+        item = result["input"][0]
+        assert item["content"][0]["type"] == "input_image"
+        assert item["content"][0]["image_url"] == "https://example.com/img.png"
+
+    def test_mixed_text_and_image(self):
+        body = {
+            "model": "x",
+            "max_tokens": 100,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What is this?"},
+                        {
+                            "type": "image",
+                            "source": {"type": "base64", "media_type": "image/jpeg", "data": "abc123"},
+                        },
+                    ],
+                }
+            ],
+        }
+        result = anthropic_to_responses_request(body, "gpt-5.2-codex")
+        # Text and image become separate input items
+        assert len(result["input"]) == 2
+        assert result["input"][0]["content"][0]["type"] == "input_text"
+        assert result["input"][1]["content"][0]["type"] == "input_image"
+
+
+class TestOpenAIChatToResponsesRequestImages:
+    def test_image_url_part(self):
+        body = {
+            "model": "gpt-5.2-codex",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Describe this"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,abc123"},
+                        },
+                    ],
+                }
+            ],
+        }
+        result = openai_chat_to_responses_request(body, "gpt-5.2-codex")
+        assert len(result["input"]) == 1
+        item = result["input"][0]
+        assert item["role"] == "user"
+        assert len(item["content"]) == 2
+        assert item["content"][0] == {"type": "input_text", "text": "Describe this"}
+        assert item["content"][1] == {"type": "input_image", "image_url": "data:image/png;base64,abc123"}
+
+
+class TestResponsesToAnthropicRequestImages:
+    def test_input_image_data_url(self):
+        body = {
+            "model": "claude-sonnet-4-5",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_image", "image_url": "data:image/png;base64,iVBOR..."},
+                    ],
+                }
+            ],
+        }
+        result = responses_to_anthropic_request(body)
+        msg = result["messages"][0]
+        assert msg["role"] == "user"
+        assert isinstance(msg["content"], list)
+        assert msg["content"][0]["type"] == "image"
+        assert msg["content"][0]["source"]["type"] == "base64"
+        assert msg["content"][0]["source"]["media_type"] == "image/png"
+        assert msg["content"][0]["source"]["data"] == "iVBOR..."
+
+    def test_input_image_http_url(self):
+        body = {
+            "model": "claude-sonnet-4-5",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_image", "image_url": "https://example.com/img.png"},
+                    ],
+                }
+            ],
+        }
+        result = responses_to_anthropic_request(body)
+        msg = result["messages"][0]
+        assert isinstance(msg["content"], list)
+        assert msg["content"][0]["type"] == "image"
+        assert msg["content"][0]["source"]["type"] == "url"
+        assert msg["content"][0]["source"]["url"] == "https://example.com/img.png"
+
+    def test_mixed_text_and_image(self):
+        body = {
+            "model": "claude-sonnet-4-5",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "What is this?"},
+                        {"type": "input_image", "image_url": "data:image/jpeg;base64,abc"},
+                    ],
+                }
+            ],
+        }
+        result = responses_to_anthropic_request(body)
+        msg = result["messages"][0]
+        assert isinstance(msg["content"], list)
+        assert len(msg["content"]) == 2
+        assert msg["content"][0] == {"type": "text", "text": "What is this?"}
+        assert msg["content"][1]["type"] == "image"
+
+    def test_text_only_returns_string(self):
+        """Text-only user messages still return string content."""
+        body = {
+            "model": "claude-sonnet-4-5",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Hello"}],
+                }
+            ],
+        }
+        result = responses_to_anthropic_request(body)
+        assert result["messages"][0]["content"] == "Hello"
+
+
+class TestResponsesToOpenAIChatRequestImages:
+    def test_input_image(self):
+        body = {
+            "model": "gpt-5.2",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "Describe"},
+                        {"type": "input_image", "image_url": "data:image/png;base64,abc"},
+                    ],
+                }
+            ],
+        }
+        result = responses_to_openai_chat_request(body, "gpt-5.2")
+        msg = result["messages"][0]
+        assert msg["role"] == "user"
+        assert isinstance(msg["content"], list)
+        assert msg["content"][0] == {"type": "text", "text": "Describe"}
+        assert msg["content"][1] == {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}}
+
+    def test_text_only_returns_string(self):
+        """Text-only returns joined string, not list."""
+        body = {
+            "model": "gpt-5.2",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Hello"}],
+                }
+            ],
+        }
+        result = responses_to_openai_chat_request(body, "gpt-5.2")
+        assert result["messages"][0]["content"] == "Hello"
+
+
+class TestImageRoundTrip:
+    def test_anthropic_to_openai_to_anthropic_preserves_image(self):
+        """Image data preserved through Anthropic -> Responses -> Anthropic."""
+        from claudegate.copilot_translate import _translate_content_to_openai
+        from claudegate.openai_translate import openai_to_anthropic_request
+
+        # Start with Anthropic format
+        openai_body = {
+            "model": "x",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What is this?"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,iVBOR..."},
+                        },
+                    ],
+                }
+            ],
+        }
+
+        # OpenAI -> Anthropic
+        anthropic_req = openai_to_anthropic_request(openai_body)
+        msg = anthropic_req["messages"][0]
+        assert msg["content"][0] == {"type": "text", "text": "What is this?"}
+        assert msg["content"][1]["type"] == "image"
+        assert msg["content"][1]["source"]["data"] == "iVBOR..."
+
+        # Anthropic -> OpenAI (via _translate_content_to_openai)
+        result = _translate_content_to_openai(msg["content"])
+        assert isinstance(result, list)
+        assert result[0] == {"type": "text", "text": "What is this?"}
+        assert result[1]["image_url"]["url"] == "data:image/png;base64,iVBOR..."
+
+    def test_responses_image_round_trip(self):
+        """Image preserved through Responses -> Anthropic -> Responses."""
+        body = {
+            "model": "claude-sonnet-4-5",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "Describe"},
+                        {"type": "input_image", "image_url": "data:image/png;base64,abc123"},
+                    ],
+                }
+            ],
+        }
+        # Responses -> Anthropic
+        anthropic_req = responses_to_anthropic_request(body)
+        msg = anthropic_req["messages"][0]
+        assert msg["content"][0] == {"type": "text", "text": "Describe"}
+        assert msg["content"][1]["type"] == "image"
+        assert msg["content"][1]["source"]["data"] == "abc123"
+
+        # Anthropic -> Responses
+        anthropic_body = {
+            "model": "claude-sonnet-4-5",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": msg["content"]}],
+        }
+        responses_req = anthropic_to_responses_request(anthropic_body, "gpt-5.2")
+        # The text and image should be in separate input items
+        text_item = responses_req["input"][0]
+        image_item = responses_req["input"][1]
+        assert text_item["content"][0]["type"] == "input_text"
+        assert image_item["content"][0]["type"] == "input_image"
+        assert "abc123" in image_item["content"][0]["image_url"]

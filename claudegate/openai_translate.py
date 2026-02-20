@@ -84,7 +84,39 @@ def openai_to_anthropic_request(body: dict[str, Any]) -> dict[str, Any]:
 
         else:
             # Regular user message
-            messages.append({"role": "user", "content": msg.get("content", "")})
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                # Handle multimodal content (text + images)
+                anthropic_blocks: list[dict[str, Any]] = []
+                for part in content:
+                    if isinstance(part, dict):
+                        if part.get("type") == "text":
+                            anthropic_blocks.append({"type": "text", "text": part.get("text", "")})
+                        elif part.get("type") == "image_url":
+                            image_url = part.get("image_url", {})
+                            url = image_url.get("url", "") if isinstance(image_url, dict) else ""
+                            if url.startswith("data:"):
+                                # Parse data URL: data:{media_type};base64,{data}
+                                header, _, data = url.partition(",")
+                                media_type = header.split(":")[1].split(";")[0] if ":" in header else "image/png"
+                                anthropic_blocks.append(
+                                    {
+                                        "type": "image",
+                                        "source": {"type": "base64", "media_type": media_type, "data": data},
+                                    }
+                                )
+                            else:
+                                anthropic_blocks.append(
+                                    {
+                                        "type": "image",
+                                        "source": {"type": "url", "url": url},
+                                    }
+                                )
+                    elif isinstance(part, str):
+                        anthropic_blocks.append({"type": "text", "text": part})
+                messages.append({"role": "user", "content": anthropic_blocks if anthropic_blocks else ""})
+            else:
+                messages.append({"role": "user", "content": content})
 
     if system_parts:
         anthropic_body["system"] = "\n".join(system_parts)

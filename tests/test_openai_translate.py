@@ -214,6 +214,65 @@ class TestOpenAIToAnthropicRequest:
         result = openai_to_anthropic_request(body)
         assert result["stream"] is True
 
+    def test_user_image_data_url(self):
+        """Data URL image_url parts are converted to Anthropic base64 image blocks."""
+        body = {
+            "model": "x",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "What is this?"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,iVBOR..."},
+                        },
+                    ],
+                }
+            ],
+        }
+        result = openai_to_anthropic_request(body)
+        msg = result["messages"][0]
+        assert msg["role"] == "user"
+        assert isinstance(msg["content"], list)
+        assert msg["content"][0] == {"type": "text", "text": "What is this?"}
+        assert msg["content"][1]["type"] == "image"
+        assert msg["content"][1]["source"]["type"] == "base64"
+        assert msg["content"][1]["source"]["media_type"] == "image/png"
+        assert msg["content"][1]["source"]["data"] == "iVBOR..."
+
+    def test_user_image_http_url(self):
+        """HTTP URL image_url parts are converted to Anthropic url image blocks."""
+        body = {
+            "model": "x",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "https://example.com/img.png"},
+                        },
+                    ],
+                }
+            ],
+        }
+        result = openai_to_anthropic_request(body)
+        msg = result["messages"][0]
+        assert isinstance(msg["content"], list)
+        assert msg["content"][0]["type"] == "image"
+        assert msg["content"][0]["source"]["type"] == "url"
+        assert msg["content"][0]["source"]["url"] == "https://example.com/img.png"
+
+    def test_user_string_content_unchanged(self):
+        """String content in user messages passes through unchanged."""
+        body = {
+            "model": "x",
+            "messages": [{"role": "user", "content": "Hello"}],
+        }
+        result = openai_to_anthropic_request(body)
+        assert result["messages"][0]["content"] == "Hello"
+
 
 # --- _translate_tools ---
 
