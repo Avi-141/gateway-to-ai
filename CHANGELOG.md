@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **Token count scaling** — dynamically scale `input_tokens` and `output_tokens` reported to Claude Code so its percentage-based context tracking accurately reflects Copilot's actual capacity. Looks up each model's `max_prompt_tokens` from the Copilot `/models` API and applies a per-model scaling factor. Supports both standard 200k and 1M context window variants (detected via `anthropic-beta: context-1m` header).
+
 ### Fixed
 
 - Fix `/models` plugin marketplace installation — move `marketplace.json` to `.claude-plugin/marketplace.json` where Claude Code expects it, and use full HTTPS URL for GitHub Enterprise clone.
