@@ -46,6 +46,10 @@ class RingBufferHandler(logging.Handler):
 
         return entries[-limit:]
 
+    def clear(self) -> None:
+        """Remove all entries from the buffer."""
+        self._buffer.clear()
+
 
 # Module-level singleton
 log_buffer = RingBufferHandler()

@@ -1119,3 +1119,12 @@ async def api_status(log_level: str | None = None) -> dict[str, Any]:
         "models": models_data,
         "logs": logs,
     }
+
+
+@app.post("/api/logs/clear")
+async def api_logs_clear() -> dict[str, str]:
+    """Clear all entries from the log buffer."""
+    from .log_buffer import log_buffer
+
+    log_buffer.clear()
+    return {"status": "ok"}

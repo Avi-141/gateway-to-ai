@@ -65,6 +65,17 @@ DASHBOARD_HTML = """\
     border-radius: 4px;
     padding: 3px 6px;
   }
+  .log-controls button {
+    font-size: 0.8rem;
+    background: var(--bg);
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 3px 10px;
+    cursor: pointer;
+    margin-left: auto;
+  }
+  .log-controls button:hover { color: var(--text); border-color: var(--text-dim); }
   #log-viewer {
     background: var(--bg);
     border: 1px solid var(--border);
@@ -123,6 +134,7 @@ DASHBOARD_HTML = """\
         <option value="ERROR">ERROR</option>
       </select>
       <label><input type="checkbox" id="auto-scroll" checked> Auto-scroll</label>
+      <button id="clear-logs" title="Clear all logs">Clear</button>
     </div>
     <div id="log-viewer"></div>
   </div>
@@ -136,6 +148,18 @@ DASHBOARD_HTML = """\
   const levelSelect = document.getElementById('log-level');
   const autoScroll = document.getElementById('auto-scroll');
   const errorBanner = document.getElementById('error-banner');
+
+  document.getElementById('clear-logs').addEventListener('click', function() {
+    fetch('/api/logs/clear', { method: 'POST' })
+      .then(function(r) {
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        logViewer.innerHTML = '';
+      })
+      .catch(function(err) {
+        errorBanner.textContent = 'Failed to clear logs: ' + err.message;
+        errorBanner.style.display = 'block';
+      });
+  });
 
   function badge(ok, yesText, noText) {
     return ok
