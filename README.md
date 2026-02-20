@@ -15,6 +15,7 @@ A lightweight proxy that translates Anthropic API requests to GitHub Copilot or 
 - **[Auto-Claude](https://github.com/AndyMik90/Auto-Claude)** - Run Auto-Claude with AWS Bedrock or GitHub Copilot
 - **Any Anthropic API client** - Redirect to Bedrock or Copilot without code changes
 - **[Open WebUI](https://github.com/open-webui/open-webui)** - Use Open WebUI with Bedrock or Copilot via the OpenAI-compatible API
+- **[OpenAI Codex CLI](https://github.com/openai/codex)** - Run Codex CLI using your GitHub Copilot subscription or AWS Bedrock via the Responses API
 - **Any OpenAI API client** - Use the `/v1/chat/completions` or `/v1/responses` endpoint with any OpenAI-format client
 
 ## Features
@@ -299,6 +300,21 @@ Install the `/models` plugin to list available models and their token limits dir
 ```
 
 Then type `/models` to see a table of available models.
+
+### Configure Codex CLI
+
+Set these environment variables before running [Codex CLI](https://github.com/openai/codex):
+
+```bash
+export OPENAI_API_KEY="sk-dummy"        # Any value; claudegate ignores it
+export OPENAI_BASE_URL="http://localhost:8080/v1"
+```
+
+Then run Codex with any model available through the proxy:
+
+```bash
+codex --model gpt-5.3-codex
+```
 
 ### Test the proxy
 
