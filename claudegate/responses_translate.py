@@ -333,6 +333,8 @@ def responses_to_anthropic_response(resp: dict[str, Any], model: str) -> dict[st
         "usage": {
             "input_tokens": usage.get("input_tokens", 0),
             "output_tokens": usage.get("output_tokens", 0),
+            "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0),
+            "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
         },
     }
 
@@ -417,14 +419,16 @@ class ResponsesStreamTranslator:
     - response.completed -> message_delta + message_stop
     """
 
-    def __init__(self, model: str):
+    def __init__(self, model: str, estimated_input_tokens: int = 0):
         self.model = model
         self.block_index = 0
         self.started = False
         self.current_block_type: str | None = None
         self.has_text_block = False
-        self.input_tokens = 0
+        self.input_tokens = estimated_input_tokens
         self.output_tokens = 0
+        self.cache_creation_input_tokens = 0
+        self.cache_read_input_tokens = 0
 
     def _sse(self, event_type: str, data: dict[str, Any]) -> str:
         return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
@@ -443,7 +447,12 @@ class ResponsesStreamTranslator:
                     "content": [],
                     "stop_reason": None,
                     "stop_sequence": None,
-                    "usage": {"input_tokens": self.input_tokens, "output_tokens": 0},
+                    "usage": {
+                        "input_tokens": self.input_tokens,
+                        "output_tokens": 0,
+                        "cache_creation_input_tokens": self.cache_creation_input_tokens,
+                        "cache_read_input_tokens": self.cache_read_input_tokens,
+                    },
                 },
             },
         )
@@ -487,6 +496,8 @@ class ResponsesStreamTranslator:
                 usage = resp_obj.get("usage") or {}
                 if usage.get("input_tokens"):
                     self.input_tokens = usage["input_tokens"]
+                self.cache_creation_input_tokens = usage.get("cache_creation_input_tokens", 0)
+                self.cache_read_input_tokens = usage.get("cache_read_input_tokens", 0)
                 events += self._emit_message_start()
 
         elif event_type == "response.output_text.delta":
@@ -541,6 +552,12 @@ class ResponsesStreamTranslator:
             resp_obj = data.get("response") or {}
             usage = resp_obj.get("usage") or {}
             self.output_tokens = usage.get("output_tokens", self.output_tokens)
+            if usage.get("input_tokens"):
+                self.input_tokens = usage["input_tokens"]
+            if usage.get("cache_creation_input_tokens"):
+                self.cache_creation_input_tokens = usage["cache_creation_input_tokens"]
+            if usage.get("cache_read_input_tokens"):
+                self.cache_read_input_tokens = usage["cache_read_input_tokens"]
 
             # Determine stop reason
             status = resp_obj.get("status")
@@ -557,7 +574,11 @@ class ResponsesStreamTranslator:
                 {
                     "type": "message_delta",
                     "delta": {"stop_reason": stop_reason, "stop_sequence": None},
-                    "usage": {"output_tokens": self.output_tokens},
+                    "usage": {
+                        "output_tokens": self.output_tokens,
+                        "cache_creation_input_tokens": self.cache_creation_input_tokens,
+                        "cache_read_input_tokens": self.cache_read_input_tokens,
+                    },
                 },
             )
             events += self._sse("message_stop", {"type": "message_stop"})

@@ -7,6 +7,61 @@ import json
 import uuid
 from typing import Any
 
+import tiktoken
+
+# Tokenizer for estimating input tokens when backend doesn't provide them
+_tokenizer = tiktoken.get_encoding("cl100k_base")
+
+
+def estimate_input_tokens(body: dict[str, Any]) -> int:
+    """Estimate input token count from an Anthropic Messages request body.
+
+    Uses cl100k_base tokenizer (close to Claude's tokenizer) to approximate
+    the input token count. This is used as a fallback when the backend
+    doesn't provide prompt_tokens (e.g. OpenAI streaming).
+    """
+    total = 0
+
+    # System prompt
+    system = body.get("system")
+    if isinstance(system, str):
+        total += len(_tokenizer.encode(system))
+    elif isinstance(system, list):
+        for block in system:
+            if isinstance(block, dict) and block.get("type") == "text":
+                total += len(_tokenizer.encode(block.get("text", "")))
+
+    # Messages
+    for msg in body.get("messages", []):
+        content = msg.get("content", "")
+        if isinstance(content, str):
+            total += len(_tokenizer.encode(content))
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict):
+                    text = block.get("text", "")
+                    if text:
+                        total += len(_tokenizer.encode(text))
+                    if block.get("type") == "tool_use":
+                        total += len(_tokenizer.encode(block.get("name", "")))
+                        total += len(_tokenizer.encode(json.dumps(block.get("input", {}))))
+                    elif block.get("type") == "tool_result":
+                        tc = block.get("content", "")
+                        if isinstance(tc, str):
+                            total += len(_tokenizer.encode(tc))
+                        elif isinstance(tc, list):
+                            for sub in tc:
+                                if isinstance(sub, dict) and sub.get("type") == "text":
+                                    total += len(_tokenizer.encode(sub.get("text", "")))
+
+    # Tool definitions
+    tools = body.get("tools")
+    if tools:
+        total += len(_tokenizer.encode(json.dumps(tools)))
+
+    return total
+
+
 # --- Request Translation (Anthropic -> OpenAI) ---
 
 
@@ -324,6 +379,8 @@ def openai_to_anthropic_response(openai_resp: dict[str, Any], model: str) -> dic
         "usage": {
             "input_tokens": usage.get("prompt_tokens", 0),
             "output_tokens": usage.get("completion_tokens", 0),
+            "cache_creation_input_tokens": usage.get("cache_creation_input_tokens", 0),
+            "cache_read_input_tokens": usage.get("cache_read_input_tokens", 0),
         },
     }
 
@@ -338,7 +395,7 @@ class StreamTranslator:
                    content_block_stop -> message_delta -> message_stop
     """
 
-    def __init__(self, model: str):
+    def __init__(self, model: str, estimated_input_tokens: int = 0):
         self.model = model
         self.block_index = 0
         self.started = False
@@ -346,8 +403,12 @@ class StreamTranslator:
         # Track tool calls by index
         self.tool_calls: dict[int, dict[str, Any]] = {}
         self.has_text_block = False
-        self.input_tokens = 0
+        self.input_tokens = estimated_input_tokens
         self.output_tokens = 0
+        self.cache_creation_input_tokens = 0
+        self.cache_read_input_tokens = 0
+        self._finish_reason: str | None = None
+        self._finished = False
 
     def _sse(self, event_type: str, data: dict[str, Any]) -> str:
         """Format an Anthropic SSE event."""
@@ -368,7 +429,12 @@ class StreamTranslator:
                     "content": [],
                     "stop_reason": None,
                     "stop_sequence": None,
-                    "usage": {"input_tokens": self.input_tokens, "output_tokens": 0},
+                    "usage": {
+                        "input_tokens": self.input_tokens,
+                        "output_tokens": 0,
+                        "cache_creation_input_tokens": self.cache_creation_input_tokens,
+                        "cache_read_input_tokens": self.cache_read_input_tokens,
+                    },
                 },
             },
         )
@@ -403,18 +469,49 @@ class StreamTranslator:
         return event
 
     def translate_chunk(self, chunk: dict[str, Any]) -> str:
-        """Translate a single OpenAI streaming chunk to Anthropic SSE events."""
+        """Translate a single OpenAI streaming chunk to Anthropic SSE events.
+
+        With stream_options.include_usage, OpenAI sends chunks in this order:
+        1. Content chunks (choices with deltas, no usage)
+        2. Final content chunk (with finish_reason in choices)
+        3. Usage-only chunk (choices: [], usage: {...})
+
+        We defer emitting message_delta/message_stop until we receive usage data
+        so that Claude Code gets accurate input_tokens for context tracking.
+        """
         events = ""
 
         # Emit message_start on first chunk
         if not self.started:
-            # Capture usage from first chunk if available
-            usage = chunk.get("usage", {})
+            # Capture usage from first chunk if available (unlikely in streaming)
+            usage = chunk.get("usage") or {}
             if usage.get("prompt_tokens"):
                 self.input_tokens = usage["prompt_tokens"]
+            if usage.get("cache_creation_input_tokens"):
+                self.cache_creation_input_tokens = usage["cache_creation_input_tokens"]
+            if usage.get("cache_read_input_tokens"):
+                self.cache_read_input_tokens = usage["cache_read_input_tokens"]
             events += self._emit_message_start()
 
-        choice = (chunk.get("choices") or [{}])[0]
+        choices = chunk.get("choices") or []
+        usage = chunk.get("usage") or {}
+
+        # Handle usage-only chunk (final chunk with include_usage)
+        if not choices and usage:
+            if usage.get("prompt_tokens"):
+                self.input_tokens = usage["prompt_tokens"]
+            if usage.get("completion_tokens"):
+                self.output_tokens = usage["completion_tokens"]
+            if usage.get("cache_creation_input_tokens"):
+                self.cache_creation_input_tokens = usage["cache_creation_input_tokens"]
+            if usage.get("cache_read_input_tokens"):
+                self.cache_read_input_tokens = usage["cache_read_input_tokens"]
+            # If we already saw finish_reason, emit the deferred message_delta/stop now
+            if self._finish_reason is not None and not self._finished:
+                events += self._emit_message_end()
+            return events
+
+        choice = choices[0] if choices else {}
         delta = choice.get("delta", {})
         finish_reason = choice.get("finish_reason")
 
@@ -469,27 +566,59 @@ class StreamTranslator:
                     },
                 )
 
-        # Handle finish
+        # Handle finish_reason
         if finish_reason is not None:
             # Close current block if open
             if self.current_block_type is not None:
                 events += self.emit_content_block_stop()
 
-            # Capture final usage
-            usage = chunk.get("usage", {})
-            output_tokens = usage.get("completion_tokens", self.output_tokens)
+            self._finish_reason = finish_reason
 
-            events += self._sse(
-                "message_delta",
-                {
-                    "type": "message_delta",
-                    "delta": {
-                        "stop_reason": _translate_finish_reason(finish_reason),
-                        "stop_sequence": None,
-                    },
-                    "usage": {"output_tokens": output_tokens},
+            # Capture usage from this chunk if present
+            if usage.get("completion_tokens"):
+                self.output_tokens = usage["completion_tokens"]
+            if usage.get("prompt_tokens"):
+                self.input_tokens = usage["prompt_tokens"]
+
+            # If usage was already provided in this chunk (no separate usage chunk),
+            # emit message_delta/stop immediately
+            if usage.get("prompt_tokens") or usage.get("completion_tokens"):
+                events += self._emit_message_end()
+
+        return events
+
+    def _emit_message_end(self) -> str:
+        """Emit message_delta and message_stop events."""
+        if self._finished:
+            return ""
+        self._finished = True
+        events = self._sse(
+            "message_delta",
+            {
+                "type": "message_delta",
+                "delta": {
+                    "stop_reason": _translate_finish_reason(self._finish_reason),
+                    "stop_sequence": None,
                 },
-            )
-            events += self._sse("message_stop", {"type": "message_stop"})
+                "usage": {
+                    "output_tokens": self.output_tokens,
+                    "cache_creation_input_tokens": self.cache_creation_input_tokens,
+                    "cache_read_input_tokens": self.cache_read_input_tokens,
+                },
+            },
+        )
+        events += self._sse("message_stop", {"type": "message_stop"})
+        return events
 
+    def flush(self) -> str:
+        """Flush any pending state. Call after stream ends.
+
+        If finish_reason was received but no usage-only chunk followed,
+        emit message_delta/stop with whatever usage we have (including estimates).
+        """
+        events = ""
+        if self.current_block_type is not None:
+            events += self.emit_content_block_stop()
+        if self._finish_reason is not None and not self._finished:
+            events += self._emit_message_end()
         return events
