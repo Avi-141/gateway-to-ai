@@ -1,8 +1,9 @@
-"""Anthropic/OpenAI <-> Responses API format translation for codex models.
+"""Anthropic/OpenAI <-> Responses API format translation.
 
-Codex models (gpt-5.x-codex) only support the /responses endpoint, not /chat/completions.
-This module provides stateless translation functions and streaming state machines for
-converting between Anthropic Messages / OpenAI Chat Completions and the Responses API format.
+Provides bidirectional translation between the Responses API format and both
+Anthropic Messages and OpenAI Chat Completions formats. Used for:
+- Internal routing: models that only support /responses get translated from/to other formats
+- Client-facing /v1/responses endpoint: incoming Responses requests get translated to Anthropic/OpenAI
 """
 
 import json
@@ -678,3 +679,864 @@ class ResponsesToOpenAIStreamTranslator:
             chunks += "data: [DONE]\n\n"
 
         return chunks
+
+
+# --- Reverse Request Translation (Responses -> Anthropic) ---
+
+
+def responses_to_anthropic_request(body: dict[str, Any]) -> dict[str, Any]:
+    """Translate a Responses API request to Anthropic Messages format."""
+    anthropic_body: dict[str, Any] = {
+        "model": body.get("model", ""),
+        "max_tokens": body.get("max_output_tokens") or 4096,
+    }
+
+    # instructions -> system
+    instructions = body.get("instructions")
+    if instructions:
+        anthropic_body["system"] = instructions
+
+    # Translate input items to messages
+    messages: list[dict[str, Any]] = []
+    input_items = body.get("input", [])
+
+    # Handle string input (simple prompt)
+    if isinstance(input_items, str):
+        messages.append({"role": "user", "content": input_items})
+        anthropic_body["messages"] = messages
+        return _finalize_responses_to_anthropic(anthropic_body, body)
+
+    # Group consecutive function_calls into a single assistant message
+    i = 0
+    while i < len(input_items):
+        item = input_items[i]
+
+        if isinstance(item, dict):
+            item_type = item.get("type")
+            role = item.get("role")
+
+            if role == "user":
+                content = item.get("content", [])
+                # Convert input_text blocks to text blocks
+                text_parts = []
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "input_text":
+                            text_parts.append(block.get("text", ""))
+                        elif isinstance(block, str):
+                            text_parts.append(block)
+                elif isinstance(content, str):
+                    text_parts.append(content)
+                if text_parts:
+                    messages.append({"role": "user", "content": "\n".join(text_parts)})
+
+            elif role == "assistant":
+                content = item.get("content", [])
+                text_parts = []
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "output_text":
+                            text_parts.append(block.get("text", ""))
+                elif isinstance(content, str):
+                    text_parts.append(content)
+                if text_parts:
+                    messages.append({"role": "assistant", "content": "\n".join(text_parts)})
+
+            elif item_type == "function_call":
+                # Collect consecutive function_calls into one assistant message
+                tool_use_blocks: list[dict[str, Any]] = []
+                while i < len(input_items):
+                    fc = input_items[i]
+                    if not isinstance(fc, dict) or fc.get("type") != "function_call":
+                        break
+                    try:
+                        arguments = json.loads(fc.get("arguments", "{}"))
+                    except (json.JSONDecodeError, TypeError):
+                        arguments = {}
+                    tool_use_blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": fc.get("call_id", f"toolu_{uuid.uuid4().hex[:24]}"),
+                            "name": fc.get("name", ""),
+                            "input": arguments,
+                        }
+                    )
+                    i += 1
+                messages.append({"role": "assistant", "content": tool_use_blocks})
+                continue  # skip i += 1 at end
+
+            elif item_type == "function_call_output":
+                tool_result = {
+                    "type": "tool_result",
+                    "tool_use_id": item.get("call_id", ""),
+                    "content": item.get("output", ""),
+                }
+                # Merge consecutive tool results into a single user message
+                if (
+                    messages
+                    and messages[-1].get("role") == "user"
+                    and isinstance(messages[-1].get("content"), list)
+                    and messages[-1]["content"]
+                    and isinstance(messages[-1]["content"][0], dict)
+                    and messages[-1]["content"][0].get("type") == "tool_result"
+                ):
+                    messages[-1]["content"].append(tool_result)
+                else:
+                    messages.append({"role": "user", "content": [tool_result]})
+
+        i += 1
+
+    anthropic_body["messages"] = messages
+    return _finalize_responses_to_anthropic(anthropic_body, body)
+
+
+def _finalize_responses_to_anthropic(anthropic_body: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+    """Add tools and simple field mappings to the Anthropic request."""
+    # Tools: function type -> Anthropic format (parameters -> input_schema)
+    if "tools" in body:
+        anthropic_tools = []
+        for tool in body["tools"]:
+            if tool.get("type") == "function":
+                anthropic_tools.append(
+                    {
+                        "name": tool.get("name", ""),
+                        "description": tool.get("description", ""),
+                        "input_schema": tool.get("parameters", {}),
+                    }
+                )
+        if anthropic_tools:
+            anthropic_body["tools"] = anthropic_tools
+
+    # tool_choice
+    if "tool_choice" in body:
+        tc = body["tool_choice"]
+        if isinstance(tc, str):
+            str_map = {"auto": "auto", "required": "any", "none": "none"}
+            tc_type = str_map.get(tc, "auto")
+            anthropic_body["tool_choice"] = {"type": tc_type}
+        elif isinstance(tc, dict):
+            if tc.get("type") == "function":
+                anthropic_body["tool_choice"] = {"type": "tool", "name": tc.get("name", "")}
+
+    # Simple field mappings
+    if "temperature" in body:
+        anthropic_body["temperature"] = body["temperature"]
+    if "top_p" in body:
+        anthropic_body["top_p"] = body["top_p"]
+
+    return anthropic_body
+
+
+# --- Reverse Request Translation (Responses -> OpenAI Chat Completions) ---
+
+
+def responses_to_openai_chat_request(body: dict[str, Any], model: str) -> dict[str, Any]:
+    """Translate a Responses API request to OpenAI Chat Completions format."""
+    openai_body: dict[str, Any] = {"model": model}
+
+    messages: list[dict[str, Any]] = []
+
+    # instructions -> system message
+    instructions = body.get("instructions")
+    if instructions:
+        messages.append({"role": "system", "content": instructions})
+
+    # max_output_tokens -> max_tokens
+    if "max_output_tokens" in body:
+        openai_body["max_tokens"] = body["max_output_tokens"]
+
+    input_items = body.get("input", [])
+
+    # Handle string input
+    if isinstance(input_items, str):
+        messages.append({"role": "user", "content": input_items})
+        openai_body["messages"] = messages
+        return _finalize_responses_to_openai_chat(openai_body, body)
+
+    i = 0
+    while i < len(input_items):
+        item = input_items[i]
+
+        if isinstance(item, dict):
+            item_type = item.get("type")
+            role = item.get("role")
+
+            if role == "user":
+                content = item.get("content", [])
+                text_parts = []
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "input_text":
+                            text_parts.append(block.get("text", ""))
+                        elif isinstance(block, str):
+                            text_parts.append(block)
+                elif isinstance(content, str):
+                    text_parts.append(content)
+                if text_parts:
+                    messages.append({"role": "user", "content": "\n".join(text_parts)})
+
+            elif role == "assistant":
+                content = item.get("content", [])
+                text_parts = []
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get("type") == "output_text":
+                            text_parts.append(block.get("text", ""))
+                elif isinstance(content, str):
+                    text_parts.append(content)
+                if text_parts:
+                    messages.append({"role": "assistant", "content": "\n".join(text_parts)})
+
+            elif item_type == "function_call":
+                # Collect consecutive function_calls into a single assistant message with tool_calls
+                tool_calls: list[dict[str, Any]] = []
+                while i < len(input_items):
+                    fc = input_items[i]
+                    if not isinstance(fc, dict) or fc.get("type") != "function_call":
+                        break
+                    tool_calls.append(
+                        {
+                            "id": fc.get("call_id", f"call_{uuid.uuid4().hex[:24]}"),
+                            "type": "function",
+                            "function": {
+                                "name": fc.get("name", ""),
+                                "arguments": fc.get("arguments", "{}"),
+                            },
+                        }
+                    )
+                    i += 1
+                assistant_msg: dict[str, Any] = {"role": "assistant", "content": None}
+                assistant_msg["tool_calls"] = tool_calls
+                messages.append(assistant_msg)
+                continue
+
+            elif item_type == "function_call_output":
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": item.get("call_id", ""),
+                        "content": item.get("output", ""),
+                    }
+                )
+
+        i += 1
+
+    openai_body["messages"] = messages
+    return _finalize_responses_to_openai_chat(openai_body, body)
+
+
+def _finalize_responses_to_openai_chat(openai_body: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
+    """Add tools and simple field mappings to the OpenAI Chat Completions request."""
+    if "tools" in body:
+        openai_tools = []
+        for tool in body["tools"]:
+            if tool.get("type") == "function":
+                openai_tools.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": tool.get("name", ""),
+                            "description": tool.get("description", ""),
+                            "parameters": tool.get("parameters", {}),
+                        },
+                    }
+                )
+        if openai_tools:
+            openai_body["tools"] = openai_tools
+
+    if "tool_choice" in body:
+        openai_body["tool_choice"] = body["tool_choice"]
+
+    if "temperature" in body:
+        openai_body["temperature"] = body["temperature"]
+    if "top_p" in body:
+        openai_body["top_p"] = body["top_p"]
+
+    return openai_body
+
+
+# --- Reverse Response Translation (Anthropic -> Responses) ---
+
+
+def anthropic_to_responses_response(resp: dict[str, Any], model: str) -> dict[str, Any]:
+    """Translate an Anthropic Messages response to Responses API format."""
+    output: list[dict[str, Any]] = []
+    text_parts: list[str] = []
+
+    for block in resp.get("content", []):
+        if block.get("type") == "text":
+            text_parts.append(block.get("text", ""))
+        elif block.get("type") == "tool_use":
+            # Flush accumulated text into a message output item
+            if text_parts:
+                output.append(
+                    {
+                        "type": "message",
+                        "content": [{"type": "output_text", "text": "\n".join(text_parts)}],
+                    }
+                )
+                text_parts = []
+            output.append(
+                {
+                    "type": "function_call",
+                    "name": block.get("name", ""),
+                    "arguments": json.dumps(block.get("input", {})),
+                    "call_id": block.get("id", f"call_{uuid.uuid4().hex[:24]}"),
+                }
+            )
+
+    # Flush remaining text
+    if text_parts:
+        output.append(
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": "\n".join(text_parts)}],
+            }
+        )
+
+    # Map stop_reason to status
+    stop_reason = resp.get("stop_reason", "end_turn")
+    status = "incomplete" if stop_reason == "max_tokens" else "completed"
+
+    usage = resp.get("usage", {})
+
+    result: dict[str, Any] = {
+        "id": resp.get("id", f"resp_{uuid.uuid4().hex[:24]}"),
+        "object": "response",
+        "created_at": int(time.time()),
+        "status": status,
+        "model": model,
+        "output": output,
+        "usage": {
+            "input_tokens": usage.get("input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0),
+            "total_tokens": usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+        },
+    }
+
+    # Include cache tokens if present
+    if usage.get("cache_creation_input_tokens"):
+        result["usage"]["cache_creation_input_tokens"] = usage["cache_creation_input_tokens"]
+    if usage.get("cache_read_input_tokens"):
+        result["usage"]["cache_read_input_tokens"] = usage["cache_read_input_tokens"]
+
+    if status == "incomplete":
+        result["incomplete_details"] = {"reason": "max_output_tokens"}
+
+    return result
+
+
+# --- Reverse Response Translation (OpenAI Chat Completions -> Responses) ---
+
+
+def openai_chat_to_responses_response(resp: dict[str, Any], model: str) -> dict[str, Any]:
+    """Translate an OpenAI Chat Completions response to Responses API format."""
+    choice = resp.get("choices", [{}])[0]
+    message = choice.get("message", {})
+    output: list[dict[str, Any]] = []
+
+    # Text content
+    if message.get("content"):
+        output.append(
+            {
+                "type": "message",
+                "content": [{"type": "output_text", "text": message["content"]}],
+            }
+        )
+
+    # Tool calls
+    for tc in message.get("tool_calls") or []:
+        func = tc.get("function", {})
+        output.append(
+            {
+                "type": "function_call",
+                "name": func.get("name", ""),
+                "arguments": func.get("arguments", "{}"),
+                "call_id": tc.get("id", f"call_{uuid.uuid4().hex[:24]}"),
+            }
+        )
+
+    # Map finish_reason to status
+    finish_reason = choice.get("finish_reason", "stop")
+    status = "incomplete" if finish_reason == "length" else "completed"
+
+    usage = resp.get("usage", {})
+    input_tokens = usage.get("prompt_tokens", 0)
+    output_tokens = usage.get("completion_tokens", 0)
+
+    result: dict[str, Any] = {
+        "id": resp.get("id", f"resp_{uuid.uuid4().hex[:24]}"),
+        "object": "response",
+        "created_at": int(time.time()),
+        "status": status,
+        "model": model,
+        "output": output,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        },
+    }
+
+    if status == "incomplete":
+        result["incomplete_details"] = {"reason": "max_output_tokens"}
+
+    return result
+
+
+# --- Streaming Translation (Anthropic SSE -> Responses SSE) ---
+
+
+class AnthropicToResponsesStreamTranslator:
+    """Stateful translator converting Anthropic SSE events to Responses SSE events.
+
+    Anthropic event types mapped to Responses events:
+    - message_start -> response.created
+    - content_block_start (text) -> response.output_item.added (message)
+    - content_block_delta (text_delta) -> response.output_text.delta
+    - content_block_start (tool_use) -> response.output_item.added (function_call)
+    - content_block_delta (input_json_delta) -> response.function_call_arguments.delta
+    - content_block_stop -> response.output_item.done
+    - message_delta -> accumulate stop_reason/usage
+    - message_stop -> response.completed
+    """
+
+    def __init__(self, model: str):
+        self.model = model
+        self.response_id = f"resp_{uuid.uuid4().hex[:24]}"
+        self.created_at = int(time.time())
+        self.output_items: list[dict[str, Any]] = []
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self.cache_creation_input_tokens = 0
+        self.cache_read_input_tokens = 0
+        self.stop_reason: str | None = None
+        self._current_text_parts: list[str] = []
+        self._current_tool: dict[str, Any] | None = None
+        self._current_tool_args: str = ""
+        self._started = False
+        self._finished = False
+        self._item_index = 0
+
+    def _sse(self, event_type: str, data: dict[str, Any]) -> str:
+        return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+    def translate_event(self, event_type: str, data: dict[str, Any]) -> str:
+        if not isinstance(data, dict):
+            return ""
+        events = ""
+
+        if event_type == "message_start":
+            if not self._started:
+                self._started = True
+                message = data.get("message", {})
+                usage = message.get("usage", {})
+                self.input_tokens = usage.get("input_tokens", 0)
+                self.cache_creation_input_tokens = usage.get("cache_creation_input_tokens", 0)
+                self.cache_read_input_tokens = usage.get("cache_read_input_tokens", 0)
+                events += self._sse(
+                    "response.created",
+                    {
+                        "type": "response.created",
+                        "response": {
+                            "id": self.response_id,
+                            "object": "response",
+                            "created_at": self.created_at,
+                            "status": "in_progress",
+                            "model": self.model,
+                            "output": [],
+                            "usage": {
+                                "input_tokens": self.input_tokens,
+                                "output_tokens": 0,
+                                "total_tokens": self.input_tokens,
+                            },
+                        },
+                    },
+                )
+
+        elif event_type == "content_block_start":
+            block = data.get("content_block", {})
+            block_type = block.get("type")
+
+            if block_type == "text":
+                self._current_text_parts = []
+                item = {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": ""}],
+                }
+                events += self._sse(
+                    "response.output_item.added",
+                    {"type": "response.output_item.added", "output_index": self._item_index, "item": item},
+                )
+
+            elif block_type == "tool_use":
+                self._current_tool = {
+                    "type": "function_call",
+                    "name": block.get("name", ""),
+                    "arguments": "",
+                    "call_id": block.get("id", f"call_{uuid.uuid4().hex[:24]}"),
+                }
+                self._current_tool_args = ""
+                events += self._sse(
+                    "response.output_item.added",
+                    {
+                        "type": "response.output_item.added",
+                        "output_index": self._item_index,
+                        "item": self._current_tool,
+                    },
+                )
+
+        elif event_type == "content_block_delta":
+            delta = data.get("delta", {})
+            delta_type = delta.get("type")
+
+            if delta_type == "text_delta":
+                text = delta.get("text", "")
+                self._current_text_parts.append(text)
+                events += self._sse(
+                    "response.output_text.delta",
+                    {
+                        "type": "response.output_text.delta",
+                        "output_index": self._item_index,
+                        "content_index": 0,
+                        "delta": text,
+                    },
+                )
+
+            elif delta_type == "input_json_delta":
+                partial = delta.get("partial_json", "")
+                self._current_tool_args += partial
+                events += self._sse(
+                    "response.function_call_arguments.delta",
+                    {
+                        "type": "response.function_call_arguments.delta",
+                        "output_index": self._item_index,
+                        "delta": partial,
+                    },
+                )
+
+        elif event_type == "content_block_stop":
+            # Build done item
+            if self._current_tool is not None:
+                done_item = {**self._current_tool, "arguments": self._current_tool_args}
+                self._current_tool = None
+                self._current_tool_args = ""
+            else:
+                done_item = {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "".join(self._current_text_parts)}],
+                }
+                self._current_text_parts = []
+
+            self.output_items.append(done_item)
+            events += self._sse(
+                "response.output_item.done",
+                {"type": "response.output_item.done", "output_index": self._item_index, "item": done_item},
+            )
+            self._item_index += 1
+
+        elif event_type == "message_delta":
+            delta = data.get("delta", {})
+            self.stop_reason = delta.get("stop_reason")
+            usage = data.get("usage", {})
+            self.output_tokens = usage.get("output_tokens", self.output_tokens)
+            if usage.get("cache_creation_input_tokens") is not None:
+                self.cache_creation_input_tokens = usage["cache_creation_input_tokens"]
+            if usage.get("cache_read_input_tokens") is not None:
+                self.cache_read_input_tokens = usage["cache_read_input_tokens"]
+
+        elif event_type == "message_stop":
+            events += self._emit_completed()
+
+        return events
+
+    def _emit_completed(self) -> str:
+        if self._finished:
+            return ""
+        self._finished = True
+
+        status = "incomplete" if self.stop_reason == "max_tokens" else "completed"
+
+        usage: dict[str, Any] = {
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "total_tokens": self.input_tokens + self.output_tokens,
+        }
+        if self.cache_creation_input_tokens:
+            usage["cache_creation_input_tokens"] = self.cache_creation_input_tokens
+        if self.cache_read_input_tokens:
+            usage["cache_read_input_tokens"] = self.cache_read_input_tokens
+
+        response: dict[str, Any] = {
+            "id": self.response_id,
+            "object": "response",
+            "created_at": self.created_at,
+            "status": status,
+            "model": self.model,
+            "output": self.output_items,
+            "usage": usage,
+        }
+        if status == "incomplete":
+            response["incomplete_details"] = {"reason": "max_output_tokens"}
+
+        return self._sse(
+            "response.completed",
+            {"type": "response.completed", "response": response},
+        )
+
+    def flush(self) -> str:
+        """Flush pending state. Call after stream ends."""
+        if not self._finished and self._started:
+            return self._emit_completed()
+        return ""
+
+
+# --- Streaming Translation (OpenAI Chat Completions SSE -> Responses SSE) ---
+
+
+class OpenAIChatToResponsesStreamTranslator:
+    """Stateful translator converting OpenAI streaming chunks to Responses SSE events.
+
+    Handles the deferred finish pattern: OpenAI may send a usage-only chunk
+    after the finish_reason chunk, so we defer emitting response.completed
+    until we receive usage or the stream ends.
+    """
+
+    def __init__(self, model: str):
+        self.model = model
+        self.response_id = f"resp_{uuid.uuid4().hex[:24]}"
+        self.created_at = int(time.time())
+        self.output_items: list[dict[str, Any]] = []
+        self.input_tokens = 0
+        self.output_tokens = 0
+        self._started = False
+        self._finished = False
+        self._item_index = 0
+        self._current_text_parts: list[str] = []
+        self._has_text_item = False
+        self._current_tool: dict[str, Any] | None = None
+        self._current_tool_args: str = ""
+        self._tool_calls: dict[int, dict[str, Any]] = {}
+        self._finish_reason: str | None = None
+
+    def _sse(self, event_type: str, data: dict[str, Any]) -> str:
+        return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+    def _emit_created(self) -> str:
+        self._started = True
+        return self._sse(
+            "response.created",
+            {
+                "type": "response.created",
+                "response": {
+                    "id": self.response_id,
+                    "object": "response",
+                    "created_at": self.created_at,
+                    "status": "in_progress",
+                    "model": self.model,
+                    "output": [],
+                    "usage": {
+                        "input_tokens": self.input_tokens,
+                        "output_tokens": 0,
+                        "total_tokens": self.input_tokens,
+                    },
+                },
+            },
+        )
+
+    def translate_chunk(self, chunk: dict[str, Any]) -> str:
+        events = ""
+
+        if not self._started:
+            usage = chunk.get("usage") or {}
+            if usage.get("prompt_tokens") is not None:
+                self.input_tokens = usage["prompt_tokens"]
+            events += self._emit_created()
+
+        choices = chunk.get("choices") or []
+        usage = chunk.get("usage") or {}
+
+        # Handle usage-only chunk (final chunk with include_usage)
+        if not choices and usage:
+            if usage.get("prompt_tokens") is not None:
+                self.input_tokens = usage["prompt_tokens"]
+            if usage.get("completion_tokens") is not None:
+                self.output_tokens = usage["completion_tokens"]
+            # If we already saw finish_reason, emit deferred completed now
+            if self._finish_reason is not None and not self._finished:
+                events += self._close_current_items()
+                events += self._emit_completed()
+            return events
+
+        choice = choices[0] if choices else {}
+        delta = choice.get("delta", {})
+        finish_reason = choice.get("finish_reason")
+
+        # Handle text content
+        text_content = delta.get("content")
+        if text_content is not None:
+            if not self._has_text_item:
+                self._has_text_item = True
+                self._current_text_parts = []
+                item = {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": ""}],
+                }
+                events += self._sse(
+                    "response.output_item.added",
+                    {"type": "response.output_item.added", "output_index": self._item_index, "item": item},
+                )
+            self._current_text_parts.append(text_content)
+            events += self._sse(
+                "response.output_text.delta",
+                {
+                    "type": "response.output_text.delta",
+                    "output_index": self._item_index,
+                    "content_index": 0,
+                    "delta": text_content,
+                },
+            )
+
+        # Handle tool calls
+        tool_calls = delta.get("tool_calls", [])
+        for tc in tool_calls:
+            tc_index = tc.get("index", 0)
+            func = tc.get("function", {})
+
+            if tc_index not in self._tool_calls:
+                # Close text item if open
+                if self._has_text_item:
+                    events += self._close_text_item()
+
+                # Start new function_call
+                tc_id = tc.get("id", f"call_{uuid.uuid4().hex[:24]}")
+                tc_name = func.get("name", "")
+                self._tool_calls[tc_index] = {
+                    "id": tc_id,
+                    "name": tc_name,
+                    "arguments": "",
+                }
+                self._current_tool = {
+                    "type": "function_call",
+                    "name": tc_name,
+                    "arguments": "",
+                    "call_id": tc_id,
+                }
+                self._current_tool_args = ""
+                events += self._sse(
+                    "response.output_item.added",
+                    {
+                        "type": "response.output_item.added",
+                        "output_index": self._item_index,
+                        "item": self._current_tool,
+                    },
+                )
+
+            # Accumulate arguments
+            if func.get("arguments"):
+                self._tool_calls[tc_index]["arguments"] += func["arguments"]
+                self._current_tool_args += func["arguments"]
+                events += self._sse(
+                    "response.function_call_arguments.delta",
+                    {
+                        "type": "response.function_call_arguments.delta",
+                        "output_index": self._item_index,
+                        "delta": func["arguments"],
+                    },
+                )
+
+        # Handle finish_reason
+        if finish_reason is not None:
+            self._finish_reason = finish_reason
+
+            # Capture usage from this chunk if present
+            if usage.get("completion_tokens") is not None:
+                self.output_tokens = usage["completion_tokens"]
+            if usage.get("prompt_tokens") is not None:
+                self.input_tokens = usage["prompt_tokens"]
+
+            # If usage provided in this chunk, emit completed immediately
+            if usage.get("prompt_tokens") is not None or usage.get("completion_tokens") is not None:
+                events += self._close_current_items()
+                events += self._emit_completed()
+
+        return events
+
+    def _close_text_item(self) -> str:
+        if not self._has_text_item:
+            return ""
+        self._has_text_item = False
+        done_item = {
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": "".join(self._current_text_parts)}],
+        }
+        self.output_items.append(done_item)
+        events = self._sse(
+            "response.output_item.done",
+            {"type": "response.output_item.done", "output_index": self._item_index, "item": done_item},
+        )
+        self._item_index += 1
+        self._current_text_parts = []
+        return events
+
+    def _close_tool_item(self) -> str:
+        if self._current_tool is None:
+            return ""
+        done_item = {**self._current_tool, "arguments": self._current_tool_args}
+        self.output_items.append(done_item)
+        events = self._sse(
+            "response.output_item.done",
+            {"type": "response.output_item.done", "output_index": self._item_index, "item": done_item},
+        )
+        self._item_index += 1
+        self._current_tool = None
+        self._current_tool_args = ""
+        return events
+
+    def _close_current_items(self) -> str:
+        events = ""
+        if self._has_text_item:
+            events += self._close_text_item()
+        if self._current_tool is not None:
+            events += self._close_tool_item()
+        return events
+
+    def _emit_completed(self) -> str:
+        if self._finished:
+            return ""
+        self._finished = True
+
+        status = "incomplete" if self._finish_reason == "length" else "completed"
+
+        response: dict[str, Any] = {
+            "id": self.response_id,
+            "object": "response",
+            "created_at": self.created_at,
+            "status": status,
+            "model": self.model,
+            "output": self.output_items,
+            "usage": {
+                "input_tokens": self.input_tokens,
+                "output_tokens": self.output_tokens,
+                "total_tokens": self.input_tokens + self.output_tokens,
+            },
+        }
+        if status == "incomplete":
+            response["incomplete_details"] = {"reason": "max_output_tokens"}
+
+        return self._sse(
+            "response.completed",
+            {"type": "response.completed", "response": response},
+        )
+
+    def flush(self) -> str:
+        """Flush pending state. Call after stream ends."""
+        events = ""
+        events += self._close_current_items()
+        if self._finish_reason is not None and not self._finished:
+            events += self._emit_completed()
+        return events

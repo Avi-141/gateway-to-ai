@@ -195,6 +195,12 @@ def model_requires_responses_api(model_id: str) -> bool:
     return "/responses" in endpoints and "/chat/completions" not in endpoints
 
 
+def model_supports_responses_api(model_id: str) -> bool:
+    """Return True if the model supports /responses (even if it also supports /chat/completions)."""
+    endpoints = _copilot_model_endpoints.get(model_id, [])
+    return "/responses" in endpoints
+
+
 def get_available_copilot_models() -> list[dict[str, Any]]:
     """Return the dynamically fetched Copilot models (empty if not fetched)."""
     return _copilot_models

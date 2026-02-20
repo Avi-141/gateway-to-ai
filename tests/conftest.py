@@ -254,3 +254,17 @@ def responses_api_tool_response() -> dict[str, Any]:
         ],
         "usage": {"input_tokens": 15, "output_tokens": 25},
     }
+
+
+@pytest.fixture
+def minimal_responses_request() -> dict[str, Any]:
+    """Minimal valid Responses API request body."""
+    return {
+        "model": "claude-sonnet-4-5-20250929",
+        "input": [
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": "Hello"}],
+            }
+        ],
+    }

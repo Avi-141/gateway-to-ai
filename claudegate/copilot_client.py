@@ -19,11 +19,13 @@ from .copilot_translate import (
 )
 from .errors import ContextWindowExceededError, CopilotHttpError, TransientBackendError
 from .responses_translate import (
+    OpenAIChatToResponsesStreamTranslator,
     ResponsesStreamTranslator,
     ResponsesToOpenAIStreamTranslator,
     anthropic_to_responses_request,
     openai_chat_to_responses_request,
     responses_to_anthropic_response,
+    responses_to_openai_chat_request,
     responses_to_openai_chat_response,
 )
 
@@ -63,6 +65,26 @@ def _parse_token_limit_error(status_code: int, detail: str) -> ContextWindowExce
     if "model_max_prompt_tokens_exceeded" in detail:
         return ContextWindowExceededError(0, 0, "copilot", detail)
     return None
+
+
+def _strip_non_function_tools(body: dict[str, Any]) -> dict[str, Any]:
+    """Strip non-function tools from a Responses API request body.
+
+    Copilot only supports type: "function" tools. Built-in tools like
+    web_search, code_interpreter, etc. are not supported and must be removed.
+    """
+    tools = body.get("tools")
+    if not tools:
+        return body
+    function_tools = [t for t in tools if t.get("type") == "function"]
+    body = {**body}
+    if function_tools:
+        body["tools"] = function_tools
+    else:
+        del body["tools"]
+        # Remove tool_choice if no tools remain
+        body.pop("tool_choice", None)
+    return body
 
 
 class CopilotBackend:
@@ -549,6 +571,175 @@ class CopilotBackend:
             logger.error(f"{log_prefix}Copilot Responses stream error: {e}")
             error_data = json.dumps({"error": {"message": str(e), "type": "server_error", "param": None, "code": None}})
             yield f"data: {error_data}\n\n"
+        finally:
+            await stream_cm.__aexit__(None, None, None)
+
+    # --- Client-facing /v1/responses endpoint methods ---
+
+    async def handle_responses_passthrough(
+        self,
+        body: dict[str, Any],
+        request_id: str,
+        stream: bool,
+    ) -> JSONResponse | StreamingResponse:
+        """Handle a Responses API request by passing directly to Copilot /responses.
+
+        Used when the model supports /responses natively (0 translations).
+        Strips non-function tools (e.g. web_search) that Copilot doesn't support.
+        """
+        log_prefix = f"[{request_id}] " if request_id else ""
+
+        # Strip non-function tools — Copilot only supports type: "function"
+        body = _strip_non_function_tools(body)
+
+        if stream:
+            body = {**body, "stream": True}
+            resp, stream_cm = await self._open_responses_stream(body, log_prefix)
+            return StreamingResponse(
+                self._stream_responses_passthrough(resp, stream_cm, log_prefix),
+                media_type="text/event-stream",
+            )
+        else:
+            headers = await self._get_headers()
+            logger.info(f"{log_prefix}Copilot Responses passthrough to {body.get('model')}")
+
+            resp = await self._client.post(COPILOT_RESPONSES_URL, headers=headers, json=body)
+
+            if resp.status_code != 200:
+                detail = resp.text[:500]
+                logger.error(f"{log_prefix}Copilot Responses error {resp.status_code}: {detail}")
+                token_err = _parse_token_limit_error(resp.status_code, detail)
+                if token_err:
+                    raise token_err
+                if resp.status_code in FALLBACK_ON_ERRORS:
+                    error_type = _ERROR_TYPE_MAP.get(resp.status_code, "api_error")
+                    raise TransientBackendError(resp.status_code, error_type, detail, "copilot")
+                raise CopilotHttpError(resp.status_code, detail)
+
+            return JSONResponse(content=resp.json())
+
+    async def _stream_responses_passthrough(
+        self, resp: httpx.Response, stream_cm: Any, log_prefix: str
+    ) -> AsyncGenerator[str, None]:
+        """Stream Responses API events as-is from Copilot (no translation)."""
+        chunk_count = 0
+
+        try:
+            async for line in resp.aiter_lines():
+                if not line:
+                    continue
+                chunk_count += 1
+                if chunk_count <= 3:
+                    logger.debug(f"{log_prefix}Responses passthrough chunk {chunk_count}: {line[:200]}")
+                yield f"{line}\n"
+                await asyncio.sleep(0)
+
+            logger.info(f"{log_prefix}Copilot Responses passthrough stream complete, {chunk_count} lines")
+
+        except httpx.TimeoutException:
+            logger.error(f"{log_prefix}Copilot Responses stream timed out")
+            error_data = json.dumps({"type": "error", "error": {"message": "Copilot Responses stream timed out"}})
+            yield f"event: error\ndata: {error_data}\n\n"
+        except Exception as e:
+            logger.error(f"{log_prefix}Copilot Responses stream error: {e}")
+            yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': {'message': str(e)}})}\n\n"
+        finally:
+            await stream_cm.__aexit__(None, None, None)
+
+    async def handle_responses_via_chat(
+        self,
+        body: dict[str, Any],
+        request_id: str,
+        stream: bool,
+        copilot_model: str,
+    ) -> JSONResponse | StreamingResponse:
+        """Handle a Responses API request via Chat Completions translation.
+
+        Used when the model only supports /chat/completions (2 translations).
+        Translates Responses -> Chat Completions -> Copilot -> Chat Completions -> Responses.
+        """
+        log_prefix = f"[{request_id}] " if request_id else ""
+        openai_body = responses_to_openai_chat_request(body, copilot_model)
+
+        if stream:
+            openai_body["stream"] = True
+            openai_body["stream_options"] = {"include_usage": True}
+            resp, stream_cm = await self._open_stream(openai_body, log_prefix)
+            return StreamingResponse(
+                self._stream_responses_via_chat(resp, stream_cm, copilot_model, log_prefix),
+                media_type="text/event-stream",
+            )
+        else:
+            headers = await self._get_headers()
+            logger.info(f"{log_prefix}Copilot Responses via chat to {copilot_model}")
+
+            resp = await self._client.post(COPILOT_CHAT_URL, headers=headers, json=openai_body)
+
+            if resp.status_code != 200:
+                detail = resp.text[:500]
+                logger.error(f"{log_prefix}Copilot error {resp.status_code}: {detail}")
+                token_err = _parse_token_limit_error(resp.status_code, detail)
+                if token_err:
+                    raise token_err
+                if resp.status_code in FALLBACK_ON_ERRORS:
+                    error_type = _ERROR_TYPE_MAP.get(resp.status_code, "api_error")
+                    raise TransientBackendError(resp.status_code, error_type, detail, "copilot")
+                raise CopilotHttpError(resp.status_code, detail)
+
+            openai_resp = resp.json()
+            from .responses_translate import openai_chat_to_responses_response
+
+            result = openai_chat_to_responses_response(openai_resp, copilot_model)
+            return JSONResponse(content=result)
+
+    async def _stream_responses_via_chat(
+        self,
+        resp: httpx.Response,
+        stream_cm: Any,
+        model: str,
+        log_prefix: str,
+    ) -> AsyncGenerator[str, None]:
+        """Stream Chat Completions response, translating to Responses SSE format."""
+        translator = OpenAIChatToResponsesStreamTranslator(model)
+        chunk_count = 0
+
+        try:
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str.strip() == "[DONE]":
+                    break
+
+                try:
+                    chunk = json.loads(data_str)
+                except json.JSONDecodeError:
+                    logger.warning(f"{log_prefix}Skipping malformed chunk: {data_str[:100]}")
+                    continue
+
+                chunk_count += 1
+                if chunk_count <= 3:
+                    logger.debug(f"{log_prefix}Chat->Responses chunk {chunk_count}: {data_str[:200]}")
+
+                events = translator.translate_chunk(chunk)
+                if events:
+                    yield events
+                    await asyncio.sleep(0)
+
+            # Flush pending state
+            flush_events = translator.flush()
+            if flush_events:
+                yield flush_events
+
+            logger.info(f"{log_prefix}Copilot Responses via chat stream complete, {chunk_count} chunks")
+
+        except httpx.TimeoutException:
+            logger.error(f"{log_prefix}Copilot stream timed out")
+            error_data = json.dumps({"type": "error", "error": {"message": "Copilot stream timed out"}})
+            yield f"event: error\ndata: {error_data}\n\n"
+        except Exception as e:
+            logger.error(f"{log_prefix}Copilot stream error: {e}")
+            yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': {'message': str(e)}})}\n\n"
         finally:
             await stream_cm.__aexit__(None, None, None)
 

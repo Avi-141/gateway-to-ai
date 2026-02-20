@@ -3,11 +3,17 @@
 import json
 
 from claudegate.responses_translate import (
+    AnthropicToResponsesStreamTranslator,
+    OpenAIChatToResponsesStreamTranslator,
     ResponsesStreamTranslator,
     ResponsesToOpenAIStreamTranslator,
     anthropic_to_responses_request,
+    anthropic_to_responses_response,
     openai_chat_to_responses_request,
+    openai_chat_to_responses_response,
+    responses_to_anthropic_request,
     responses_to_anthropic_response,
+    responses_to_openai_chat_request,
     responses_to_openai_chat_response,
 )
 
@@ -772,3 +778,762 @@ class TestToolCallRoundTrip:
         }
         openai_resp = responses_to_openai_chat_response(resp, "gpt-5.2-codex")
         assert openai_resp["choices"][0]["message"]["tool_calls"][0]["id"] == "call_new"
+
+
+# --- responses_to_anthropic_request ---
+
+
+class TestResponsesToAnthropicRequest:
+    def test_simple_text(self):
+        body = {
+            "model": "claude-sonnet-4-5",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}],
+        }
+        result = responses_to_anthropic_request(body)
+        assert result["model"] == "claude-sonnet-4-5"
+        assert result["max_tokens"] == 4096  # default
+        assert len(result["messages"]) == 1
+        assert result["messages"][0]["role"] == "user"
+        assert result["messages"][0]["content"] == "Hello"
+
+    def test_instructions_to_system(self):
+        body = {
+            "model": "claude-sonnet-4-5",
+            "instructions": "You are helpful.",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}],
+        }
+        result = responses_to_anthropic_request(body)
+        assert result["system"] == "You are helpful."
+
+    def test_max_output_tokens(self):
+        body = {
+            "model": "claude-sonnet-4-5",
+            "max_output_tokens": 2048,
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}],
+        }
+        result = responses_to_anthropic_request(body)
+        assert result["max_tokens"] == 2048
+
+    def test_tools_function_type(self):
+        body = {
+            "model": "claude-sonnet-4-5",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "get_weather",
+                    "description": "Get weather",
+                    "parameters": {"type": "object", "properties": {"loc": {"type": "string"}}},
+                }
+            ],
+        }
+        result = responses_to_anthropic_request(body)
+        assert len(result["tools"]) == 1
+        assert result["tools"][0]["name"] == "get_weather"
+        assert result["tools"][0]["input_schema"] == {"type": "object", "properties": {"loc": {"type": "string"}}}
+
+    def test_tool_choice_required(self):
+        body = {
+            "model": "claude-sonnet-4-5",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}],
+            "tool_choice": "required",
+        }
+        result = responses_to_anthropic_request(body)
+        assert result["tool_choice"] == {"type": "any"}
+
+    def test_tool_choice_function(self):
+        body = {
+            "model": "claude-sonnet-4-5",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}],
+            "tool_choice": {"type": "function", "name": "get_weather"},
+        }
+        result = responses_to_anthropic_request(body)
+        assert result["tool_choice"] == {"type": "tool", "name": "get_weather"}
+
+    def test_function_call_and_output(self):
+        body = {
+            "model": "claude-sonnet-4-5",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "Weather?"}]},
+                {
+                    "type": "function_call",
+                    "name": "get_weather",
+                    "arguments": '{"location":"NYC"}',
+                    "call_id": "call_abc",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_abc",
+                    "output": "72°F, sunny",
+                },
+            ],
+        }
+        result = responses_to_anthropic_request(body)
+        messages = result["messages"]
+        assert messages[0]["role"] == "user"
+        assert messages[0]["content"] == "Weather?"
+        # function_call -> assistant with tool_use
+        assert messages[1]["role"] == "assistant"
+        assert messages[1]["content"][0]["type"] == "tool_use"
+        assert messages[1]["content"][0]["name"] == "get_weather"
+        assert messages[1]["content"][0]["id"] == "call_abc"
+        # function_call_output -> user with tool_result
+        assert messages[2]["role"] == "user"
+        assert messages[2]["content"][0]["type"] == "tool_result"
+        assert messages[2]["content"][0]["tool_use_id"] == "call_abc"
+
+    def test_string_input(self):
+        body = {"model": "claude-sonnet-4-5", "input": "Hello there"}
+        result = responses_to_anthropic_request(body)
+        assert len(result["messages"]) == 1
+        assert result["messages"][0]["role"] == "user"
+        assert result["messages"][0]["content"] == "Hello there"
+
+    def test_consecutive_function_calls_grouped(self):
+        body = {
+            "model": "claude-sonnet-4-5",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "Do two things"}]},
+                {
+                    "type": "function_call",
+                    "name": "func_a",
+                    "arguments": "{}",
+                    "call_id": "call_1",
+                },
+                {
+                    "type": "function_call",
+                    "name": "func_b",
+                    "arguments": "{}",
+                    "call_id": "call_2",
+                },
+            ],
+        }
+        result = responses_to_anthropic_request(body)
+        messages = result["messages"]
+        # Consecutive function_calls should be in a single assistant message
+        assert len(messages) == 2
+        assert messages[1]["role"] == "assistant"
+        assert len(messages[1]["content"]) == 2
+        assert messages[1]["content"][0]["id"] == "call_1"
+        assert messages[1]["content"][1]["id"] == "call_2"
+
+    def test_temperature_and_top_p(self):
+        body = {
+            "model": "claude-sonnet-4-5",
+            "input": "Hi",
+            "temperature": 0.7,
+            "top_p": 0.9,
+        }
+        result = responses_to_anthropic_request(body)
+        assert result["temperature"] == 0.7
+        assert result["top_p"] == 0.9
+
+
+# --- responses_to_openai_chat_request ---
+
+
+class TestResponsesToOpenAIChatRequest:
+    def test_simple_text(self):
+        body = {
+            "model": "gpt-5.2",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}],
+        }
+        result = responses_to_openai_chat_request(body, "gpt-5.2")
+        assert result["model"] == "gpt-5.2"
+        assert len(result["messages"]) == 1
+        assert result["messages"][0]["role"] == "user"
+        assert result["messages"][0]["content"] == "Hello"
+
+    def test_instructions_to_system(self):
+        body = {
+            "model": "gpt-5.2",
+            "instructions": "Be concise.",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}],
+        }
+        result = responses_to_openai_chat_request(body, "gpt-5.2")
+        assert result["messages"][0]["role"] == "system"
+        assert result["messages"][0]["content"] == "Be concise."
+        assert result["messages"][1]["role"] == "user"
+
+    def test_max_output_tokens(self):
+        body = {
+            "model": "gpt-5.2",
+            "max_output_tokens": 512,
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}],
+        }
+        result = responses_to_openai_chat_request(body, "gpt-5.2")
+        assert result["max_tokens"] == 512
+
+    def test_tool_calls_grouped(self):
+        body = {
+            "model": "gpt-5.2",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "Do it"}]},
+                {
+                    "type": "function_call",
+                    "name": "func_a",
+                    "arguments": '{"x":1}',
+                    "call_id": "call_1",
+                },
+                {
+                    "type": "function_call",
+                    "name": "func_b",
+                    "arguments": '{"y":2}',
+                    "call_id": "call_2",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_1",
+                    "output": "result_a",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_2",
+                    "output": "result_b",
+                },
+            ],
+        }
+        result = responses_to_openai_chat_request(body, "gpt-5.2")
+        messages = result["messages"]
+        # user, assistant (with 2 tool_calls), tool, tool
+        assert messages[0]["role"] == "user"
+        assert messages[1]["role"] == "assistant"
+        assert len(messages[1]["tool_calls"]) == 2
+        assert messages[2]["role"] == "tool"
+        assert messages[2]["tool_call_id"] == "call_1"
+        assert messages[3]["role"] == "tool"
+        assert messages[3]["tool_call_id"] == "call_2"
+
+    def test_string_input(self):
+        body = {"model": "gpt-5.2", "input": "Hello there"}
+        result = responses_to_openai_chat_request(body, "gpt-5.2")
+        assert len(result["messages"]) == 1
+        assert result["messages"][0]["role"] == "user"
+        assert result["messages"][0]["content"] == "Hello there"
+
+    def test_tools_translation(self):
+        body = {
+            "model": "gpt-5.2",
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "search",
+                    "description": "Search",
+                    "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+                }
+            ],
+        }
+        result = responses_to_openai_chat_request(body, "gpt-5.2")
+        assert result["tools"][0]["type"] == "function"
+        assert result["tools"][0]["function"]["name"] == "search"
+
+
+# --- anthropic_to_responses_response ---
+
+
+class TestAnthropicToResponsesResponse:
+    def test_text_response(self):
+        resp = {
+            "id": "msg_abc",
+            "content": [{"type": "text", "text": "Hello!"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+        result = anthropic_to_responses_response(resp, "claude-sonnet-4-5")
+        assert result["id"] == "msg_abc"
+        assert result["object"] == "response"
+        assert result["status"] == "completed"
+        assert result["model"] == "claude-sonnet-4-5"
+        assert len(result["output"]) == 1
+        assert result["output"][0]["type"] == "message"
+        assert result["output"][0]["content"][0]["text"] == "Hello!"
+        assert result["usage"]["input_tokens"] == 10
+        assert result["usage"]["output_tokens"] == 5
+
+    def test_tool_use_response(self):
+        resp = {
+            "id": "msg_abc",
+            "content": [
+                {"type": "tool_use", "id": "toolu_123", "name": "get_weather", "input": {"location": "NYC"}},
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 10, "output_tokens": 20},
+        }
+        result = anthropic_to_responses_response(resp, "claude-sonnet-4-5")
+        assert len(result["output"]) == 1
+        assert result["output"][0]["type"] == "function_call"
+        assert result["output"][0]["name"] == "get_weather"
+        assert result["output"][0]["call_id"] == "toolu_123"
+        assert json.loads(result["output"][0]["arguments"]) == {"location": "NYC"}
+
+    def test_mixed_text_and_tool(self):
+        resp = {
+            "id": "msg_abc",
+            "content": [
+                {"type": "text", "text": "Let me check."},
+                {"type": "tool_use", "id": "toolu_1", "name": "search", "input": {"q": "test"}},
+            ],
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 10, "output_tokens": 15},
+        }
+        result = anthropic_to_responses_response(resp, "claude-sonnet-4-5")
+        assert len(result["output"]) == 2
+        assert result["output"][0]["type"] == "message"
+        assert result["output"][0]["content"][0]["text"] == "Let me check."
+        assert result["output"][1]["type"] == "function_call"
+
+    def test_max_tokens_stop(self):
+        resp = {
+            "id": "msg_abc",
+            "content": [{"type": "text", "text": "Partial..."}],
+            "stop_reason": "max_tokens",
+            "usage": {"input_tokens": 10, "output_tokens": 100},
+        }
+        result = anthropic_to_responses_response(resp, "claude-sonnet-4-5")
+        assert result["status"] == "incomplete"
+        assert result["incomplete_details"]["reason"] == "max_output_tokens"
+
+    def test_cache_tokens(self):
+        resp = {
+            "id": "msg_abc",
+            "content": [{"type": "text", "text": "Hi"}],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_creation_input_tokens": 3,
+                "cache_read_input_tokens": 7,
+            },
+        }
+        result = anthropic_to_responses_response(resp, "claude-sonnet-4-5")
+        assert result["usage"]["cache_creation_input_tokens"] == 3
+        assert result["usage"]["cache_read_input_tokens"] == 7
+
+
+# --- openai_chat_to_responses_response ---
+
+
+class TestOpenAIChatToResponsesResponse:
+    def test_text_response(self):
+        resp = {
+            "id": "chatcmpl-abc",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "Hello!"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+        result = openai_chat_to_responses_response(resp, "gpt-5.2")
+        assert result["object"] == "response"
+        assert result["status"] == "completed"
+        assert result["output"][0]["type"] == "message"
+        assert result["output"][0]["content"][0]["text"] == "Hello!"
+        assert result["usage"]["input_tokens"] == 10
+        assert result["usage"]["output_tokens"] == 5
+
+    def test_tool_calls_response(self):
+        resp = {
+            "id": "chatcmpl-abc",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "search", "arguments": '{"q":"test"}'},
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+        }
+        result = openai_chat_to_responses_response(resp, "gpt-5.2")
+        assert result["output"][0]["type"] == "function_call"
+        assert result["output"][0]["call_id"] == "call_1"
+        assert result["output"][0]["name"] == "search"
+        assert result["status"] == "completed"
+
+    def test_length_finish_reason(self):
+        resp = {
+            "id": "chatcmpl-abc",
+            "choices": [
+                {"index": 0, "message": {"role": "assistant", "content": "Partial"}, "finish_reason": "length"}
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 100, "total_tokens": 110},
+        }
+        result = openai_chat_to_responses_response(resp, "gpt-5.2")
+        assert result["status"] == "incomplete"
+        assert result["incomplete_details"]["reason"] == "max_output_tokens"
+
+
+# --- AnthropicToResponsesStreamTranslator ---
+
+
+class TestAnthropicToResponsesStreamTranslator:
+    def test_text_stream_sequence(self):
+        translator = AnthropicToResponsesStreamTranslator("claude-sonnet-4-5")
+
+        # message_start
+        events = translator.translate_event(
+            "message_start",
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_abc",
+                    "usage": {"input_tokens": 10},
+                },
+            },
+        )
+        assert "response.created" in events
+        assert '"input_tokens": 10' in events
+
+        # content_block_start (text)
+        events = translator.translate_event(
+            "content_block_start",
+            {"content_block": {"type": "text", "text": ""}},
+        )
+        assert "response.output_item.added" in events
+        assert '"type": "message"' in events
+
+        # content_block_delta (text_delta)
+        events = translator.translate_event(
+            "content_block_delta",
+            {"delta": {"type": "text_delta", "text": "Hello"}},
+        )
+        assert "response.output_text.delta" in events
+        assert "Hello" in events
+
+        # content_block_stop
+        events = translator.translate_event("content_block_stop", {"index": 0})
+        assert "response.output_item.done" in events
+
+        # message_delta
+        events = translator.translate_event(
+            "message_delta",
+            {"delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 5}},
+        )
+        assert events == ""  # Only accumulates, does not emit
+
+        # message_stop
+        events = translator.translate_event("message_stop", {"type": "message_stop"})
+        assert "response.completed" in events
+        assert '"status": "completed"' in events
+
+    def test_tool_call_stream_sequence(self):
+        translator = AnthropicToResponsesStreamTranslator("claude-sonnet-4-5")
+
+        translator.translate_event("message_start", {"type": "message_start", "message": {}})
+
+        # content_block_start (tool_use)
+        events = translator.translate_event(
+            "content_block_start",
+            {"content_block": {"type": "tool_use", "id": "toolu_abc", "name": "get_weather", "input": {}}},
+        )
+        assert "response.output_item.added" in events
+        assert "function_call" in events
+        assert "get_weather" in events
+
+        # content_block_delta (input_json_delta)
+        events = translator.translate_event(
+            "content_block_delta",
+            {"delta": {"type": "input_json_delta", "partial_json": '{"loc'}},
+        )
+        assert "response.function_call_arguments.delta" in events
+
+        # content_block_stop
+        events = translator.translate_event("content_block_stop", {"index": 0})
+        assert "response.output_item.done" in events
+        assert "function_call" in events
+
+        translator.translate_event(
+            "message_delta",
+            {"delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 20}},
+        )
+        events = translator.translate_event("message_stop", {})
+        assert "response.completed" in events
+
+    def test_flush_emits_completed_if_not_finished(self):
+        translator = AnthropicToResponsesStreamTranslator("claude-sonnet-4-5")
+        translator.translate_event("message_start", {"type": "message_start", "message": {}})
+        translator.translate_event("content_block_start", {"content_block": {"type": "text", "text": ""}})
+        translator.translate_event("content_block_delta", {"delta": {"type": "text_delta", "text": "Hi"}})
+        # Stream ends without message_stop
+        events = translator.flush()
+        assert "response.completed" in events
+
+    def test_flush_noop_after_completed(self):
+        translator = AnthropicToResponsesStreamTranslator("claude-sonnet-4-5")
+        translator.translate_event("message_start", {"type": "message_start", "message": {}})
+        translator.translate_event("message_delta", {"delta": {"stop_reason": "end_turn"}, "usage": {}})
+        translator.translate_event("message_stop", {})
+        assert translator.flush() == ""
+
+    def test_cache_tokens(self):
+        translator = AnthropicToResponsesStreamTranslator("claude-sonnet-4-5")
+        events = translator.translate_event(
+            "message_start",
+            {
+                "type": "message_start",
+                "message": {
+                    "usage": {
+                        "input_tokens": 10,
+                        "cache_creation_input_tokens": 5,
+                        "cache_read_input_tokens": 3,
+                    }
+                },
+            },
+        )
+        assert '"input_tokens": 10' in events
+
+        translator.translate_event(
+            "message_delta",
+            {
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {
+                    "output_tokens": 5,
+                    "cache_creation_input_tokens": 5,
+                    "cache_read_input_tokens": 3,
+                },
+            },
+        )
+        events = translator.translate_event("message_stop", {})
+        assert "cache_creation_input_tokens" in events
+        assert "cache_read_input_tokens" in events
+
+
+# --- OpenAIChatToResponsesStreamTranslator ---
+
+
+class TestOpenAIChatToResponsesStreamTranslator:
+    def test_text_stream_sequence(self):
+        translator = OpenAIChatToResponsesStreamTranslator("gpt-5.2")
+
+        # First chunk with role
+        events = translator.translate_chunk(
+            {
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}],
+                "usage": {"prompt_tokens": 10},
+            }
+        )
+        assert "response.created" in events
+        assert "response.output_item.added" in events
+
+        # Text content
+        events = translator.translate_chunk(
+            {"choices": [{"index": 0, "delta": {"content": "Hello"}, "finish_reason": None}]}
+        )
+        assert "response.output_text.delta" in events
+        assert "Hello" in events
+
+        # Finish + usage
+        events = translator.translate_chunk(
+            {
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 3},
+            }
+        )
+        assert "response.output_item.done" in events
+        assert "response.completed" in events
+        assert '"status": "completed"' in events
+
+    def test_tool_call_stream_sequence(self):
+        translator = OpenAIChatToResponsesStreamTranslator("gpt-5.2")
+
+        # Init
+        translator.translate_chunk(
+            {"choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}]}
+        )
+
+        # Tool call start
+        events = translator.translate_chunk(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": 0,
+                                    "id": "call_abc",
+                                    "type": "function",
+                                    "function": {"name": "search", "arguments": ""},
+                                }
+                            ]
+                        },
+                        "finish_reason": None,
+                    }
+                ]
+            }
+        )
+        assert "response.output_item.added" in events
+        assert "function_call" in events
+
+        # Tool call arguments
+        events = translator.translate_chunk(
+            {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"tool_calls": [{"index": 0, "function": {"arguments": '{"q":"test"}'}}]},
+                        "finish_reason": None,
+                    }
+                ]
+            }
+        )
+        assert "response.function_call_arguments.delta" in events
+
+        # Finish with usage
+        events = translator.translate_chunk(
+            {
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}],
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20},
+            }
+        )
+        assert "response.output_item.done" in events
+        assert "response.completed" in events
+
+    def test_deferred_finish_pattern(self):
+        """Usage-only chunk arrives after finish_reason chunk."""
+        translator = OpenAIChatToResponsesStreamTranslator("gpt-5.2")
+
+        translator.translate_chunk(
+            {"choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}]}
+        )
+        translator.translate_chunk({"choices": [{"index": 0, "delta": {"content": "Hello"}, "finish_reason": None}]})
+
+        # Finish reason without usage
+        events = translator.translate_chunk({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+        # Should not emit completed yet (no usage)
+        assert "response.completed" not in events
+
+        # Usage-only chunk
+        events = translator.translate_chunk(
+            {"choices": [], "usage": {"prompt_tokens": 42, "completion_tokens": 3, "total_tokens": 45}}
+        )
+        assert "response.completed" in events
+        assert '"input_tokens": 42' in events
+        assert '"output_tokens": 3' in events
+
+    def test_flush_emits_completed(self):
+        translator = OpenAIChatToResponsesStreamTranslator("gpt-5.2")
+        translator.translate_chunk(
+            {"choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}]}
+        )
+        translator.translate_chunk({"choices": [{"index": 0, "delta": {"content": "Hi"}, "finish_reason": None}]})
+        translator.translate_chunk({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+        # No usage chunk arrived, flush should emit completed
+        events = translator.flush()
+        assert "response.output_item.done" in events
+        assert "response.completed" in events
+
+    def test_flush_noop_after_completed(self):
+        translator = OpenAIChatToResponsesStreamTranslator("gpt-5.2")
+        translator.translate_chunk(
+            {
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Hi"}, "finish_reason": None}],
+                "usage": {"prompt_tokens": 5},
+            }
+        )
+        translator.translate_chunk(
+            {
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 1},
+            }
+        )
+        assert translator.flush() == ""
+
+
+# --- Responses API Round-Trip Tests ---
+
+
+class TestResponsesAPIRoundTrip:
+    def test_responses_to_anthropic_and_back(self):
+        """Responses -> Anthropic -> Responses preserves key data."""
+        body = {
+            "model": "claude-sonnet-4-5",
+            "instructions": "Be helpful.",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "Hello"}]},
+            ],
+            "max_output_tokens": 1024,
+        }
+
+        # Responses -> Anthropic
+        anthropic_req = responses_to_anthropic_request(body)
+        assert anthropic_req["system"] == "Be helpful."
+        assert anthropic_req["max_tokens"] == 1024
+        assert anthropic_req["messages"][0]["content"] == "Hello"
+
+        # Simulate Anthropic response
+        anthropic_resp = {
+            "id": "msg_abc",
+            "content": [{"type": "text", "text": "Hi there!"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+
+        # Anthropic -> Responses
+        responses_resp = anthropic_to_responses_response(anthropic_resp, "claude-sonnet-4-5")
+        assert responses_resp["status"] == "completed"
+        assert responses_resp["output"][0]["content"][0]["text"] == "Hi there!"
+
+    def test_responses_to_openai_and_back(self):
+        """Responses -> OpenAI -> Responses preserves key data."""
+        body = {
+            "model": "gpt-5.2",
+            "instructions": "Be concise.",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "Hello"}]},
+            ],
+            "max_output_tokens": 512,
+        }
+
+        # Responses -> OpenAI
+        openai_req = responses_to_openai_chat_request(body, "gpt-5.2")
+        assert openai_req["messages"][0]["content"] == "Be concise."
+        assert openai_req["max_tokens"] == 512
+        assert openai_req["messages"][1]["content"] == "Hello"
+
+        # Simulate OpenAI response
+        openai_resp = {
+            "id": "chatcmpl-abc",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "Hi!"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 8, "completion_tokens": 2, "total_tokens": 10},
+        }
+
+        # OpenAI -> Responses
+        responses_resp = openai_chat_to_responses_response(openai_resp, "gpt-5.2")
+        assert responses_resp["status"] == "completed"
+        assert responses_resp["output"][0]["content"][0]["text"] == "Hi!"
+
+    def test_tool_call_id_preserved_through_anthropic(self):
+        """Tool call IDs preserved through Responses -> Anthropic -> Responses."""
+        body = {
+            "model": "claude-sonnet-4-5",
+            "input": [
+                {"role": "user", "content": [{"type": "input_text", "text": "Weather?"}]},
+                {
+                    "type": "function_call",
+                    "name": "get_weather",
+                    "arguments": '{"city":"NYC"}',
+                    "call_id": "call_orig_123",
+                },
+                {
+                    "type": "function_call_output",
+                    "call_id": "call_orig_123",
+                    "output": "72°F",
+                },
+            ],
+        }
+
+        anthropic_req = responses_to_anthropic_request(body)
+        # Verify call_id is preserved as tool_use id
+        assistant_msg = anthropic_req["messages"][1]
+        assert assistant_msg["content"][0]["id"] == "call_orig_123"
+        # Verify call_id is preserved as tool_use_id
+        user_msg = anthropic_req["messages"][2]
+        assert user_msg["content"][0]["tool_use_id"] == "call_orig_123"

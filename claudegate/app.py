@@ -36,12 +36,18 @@ from .models import (
     get_copilot_openai_model,
     is_claude_model,
     model_requires_responses_api,
+    model_supports_responses_api,
     set_copilot_models,
 )
 from .openai_translate import (
     ReverseStreamTranslator,
     anthropic_to_openai_response,
     openai_to_anthropic_request,
+)
+from .responses_translate import (
+    AnthropicToResponsesStreamTranslator,
+    anthropic_to_responses_response,
+    responses_to_anthropic_request,
 )
 
 # Use cl100k_base encoding (similar to Claude's tokenizer)
@@ -465,6 +471,97 @@ async def _call_bedrock_for_openai(
         return JSONResponse(content=openai_resp)
 
 
+# --- Responses API Helpers ---
+
+
+def _validate_responses_request(body: dict[str, Any]) -> JSONResponse | None:
+    """Validate required fields in Responses API request body. Returns error response or None."""
+    if "model" not in body:
+        return _openai_error_response(400, "Missing required field: model")
+    if "input" not in body:
+        return _openai_error_response(400, "Missing required field: input")
+    return None
+
+
+async def _call_copilot_responses(
+    body: dict[str, Any], request_id: str, stream: bool
+) -> JSONResponse | StreamingResponse:
+    """Execute Responses API request against Copilot backend.
+
+    Routes: if model supports /responses -> passthrough, else -> via chat.
+    """
+    if _copilot_backend is None:
+        raise RuntimeError("Copilot backend not initialized")
+
+    model = body.get("model", "")
+    copilot_model = get_copilot_openai_model(model)
+    log_prefix = f"[{request_id}] " if request_id else ""
+
+    # Update model in body to the resolved copilot model
+    body = {**body, "model": copilot_model}
+
+    if model_supports_responses_api(copilot_model):
+        logger.info(f"{log_prefix}Responses passthrough to {copilot_model}")
+        return await _copilot_backend.handle_responses_passthrough(body, request_id, stream)
+    else:
+        logger.info(f"{log_prefix}Responses via chat for {copilot_model}")
+        return await _copilot_backend.handle_responses_via_chat(body, request_id, stream, copilot_model)
+
+
+async def _call_bedrock_for_responses(
+    body: dict[str, Any], request: Request, request_id: str, stream: bool
+) -> JSONResponse | StreamingResponse:
+    """Execute Responses API request against Bedrock with translation.
+
+    Translates Responses -> Anthropic, calls Bedrock, translates response back to Responses.
+    """
+    model = body.get("model", "")
+
+    if not is_claude_model(model):
+        return _openai_error_response(
+            400,
+            f"Model '{model}' is not supported on the Bedrock backend. Non-Claude models require the Copilot backend.",
+        )
+
+    anthropic_body = responses_to_anthropic_request(body)
+    result = await _call_bedrock(anthropic_body, request, request_id, stream)
+
+    # Convert Anthropic error responses to OpenAI format
+    if isinstance(result, JSONResponse) and result.status_code >= 400:
+        anthropic_err = json.loads(bytes(result.body))
+        err_info = anthropic_err.get("error", {})
+        return _openai_error_response(
+            result.status_code,
+            err_info.get("message", "Unknown error"),
+            err_info.get("type", "server_error"),
+        )
+
+    # Translate response from Anthropic format to Responses format
+    if isinstance(result, StreamingResponse):
+        translator = AnthropicToResponsesStreamTranslator(model)
+
+        async def _translate_stream() -> AsyncGenerator[str, None]:
+            from .openai_translate import parse_anthropic_sse
+
+            async for chunk in result.body_iterator:
+                text = chunk.decode() if isinstance(chunk, bytes) else str(chunk)
+                sse_events = parse_anthropic_sse(text)
+                for event_type, data in sse_events:
+                    translated = translator.translate_event(event_type, data)
+                    if translated:
+                        yield translated
+            # Flush remaining state
+            flushed = translator.flush()
+            if flushed:
+                yield flushed
+
+        return StreamingResponse(_translate_stream(), media_type="text/event-stream")
+    else:
+        anthropic_resp = json.loads(bytes(result.body))
+        responses_resp = anthropic_to_responses_response(anthropic_resp, model)
+        return JSONResponse(content=responses_resp)
+
+
 # --- Route Handlers ---
 
 
@@ -641,6 +738,101 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
         if backend_name == "copilot":
             return lambda: _call_copilot_openai(body, request_id, stream)
         return lambda: _call_bedrock_for_openai(body, request, request_id, stream)
+
+    primary_call = _get_backend_caller(BACKEND_TYPE)
+
+    try:
+        return await primary_call()
+    except ContextWindowExceededError as e:
+        _ctx_msg = _openai_context_window_message(e)
+        if FALLBACK_BACKEND:
+            logger.warning(
+                f"{log_prefix}Context window exceeded on {e.backend} "
+                f"({e.prompt_tokens} > {e.context_limit}), falling back to {FALLBACK_BACKEND}"
+            )
+            fallback_call = _get_backend_caller(FALLBACK_BACKEND)
+            try:
+                return await fallback_call()
+            except ContextWindowExceededError:
+                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) also exceeded context window")
+                return _openai_error_response(400, _ctx_msg)
+            except TransientBackendError as fallback_err:
+                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) failed with {fallback_err.status_code}")
+                return _openai_error_response(400, _ctx_msg)
+            except CopilotHttpError as fallback_err:
+                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) HTTP error: {fallback_err}")
+                return _openai_error_response(400, _ctx_msg)
+            except RuntimeError as fallback_err:
+                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) auth error: {fallback_err}")
+                return _openai_error_response(400, _ctx_msg)
+        else:
+            logger.error(
+                f"{log_prefix}Context window exceeded on {e.backend} "
+                f"({e.prompt_tokens} > {e.context_limit}), no fallback configured"
+            )
+            return _openai_error_response(400, _ctx_msg)
+    except TransientBackendError as e:
+        if not FALLBACK_BACKEND:
+            logger.error(f"{log_prefix}{e.backend} transient error {e.status_code}, no fallback configured")
+            return _openai_error_response(e.status_code, e.message, "server_error")
+
+        logger.warning(
+            f"{log_prefix}Primary ({BACKEND_TYPE}) failed with {e.status_code}, falling back to {FALLBACK_BACKEND}"
+        )
+
+        fallback_call = _get_backend_caller(FALLBACK_BACKEND)
+        try:
+            return await fallback_call()
+        except TransientBackendError as fallback_err:
+            logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) also failed with {fallback_err.status_code}")
+            return _openai_error_response(fallback_err.status_code, fallback_err.message, "server_error")
+        except CopilotHttpError as fallback_err:
+            return _openai_error_response(fallback_err.status_code, fallback_err.detail, "server_error")
+        except RuntimeError as fallback_err:
+            return _openai_error_response(401, str(fallback_err), "authentication_error")
+        except Exception as fallback_err:
+            logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) unexpected error: {fallback_err}")
+            return _openai_error_response(500, str(fallback_err), "server_error")
+    except CopilotHttpError as e:
+        return _openai_error_response(e.status_code, e.detail, "server_error")
+    except RuntimeError as e:
+        logger.error(f"{log_prefix}Auth error: {e}")
+        return _openai_error_response(401, str(e), "authentication_error")
+    except Exception as e:
+        logger.error(f"{log_prefix}Unexpected error: {e}")
+        return _openai_error_response(500, str(e), "server_error")
+
+
+@app.post("/v1/responses", response_model=None)
+async def responses(request: Request) -> JSONResponse | StreamingResponse:
+    """Handle Responses API requests.
+
+    When Copilot is the backend and model supports /responses: passthrough (0 translations).
+    When Copilot is the backend but model only has /chat/completions:
+        Responses -> Chat Completions -> Copilot -> Chat Completions -> Responses (2 translations).
+    When Bedrock is the backend:
+        Responses -> Anthropic -> Bedrock -> Anthropic -> Responses (2 translations).
+    """
+    request_id = request.headers.get("x-request-id", "")
+    log_prefix = f"[{request_id}] " if request_id else ""
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return _openai_error_response(400, "Invalid JSON in request body")
+
+    if error := _validate_responses_request(body):
+        return error
+
+    stream = body.get("stream", False)
+
+    logger.info(f"{log_prefix}Responses API request - model: {body['model']}, stream: {stream}")
+
+    # Map backend name to call function
+    def _get_backend_caller(backend_name: str):
+        if backend_name == "copilot":
+            return lambda: _call_copilot_responses(body, request_id, stream)
+        return lambda: _call_bedrock_for_responses(body, request, request_id, stream)
 
     primary_call = _get_backend_caller(BACKEND_TYPE)
 

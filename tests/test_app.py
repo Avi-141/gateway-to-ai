@@ -1386,3 +1386,320 @@ class TestServerToolRouting:
         assert resp.status_code == 200
         # Should use Copilot (primary), not Bedrock
         mock_backend.handle_messages.assert_called_once()
+
+
+# --- POST /v1/responses ---
+
+
+class TestResponsesRoute:
+    @pytest.mark.anyio
+    async def test_invalid_json(self, async_client):
+        resp = await async_client.post(
+            "/v1/responses",
+            content=b"not json",
+            headers={"content-type": "application/json"},
+        )
+        assert resp.status_code == 400
+        assert "Invalid JSON" in resp.json()["error"]["message"]
+
+    @pytest.mark.anyio
+    async def test_missing_model(self, async_client):
+        resp = await async_client.post("/v1/responses", json={"input": "hello"})
+        assert resp.status_code == 400
+        assert "model" in resp.json()["error"]["message"]
+
+    @pytest.mark.anyio
+    async def test_missing_input(self, async_client):
+        resp = await async_client.post("/v1/responses", json={"model": "claude-sonnet-4-5"})
+        assert resp.status_code == 400
+        assert "input" in resp.json()["error"]["message"]
+
+    @pytest.mark.anyio
+    async def test_bedrock_non_streaming(
+        self, async_client, mock_bedrock_client, minimal_responses_request, monkeypatch
+    ):
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        mock_response = {
+            "body": BytesIO(
+                json.dumps(
+                    {
+                        "id": "msg_123",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Hi!"}],
+                        "stop_reason": "end_turn",
+                        "usage": {"input_tokens": 5, "output_tokens": 2},
+                    }
+                ).encode()
+            )
+        }
+        mock_bedrock_client.invoke_model.return_value = mock_response
+
+        resp = await async_client.post("/v1/responses", json=minimal_responses_request)
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["object"] == "response"
+        assert body["status"] == "completed"
+        assert body["output"][0]["type"] == "message"
+        assert body["output"][0]["content"][0]["text"] == "Hi!"
+
+    @pytest.mark.anyio
+    async def test_bedrock_streaming(self, async_client, mock_bedrock_client, minimal_responses_request, monkeypatch):
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        minimal_responses_request["stream"] = True
+
+        # Mock streaming response with message_start and content
+        chunks = [
+            {
+                "chunk": {
+                    "bytes": json.dumps(
+                        {
+                            "type": "message_start",
+                            "message": {
+                                "id": "msg_123",
+                                "role": "assistant",
+                                "content": [],
+                                "usage": {"input_tokens": 5, "output_tokens": 0},
+                            },
+                        }
+                    ).encode()
+                }
+            },
+            {
+                "chunk": {
+                    "bytes": json.dumps(
+                        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}
+                    ).encode()
+                }
+            },
+            {
+                "chunk": {
+                    "bytes": json.dumps(
+                        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "Hi!"}}
+                    ).encode()
+                }
+            },
+            {"chunk": {"bytes": json.dumps({"type": "content_block_stop", "index": 0}).encode()}},
+            {
+                "chunk": {
+                    "bytes": json.dumps(
+                        {
+                            "type": "message_delta",
+                            "delta": {"stop_reason": "end_turn"},
+                            "usage": {"output_tokens": 2},
+                        }
+                    ).encode()
+                }
+            },
+            {"chunk": {"bytes": json.dumps({"type": "message_stop"}).encode()}},
+        ]
+        mock_bedrock_client.invoke_model_with_response_stream.return_value = {"body": chunks}
+
+        resp = await async_client.post("/v1/responses", json=minimal_responses_request)
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers["content-type"]
+        text = resp.text
+        assert "response.created" in text
+        assert "response.output_text.delta" in text
+        assert "response.completed" in text
+
+    @pytest.mark.anyio
+    async def test_copilot_passthrough(self, async_client, monkeypatch):
+        """Model supporting /responses goes through passthrough."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+
+        from claudegate.models import set_copilot_models
+
+        set_copilot_models([{"id": "claude-sonnet-4.5", "supported_endpoints": ["/responses", "/chat/completions"]}])
+
+        mock_backend = AsyncMock()
+        from fastapi.responses import JSONResponse
+
+        responses_resp = {
+            "id": "resp_123",
+            "object": "response",
+            "status": "completed",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "via passthrough"}]}],
+            "usage": {"input_tokens": 5, "output_tokens": 3},
+        }
+        mock_backend.handle_responses_passthrough.return_value = JSONResponse(content=responses_resp)
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+
+        try:
+            resp = await async_client.post(
+                "/v1/responses",
+                json={
+                    "model": "claude-sonnet-4-5-20250929",
+                    "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+                },
+            )
+            assert resp.status_code == 200
+            mock_backend.handle_responses_passthrough.assert_called_once()
+        finally:
+            set_copilot_models([])
+
+    @pytest.mark.anyio
+    async def test_copilot_via_chat(self, async_client, monkeypatch):
+        """Model without /responses support uses chat completions translation."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+
+        from claudegate.models import set_copilot_models
+
+        set_copilot_models([{"id": "gpt-4o", "supported_endpoints": ["/chat/completions"]}])
+
+        mock_backend = AsyncMock()
+        from fastapi.responses import JSONResponse
+
+        responses_resp = {
+            "id": "resp_456",
+            "object": "response",
+            "status": "completed",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "via chat"}]}],
+            "usage": {"input_tokens": 5, "output_tokens": 3},
+        }
+        mock_backend.handle_responses_via_chat.return_value = JSONResponse(content=responses_resp)
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+
+        try:
+            resp = await async_client.post(
+                "/v1/responses",
+                json={
+                    "model": "gpt-4o",
+                    "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+                },
+            )
+            assert resp.status_code == 200
+            mock_backend.handle_responses_via_chat.assert_called_once()
+        finally:
+            set_copilot_models([])
+
+    @pytest.mark.anyio
+    async def test_copilot_http_error(self, async_client, monkeypatch):
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        mock_backend = AsyncMock()
+        mock_backend.handle_responses_passthrough.side_effect = CopilotHttpError(403, "Forbidden")
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+
+        from claudegate.models import set_copilot_models
+
+        set_copilot_models([{"id": "claude-sonnet-4.5", "supported_endpoints": ["/responses"]}])
+
+        try:
+            resp = await async_client.post(
+                "/v1/responses",
+                json={
+                    "model": "claude-sonnet-4-5-20250929",
+                    "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+                },
+            )
+            assert resp.status_code == 403
+            body = resp.json()
+            assert body["error"]["type"] == "server_error"
+        finally:
+            set_copilot_models([])
+
+    @pytest.mark.anyio
+    async def test_auth_error(self, async_client, monkeypatch):
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(app_module, "_copilot_backend", None)
+
+        resp = await async_client.post(
+            "/v1/responses",
+            json={
+                "model": "claude-sonnet-4-5-20250929",
+                "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            },
+        )
+        assert resp.status_code == 401
+        body = resp.json()
+        assert body["error"]["type"] == "authentication_error"
+
+    @pytest.mark.anyio
+    async def test_transient_error_no_fallback(self, async_client, monkeypatch):
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "")
+        mock_backend = AsyncMock()
+        mock_backend.handle_responses_passthrough.side_effect = TransientBackendError(
+            429, "rate_limit_error", "rate limited", "copilot"
+        )
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+
+        from claudegate.models import set_copilot_models
+
+        set_copilot_models([{"id": "claude-sonnet-4.5", "supported_endpoints": ["/responses"]}])
+
+        try:
+            resp = await async_client.post(
+                "/v1/responses",
+                json={
+                    "model": "claude-sonnet-4-5-20250929",
+                    "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+                },
+            )
+            assert resp.status_code == 429
+        finally:
+            set_copilot_models([])
+
+    @pytest.mark.anyio
+    async def test_bedrock_non_claude_model_error(self, async_client, monkeypatch):
+        """Non-Claude model on Bedrock-only returns error."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "")
+
+        resp = await async_client.post(
+            "/v1/responses",
+            json={
+                "model": "gpt-5.2",
+                "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+            },
+        )
+        assert resp.status_code == 400
+        assert "not supported" in resp.json()["error"]["message"]
+
+    @pytest.mark.anyio
+    async def test_fallback_on_transient_error(self, async_client, monkeypatch):
+        """Primary transient -> fallback succeeds."""
+        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "bedrock")
+
+        mock_backend = AsyncMock()
+        mock_backend.handle_responses_passthrough.side_effect = TransientBackendError(
+            429, "rate_limit_error", "rate limited", "copilot"
+        )
+        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+
+        from claudegate.models import set_copilot_models
+
+        set_copilot_models([{"id": "claude-sonnet-4.5", "supported_endpoints": ["/responses"]}])
+
+        mock_bedrock = MagicMock()
+        mock_response = {
+            "body": BytesIO(
+                json.dumps(
+                    {
+                        "id": "msg_fallback",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Fallback!"}],
+                        "stop_reason": "end_turn",
+                        "usage": {"input_tokens": 5, "output_tokens": 2},
+                    }
+                ).encode()
+            )
+        }
+        mock_bedrock.invoke_model.return_value = mock_response
+
+        try:
+            with patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock):
+                resp = await async_client.post(
+                    "/v1/responses",
+                    json={
+                        "model": "claude-sonnet-4-5-20250929",
+                        "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+                    },
+                )
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["output"][0]["content"][0]["text"] == "Fallback!"
+        finally:
+            set_copilot_models([])

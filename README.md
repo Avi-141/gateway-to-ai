@@ -15,7 +15,7 @@ A lightweight proxy that translates Anthropic API requests to GitHub Copilot or 
 - **[Auto-Claude](https://github.com/AndyMik90/Auto-Claude)** - Run Auto-Claude with AWS Bedrock or GitHub Copilot
 - **Any Anthropic API client** - Redirect to Bedrock or Copilot without code changes
 - **[Open WebUI](https://github.com/open-webui/open-webui)** - Use Open WebUI with Bedrock or Copilot via the OpenAI-compatible API
-- **Any OpenAI API client** - Use the `/v1/chat/completions` endpoint with any OpenAI-format client
+- **Any OpenAI API client** - Use the `/v1/chat/completions` or `/v1/responses` endpoint with any OpenAI-format client
 
 ## Features
 
@@ -33,7 +33,7 @@ A lightweight proxy that translates Anthropic API requests to GitHub Copilot or 
 - **Web dashboard** at `/` with live status, models, and log viewer
 - Graceful startup/shutdown with configuration logging
 - GitHub OAuth device flow for easy Copilot authentication
-- **OpenAI-compatible API** (`/v1/chat/completions`) for Open WebUI and other OpenAI-format clients
+- **OpenAI-compatible API** (`/v1/chat/completions` and `/v1/responses`) for Open WebUI and other OpenAI-format clients
 - **Non-Claude models** (GPT-4o, o3-mini, etc.) via Copilot backend's OpenAI-compatible endpoint
 - **Direct Copilot passthrough** — zero-translation path for `/v1/chat/completions` when Copilot is the backend
 
@@ -78,7 +78,7 @@ When using the Copilot backend, non-Claude models are available via both `/v1/me
 | grok-code-fast-1 | xAI |
 | raptor-mini | Other |
 
-These models work via both endpoints when using the Copilot backend. On `/v1/chat/completions`, they pass through directly with zero format translations. On `/v1/messages`, requests are translated to OpenAI format and responses are translated back to Anthropic format. Codex models (`gpt-5.x-codex`) that only support the Responses API are handled automatically — the proxy detects the required endpoint and translates accordingly. Model availability depends on your Copilot plan.
+These models work via both endpoints when using the Copilot backend. On `/v1/chat/completions`, they pass through directly with zero format translations. On `/v1/messages`, requests are translated to OpenAI format and responses are translated back to Anthropic format. On `/v1/responses`, models that natively support the Responses API get zero-translation passthrough; others are translated via Chat Completions format. Codex models (`gpt-5.x-codex`) that only support the Responses API are handled automatically — the proxy detects the required endpoint and translates accordingly. Model availability depends on your Copilot plan.
 
 ### Bedrock Backend
 
@@ -339,6 +339,16 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   }'
 ```
 
+**OpenAI Responses API:**
+```bash
+curl -X POST http://localhost:8080/v1/responses \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4-20250514",
+    "input": "Hello!"
+  }'
+```
+
 ## API Endpoints
 
 | Endpoint | Method | Description |
@@ -347,6 +357,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 | `/api/status` | GET | Combined JSON status (health, service, models, logs) |
 | `/v1/messages` | POST | Anthropic Messages API endpoint |
 | `/v1/chat/completions` | POST | OpenAI-compatible Chat Completions endpoint |
+| `/v1/responses` | POST | OpenAI-compatible Responses API endpoint |
 | `/v1/models` | GET | List available models (OpenAI-compatible format) |
 | `/v1/messages/count_tokens` | POST | Count tokens in a request |
 | `/health` | GET | Health check (add `?check_bedrock=true` or `?check_copilot=true` for deep check) |
@@ -391,6 +402,22 @@ The `/v1/chat/completions` endpoint supports standard OpenAI Chat Completions pa
 
 When the **Copilot** backend is used, requests pass through directly to Copilot with zero format translations. This also enables non-Claude models (GPT-4o, o3-mini, etc.) that Copilot supports natively. When the **Bedrock** backend is used, requests are translated to Anthropic format, processed through Bedrock, and responses are translated back to OpenAI format.
 
+### Responses API (`/v1/responses`)
+
+The `/v1/responses` endpoint supports OpenAI Responses API parameters:
+
+- `model` (required) - Model identifier
+- `input` (required) - Input text (string) or array of input items
+- `instructions` - System-level instructions
+- `max_output_tokens` - Maximum tokens to generate
+- `temperature` - Sampling temperature (0.0-1.0)
+- `top_p` - Nucleus sampling
+- `stream` - Enable streaming responses
+- `tools` - Tool/function definitions
+- `tool_choice` - Tool selection (`auto`, `required`, `none`, or specific function)
+
+When the **Copilot** backend is used, models that natively support the Responses API get zero-translation passthrough. Models that only support Chat Completions are translated automatically. When the **Bedrock** backend is used, requests are translated to Anthropic format, processed through Bedrock, and responses are translated back to Responses format.
+
 ## Error Handling
 
 ### Anthropic format (`/v1/messages`)
@@ -416,9 +443,9 @@ The `/v1/messages` endpoint returns Anthropic-compatible error responses:
 | 504 | `timeout_error` | Request timed out |
 | 500 | `api_error` | Internal / backend errors |
 
-### OpenAI format (`/v1/chat/completions`)
+### OpenAI format (`/v1/chat/completions` and `/v1/responses`)
 
-The `/v1/chat/completions` endpoint returns OpenAI-compatible error responses:
+The `/v1/chat/completions` and `/v1/responses` endpoints return OpenAI-compatible error responses:
 
 ```json
 {

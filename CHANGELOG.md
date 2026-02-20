@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **`/v1/responses` endpoint** — OpenAI Responses API endpoint for clients that target the newer Responses API format. Supports streaming and non-streaming, tool use, and all backends. Copilot models that natively support `/responses` get zero-translation passthrough; others are translated automatically. Bedrock requests are translated via Anthropic format. Includes full fallback orchestration matching the other endpoints.
 - **Server-side tool routing** — requests containing server-side tools (e.g. `web_search_20250305`) are automatically routed to Bedrock when Copilot is the primary backend, since Copilot does not support them. Falls back to stripping the tools if Bedrock is unavailable.
 - `/v1/models` now passes through `limits` (context_window, max_prompt, max_output) from the Copilot API when available.
 - **Web dashboard** — a self-contained HTML page showing server status, service info, available models with token limits, and a live log viewer with level filtering.
