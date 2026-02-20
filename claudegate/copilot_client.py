@@ -621,17 +621,35 @@ class CopilotBackend:
     async def _stream_responses_passthrough(
         self, resp: httpx.Response, stream_cm: Any, log_prefix: str
     ) -> AsyncGenerator[str, None]:
-        """Stream Responses API events as-is from Copilot (no translation)."""
+        """Stream Responses API events as-is from Copilot (no translation).
+
+        Reassembles SSE events from aiter_lines() which strips the blank-line
+        boundaries.  Each SSE event is ``event: <type>\\ndata: <json>\\n\\n``.
+        """
         chunk_count = 0
+        pending_event_line: str | None = None
 
         try:
             async for line in resp.aiter_lines():
                 if not line:
                     continue
+
+                if line.startswith("event: "):
+                    # Buffer the event-type line; it belongs to the next data line.
+                    pending_event_line = line
+                    continue
+
+                # Anything else (typically "data: …") forms a complete SSE event
+                # together with the buffered event line (if any).
                 chunk_count += 1
                 if chunk_count <= 3:
                     logger.debug(f"{log_prefix}Responses passthrough chunk {chunk_count}: {line[:200]}")
-                yield f"{line}\n"
+
+                if pending_event_line is not None:
+                    yield f"{pending_event_line}\n{line}\n\n"
+                    pending_event_line = None
+                else:
+                    yield f"{line}\n\n"
                 await asyncio.sleep(0)
 
             logger.info(f"{log_prefix}Copilot Responses passthrough stream complete, {chunk_count} lines")
