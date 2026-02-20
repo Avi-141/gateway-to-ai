@@ -268,22 +268,6 @@ claudegate status
 claudegate uninstall
 ```
 
-### Run in background (manual)
-
-If you prefer not to use the service installer:
-
-**Quick (terminal session):**
-```bash
-claudegate &
-```
-
-**Persist after terminal close:**
-```bash
-nohup claudegate > ~/.claudegate.log 2>&1 &
-```
-
-Manual service templates are available in the `contrib/` directory for customization.
-
 ### Configure Open WebUI
 
 Point Open WebUI at claudegate as an OpenAI-compatible backend:
@@ -363,129 +347,12 @@ curl -X POST http://localhost:8080/v1/responses \
 | `/health` | GET | Health check (add `?check_bedrock=true` or `?check_copilot=true` for deep check) |
 | `/version` | GET | Return current version |
 
-## Supported Parameters
-
-### Anthropic API (`/v1/messages`)
-
-The `/v1/messages` endpoint supports all standard Anthropic API parameters:
-
-- `model` (required) - Model identifier
-- `max_tokens` (required) - Maximum tokens to generate
-- `messages` (required) - Array of messages
-- `system` - System prompt
-- `temperature` - Sampling temperature (0.0-1.0)
-- `top_p` - Nucleus sampling
-- `top_k` - Top-k sampling (Bedrock only)
-- `tools` - Tool definitions
-- `tool_choice` - Tool selection preference
-- `thinking` - Extended thinking configuration (Bedrock only)
-- `stop_sequences` - Custom stop sequences
-- `metadata` - Request metadata
-- `stream` - Enable streaming responses
-- `anthropic_beta` - Beta features list (Bedrock only)
-
-The `anthropic-beta` header is also supported and converted to the `anthropic_beta` body field (Bedrock only).
-
-### OpenAI-Compatible API (`/v1/chat/completions`)
-
-The `/v1/chat/completions` endpoint supports standard OpenAI Chat Completions parameters:
-
-- `model` (required) - Model identifier
-- `messages` (required) - Array of messages (system, user, assistant, tool roles)
-- `max_tokens` - Maximum tokens to generate (defaults to 4096 if omitted)
-- `temperature` - Sampling temperature (0.0-1.0)
-- `top_p` - Nucleus sampling
-- `stop` - Custom stop sequences
-- `stream` - Enable streaming responses
-- `tools` - Tool/function definitions
-- `tool_choice` - Tool selection (`auto`, `required`, `none`, or specific function)
-
-When the **Copilot** backend is used, requests pass through directly to Copilot with zero format translations. This also enables non-Claude models (GPT-4o, o3-mini, etc.) that Copilot supports natively. When the **Bedrock** backend is used, requests are translated to Anthropic format, processed through Bedrock, and responses are translated back to OpenAI format.
-
-### Responses API (`/v1/responses`)
-
-The `/v1/responses` endpoint supports OpenAI Responses API parameters:
-
-- `model` (required) - Model identifier
-- `input` (required) - Input text (string) or array of input items
-- `instructions` - System-level instructions
-- `max_output_tokens` - Maximum tokens to generate
-- `temperature` - Sampling temperature (0.0-1.0)
-- `top_p` - Nucleus sampling
-- `stream` - Enable streaming responses
-- `tools` - Tool/function definitions
-- `tool_choice` - Tool selection (`auto`, `required`, `none`, or specific function)
-
-When the **Copilot** backend is used, models that natively support the Responses API get zero-translation passthrough. Models that only support Chat Completions are translated automatically. When the **Bedrock** backend is used, requests are translated to Anthropic format, processed through Bedrock, and responses are translated back to Responses format.
-
 ## Error Handling
 
-### Anthropic format (`/v1/messages`)
+When a fallback backend is configured (`CLAUDEGATE_BACKEND=copilot,bedrock`), transient errors (429, 5xx) on the primary backend automatically trigger a retry on the fallback. Context window exceeded errors also trigger fallback. Non-transient errors (400, 401, 403) are returned immediately. For streaming requests, fallback only works for pre-stream errors; mid-stream errors are delivered as SSE error events.
 
-The `/v1/messages` endpoint returns Anthropic-compatible error responses:
+`/v1/messages` returns Anthropic-format errors; `/v1/chat/completions` and `/v1/responses` return OpenAI-format errors.
 
-```json
-{
-  "type": "error",
-  "error": {
-    "type": "invalid_request_error",
-    "message": "Missing required field: model"
-  }
-}
-```
+**Bedrock credentials:** The proxy detects expired AWS credentials and resets the cache. If still expired, refresh manually with `aws sso login`.
 
-| Status Code | Error Type | Description |
-|-------------|------------|-------------|
-| 400 | `invalid_request_error` | Missing/invalid fields, bad JSON |
-| 401 | `authentication_error` | Credentials expired or invalid |
-| 403 | `permission_error` | Access denied |
-| 429 | `rate_limit_error` | Rate limiting / throttling |
-| 504 | `timeout_error` | Request timed out |
-| 500 | `api_error` | Internal / backend errors |
-
-### OpenAI format (`/v1/chat/completions` and `/v1/responses`)
-
-The `/v1/chat/completions` and `/v1/responses` endpoints return OpenAI-compatible error responses:
-
-```json
-{
-  "error": {
-    "message": "Missing required field: model",
-    "type": "invalid_request_error",
-    "param": null,
-    "code": null
-  }
-}
-```
-
-### Fallback behavior
-
-**Fallback:** When a fallback backend is configured (`CLAUDEGATE_BACKEND=copilot,bedrock`), transient errors (429, 500, 502, 503, 504) on the primary backend automatically trigger a retry on the fallback. Context window exceeded errors (e.g., Copilot's 128K limit) also trigger fallback, and if fallback fails, return an error in the format that Claude Code recognises for auto-compaction. Other non-transient errors (400, 401, 403) are returned immediately without fallback. For streaming requests, fallback only works for pre-stream errors (connection failures, HTTP status errors before the first chunk is sent). Mid-stream errors are delivered as SSE error events as usual.
-
-**Bedrock:** The proxy detects expired AWS credentials and resets the credential cache. If credentials are still expired (e.g., SSO session expired), refresh them manually:
-
-```bash
-# For SSO users
-aws sso login
-
-# For assume-role users
-# Re-run your assume-role command or script
-```
-
-**Copilot:** The proxy automatically refreshes Copilot tokens before expiry. If your GitHub OAuth token becomes invalid, delete `~/.config/claudegate/github_token` and restart the proxy to re-authenticate via device flow.
-
-## Request Tracing
-
-Pass `x-request-id` header to trace requests through logs:
-
-```bash
-curl -X POST http://localhost:8080/v1/messages \
-  -H "x-request-id: my-trace-id" \
-  -H "Content-Type: application/json" \
-  -d '{"model": "claude-sonnet-4-20250514", "max_tokens": 100, "messages": [...]}'
-```
-
-Logs will include the request ID:
-```
-[my-trace-id] Request - model: claude-sonnet-4-20250514 -> us.anthropic.claude-sonnet-4-20250514-v1:0, stream: false
-```
+**Copilot tokens:** The proxy refreshes tokens automatically. If your GitHub OAuth token becomes invalid, delete `~/.config/claudegate/github_token` and restart to re-authenticate.
