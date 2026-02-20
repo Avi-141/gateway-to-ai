@@ -14,6 +14,7 @@ from .copilot_auth import COPILOT_HEADERS, CopilotAuth
 from .copilot_translate import (
     StreamTranslator,
     anthropic_to_openai_request,
+    estimate_input_tokens,
     openai_to_anthropic_response,
 )
 from .errors import ContextWindowExceededError, CopilotHttpError, TransientBackendError
@@ -136,9 +137,10 @@ class CopilotBackend:
         if stream:
             openai_body["stream"] = True
             openai_body["stream_options"] = {"include_usage": True}
+            estimated_tokens = estimate_input_tokens(body)
             resp, stream_cm = await self._open_stream(openai_body, log_prefix)
             return StreamingResponse(
-                self._stream_response(resp, stream_cm, anthropic_model, log_prefix),
+                self._stream_response(resp, stream_cm, anthropic_model, log_prefix, estimated_tokens),
                 media_type="text/event-stream",
             )
         else:
@@ -193,10 +195,15 @@ class CopilotBackend:
         return resp, stream_cm
 
     async def _stream_response(
-        self, resp: httpx.Response, stream_cm: Any, anthropic_model: str, log_prefix: str
+        self,
+        resp: httpx.Response,
+        stream_cm: Any,
+        anthropic_model: str,
+        log_prefix: str,
+        estimated_input_tokens: int = 0,
     ) -> AsyncGenerator[str, None]:
         """Stream response from already-opened Copilot connection, translating to Anthropic SSE format."""
-        translator = StreamTranslator(anthropic_model)
+        translator = StreamTranslator(anthropic_model, estimated_input_tokens)
         chunk_count = 0
 
         try:
@@ -222,9 +229,10 @@ class CopilotBackend:
                     yield events
                     await asyncio.sleep(0)
 
-            # If translator never got a finish_reason, ensure cleanup
-            if translator.current_block_type is not None:
-                yield translator.emit_content_block_stop()
+            # Flush any pending state (deferred message_delta/stop)
+            flush_events = translator.flush()
+            if flush_events:
+                yield flush_events
 
             logger.info(f"{log_prefix}Copilot stream complete, {chunk_count} chunks")
             yield "event: done\ndata: [DONE]\n\n"
@@ -333,9 +341,10 @@ class CopilotBackend:
 
         if stream:
             responses_body["stream"] = True
+            estimated_tokens = estimate_input_tokens(body)
             resp, stream_cm = await self._open_responses_stream(responses_body, log_prefix)
             return StreamingResponse(
-                self._stream_responses_response(resp, stream_cm, anthropic_model, log_prefix),
+                self._stream_responses_response(resp, stream_cm, anthropic_model, log_prefix, estimated_tokens),
                 media_type="text/event-stream",
             )
         else:
@@ -431,10 +440,15 @@ class CopilotBackend:
         return resp, stream_cm
 
     async def _stream_responses_response(
-        self, resp: httpx.Response, stream_cm: Any, anthropic_model: str, log_prefix: str
+        self,
+        resp: httpx.Response,
+        stream_cm: Any,
+        anthropic_model: str,
+        log_prefix: str,
+        estimated_input_tokens: int = 0,
     ) -> AsyncGenerator[str, None]:
         """Stream Responses API events, translating to Anthropic SSE format."""
-        translator = ResponsesStreamTranslator(anthropic_model)
+        translator = ResponsesStreamTranslator(anthropic_model, estimated_input_tokens)
         chunk_count = 0
         current_event_type = ""
 
