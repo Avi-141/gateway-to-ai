@@ -18,6 +18,7 @@ from .copilot_translate import (
     openai_to_anthropic_response,
 )
 from .errors import ContextWindowExceededError, CopilotHttpError, TransientBackendError
+from .models import get_copilot_context_limit
 from .responses_translate import (
     OpenAIChatToResponsesStreamTranslator,
     ResponsesStreamTranslator,
@@ -144,7 +145,13 @@ class CopilotBackend:
             return self._error_response(status_code, "api_error", f"Copilot error: {detail}")
 
     async def handle_messages(
-        self, body: dict[str, Any], request_id: str, stream: bool, openai_model: str, anthropic_model: str
+        self,
+        body: dict[str, Any],
+        request_id: str,
+        stream: bool,
+        openai_model: str,
+        anthropic_model: str,
+        client_context_window: int = 0,
     ) -> JSONResponse | StreamingResponse:
         """Handle a messages request by proxying through Copilot.
 
@@ -160,9 +167,18 @@ class CopilotBackend:
             openai_body["stream"] = True
             openai_body["stream_options"] = {"include_usage": True}
             estimated_tokens = estimate_input_tokens(body)
+            copilot_context_limit = get_copilot_context_limit(openai_model)
             resp, stream_cm = await self._open_stream(openai_body, log_prefix)
             return StreamingResponse(
-                self._stream_response(resp, stream_cm, anthropic_model, log_prefix, estimated_tokens),
+                self._stream_response(
+                    resp,
+                    stream_cm,
+                    anthropic_model,
+                    log_prefix,
+                    estimated_tokens,
+                    copilot_context_limit,
+                    client_context_window,
+                ),
                 media_type="text/event-stream",
             )
         else:
@@ -223,9 +239,16 @@ class CopilotBackend:
         anthropic_model: str,
         log_prefix: str,
         estimated_input_tokens: int = 0,
+        copilot_context_limit: int = 0,
+        client_context_window: int = 0,
     ) -> AsyncGenerator[str, None]:
         """Stream response from already-opened Copilot connection, translating to Anthropic SSE format."""
-        translator = StreamTranslator(anthropic_model, estimated_input_tokens)
+        translator = StreamTranslator(
+            anthropic_model,
+            estimated_input_tokens,
+            copilot_context_limit,
+            client_context_window,
+        )
         chunk_count = 0
 
         try:
@@ -352,6 +375,7 @@ class CopilotBackend:
         stream: bool,
         responses_model: str,
         anthropic_model: str,
+        client_context_window: int = 0,
     ) -> JSONResponse | StreamingResponse:
         """Handle a messages request by proxying through Copilot Responses API.
 
@@ -364,9 +388,18 @@ class CopilotBackend:
         if stream:
             responses_body["stream"] = True
             estimated_tokens = estimate_input_tokens(body)
+            copilot_context_limit = get_copilot_context_limit(responses_model)
             resp, stream_cm = await self._open_responses_stream(responses_body, log_prefix)
             return StreamingResponse(
-                self._stream_responses_response(resp, stream_cm, anthropic_model, log_prefix, estimated_tokens),
+                self._stream_responses_response(
+                    resp,
+                    stream_cm,
+                    anthropic_model,
+                    log_prefix,
+                    estimated_tokens,
+                    copilot_context_limit,
+                    client_context_window,
+                ),
                 media_type="text/event-stream",
             )
         else:
@@ -468,9 +501,16 @@ class CopilotBackend:
         anthropic_model: str,
         log_prefix: str,
         estimated_input_tokens: int = 0,
+        copilot_context_limit: int = 0,
+        client_context_window: int = 0,
     ) -> AsyncGenerator[str, None]:
         """Stream Responses API events, translating to Anthropic SSE format."""
-        translator = ResponsesStreamTranslator(anthropic_model, estimated_input_tokens)
+        translator = ResponsesStreamTranslator(
+            anthropic_model,
+            estimated_input_tokens,
+            copilot_context_limit,
+            client_context_window,
+        )
         chunk_count = 0
         current_event_type = ""
 

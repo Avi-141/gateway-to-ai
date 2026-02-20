@@ -1819,3 +1819,117 @@ class TestImageRoundTrip:
         assert text_item["content"][0]["type"] == "input_text"
         assert image_item["content"][0]["type"] == "input_image"
         assert "abc123" in image_item["content"][0]["image_url"]
+
+
+# --- ResponsesStreamTranslator Token Scaling ---
+
+
+class TestResponsesStreamTranslatorTokenScaling:
+    def test_scaling_estimated_input_tokens(self):
+        """Estimated input tokens should be scaled at init."""
+        t = ResponsesStreamTranslator(
+            "model",
+            estimated_input_tokens=100000,
+            copilot_context_limit=128000,
+            client_context_window=200000,
+        )
+        # 100000 * 200000 / 128000 = 156250
+        assert t.input_tokens == 156250
+
+    def test_scaling_response_created_usage(self):
+        """Usage from response.created should be scaled."""
+        t = ResponsesStreamTranslator(
+            "model",
+            copilot_context_limit=128000,
+            client_context_window=200000,
+        )
+        t.translate_event(
+            "response.created",
+            {
+                "response": {
+                    "usage": {"input_tokens": 64000, "output_tokens": 0},
+                }
+            },
+        )
+        assert t.input_tokens == 100000
+
+    def test_scaling_response_completed_usage(self):
+        """Usage from response.completed should be scaled."""
+        t = ResponsesStreamTranslator(
+            "model",
+            copilot_context_limit=128000,
+            client_context_window=200000,
+        )
+        t.translate_event("response.created", {"response": {"usage": {}}})
+        t.translate_event(
+            "response.completed",
+            {
+                "response": {
+                    "status": "completed",
+                    "output": [],
+                    "usage": {"input_tokens": 64000, "output_tokens": 500},
+                }
+            },
+        )
+        assert t.input_tokens == 100000
+        # 500 * 200000 / 128000 = 781
+        assert t.output_tokens == 781
+
+    def test_no_scaling_when_limit_zero(self):
+        """With copilot_context_limit=0, tokens pass through unchanged."""
+        t = ResponsesStreamTranslator(
+            "model",
+            estimated_input_tokens=100000,
+            copilot_context_limit=0,
+            client_context_window=200000,
+        )
+        assert t.input_tokens == 100000
+
+    def test_no_scaling_when_client_window_zero(self):
+        """With client_context_window=0, tokens pass through unchanged."""
+        t = ResponsesStreamTranslator(
+            "model",
+            estimated_input_tokens=100000,
+            copilot_context_limit=128000,
+            client_context_window=0,
+        )
+        assert t.input_tokens == 100000
+
+    def test_no_scaling_by_default(self):
+        """Default (no copilot_context_limit) should not scale."""
+        t = ResponsesStreamTranslator("model", estimated_input_tokens=100000)
+        assert t.input_tokens == 100000
+
+    def test_scaling_1m_context_window(self):
+        """With client_context_window=1M, tokens scale by ~7.8x."""
+        t = ResponsesStreamTranslator(
+            "model",
+            estimated_input_tokens=100000,
+            copilot_context_limit=128000,
+            client_context_window=1_000_000,
+        )
+        # 100000 * 1000000 / 128000 = 781250
+        assert t.input_tokens == 781250
+
+    def test_scaling_1m_response_completed(self):
+        """Usage from response.completed with 1M window should scale appropriately."""
+        t = ResponsesStreamTranslator(
+            "model",
+            copilot_context_limit=128000,
+            client_context_window=1_000_000,
+        )
+        t.translate_event("response.created", {"response": {"usage": {}}})
+        t.translate_event(
+            "response.completed",
+            {
+                "response": {
+                    "status": "completed",
+                    "output": [],
+                    "usage": {"input_tokens": 64000, "output_tokens": 500},
+                }
+            },
+        )
+        # 64000 * 1000000 / 128000 = 500000
+        assert t.input_tokens == 500000
+        # 500 * 1000000 / 128000 = 3906
+        assert t.output_tokens == 3906

@@ -32,6 +32,7 @@ from .models import (
     add_region_prefix,
     get_available_copilot_models,
     get_bedrock_model,
+    get_copilot_context_window,
     get_copilot_model,
     get_copilot_openai_model,
     is_claude_model,
@@ -394,7 +395,26 @@ async def _call_bedrock(
         return _error_response(500, "api_error", str(e))
 
 
-async def _call_copilot(body: dict[str, Any], request_id: str, stream: bool) -> JSONResponse | StreamingResponse:
+def _detect_client_context_window(request: Request, copilot_model: str) -> int:
+    """Detect the client's expected context window size.
+
+    Claude Code uses the anthropic-beta header 'context-1m-...' when the user
+    selects the 1M token variant (e.g. opus-4-6[1m]). When present, the client
+    expects a 1,000,000-token context window. Otherwise, we use the model's
+    max_context_window_tokens from the Copilot API (typically 200k).
+    """
+    beta_header = request.headers.get("anthropic-beta", "")
+    if "context-1m" in beta_header:
+        return 1_000_000
+    return get_copilot_context_window(copilot_model)
+
+
+async def _call_copilot(
+    body: dict[str, Any],
+    request: Request,
+    request_id: str,
+    stream: bool,
+) -> JSONResponse | StreamingResponse:
     """Execute request against Copilot backend.
 
     Raises TransientBackendError for fallback-eligible errors.
@@ -405,12 +425,15 @@ async def _call_copilot(body: dict[str, Any], request_id: str, stream: bool) -> 
     copilot_model, anthropic_model = get_copilot_model(body["model"])
     log_prefix = f"[{request_id}] " if request_id else ""
     logger.info(f"{log_prefix}Request - model: {body['model']} -> {copilot_model} (copilot), stream: {stream}")
+    client_context_window = _detect_client_context_window(request, copilot_model)
     if model_requires_responses_api(copilot_model):
         logger.info(f"{log_prefix}Routing to Responses API for {copilot_model}")
         return await _copilot_backend.handle_responses_messages(
-            body, request_id, stream, copilot_model, anthropic_model
+            body, request_id, stream, copilot_model, anthropic_model, client_context_window
         )
-    return await _copilot_backend.handle_messages(body, request_id, stream, copilot_model, anthropic_model)
+    return await _copilot_backend.handle_messages(
+        body, request_id, stream, copilot_model, anthropic_model, client_context_window
+    )
 
 
 async def _call_copilot_openai(body: dict[str, Any], request_id: str, stream: bool) -> JSONResponse | StreamingResponse:
@@ -595,7 +618,7 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
             )
         # Force route to Copilot for non-Claude models
         try:
-            return await _call_copilot(body, request_id, stream)
+            return await _call_copilot(body, request, request_id, stream)
         except ContextWindowExceededError as e:
             return _context_window_error_response(e, body.get("max_tokens", 0))
         except TransientBackendError as e:
@@ -635,7 +658,7 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
     # Map backend name to call function
     def _get_backend_caller(backend_name: str):
         if backend_name == "copilot":
-            return lambda: _call_copilot(body, request_id, stream)
+            return lambda: _call_copilot(body, request, request_id, stream)
         return lambda: _call_bedrock(body, request, request_id, stream)
 
     primary_call = _get_backend_caller(BACKEND_TYPE)
@@ -1045,7 +1068,13 @@ async def list_models() -> dict[str, Any]:
 
 @app.post("/v1/messages/count_tokens")
 async def count_tokens(request: Request) -> dict[str, int]:
-    """Count tokens using tiktoken (cl100k_base encoding)."""
+    """Count tokens using tiktoken (cl100k_base encoding).
+
+    When using the Copilot backend, scales the token count to match the client's
+    expected context window (e.g. 200k or 1M) relative to Copilot's prompt limit.
+    """
+    from .models import get_copilot_context_limit
+
     body = await request.json()
 
     total_tokens = 0
@@ -1061,6 +1090,14 @@ async def count_tokens(request: Request) -> dict[str, int]:
     # Count tool definitions
     if "tools" in body:
         total_tokens += len(tokenizer.encode(json.dumps(body["tools"])))
+
+    # Scale token count for Copilot backend
+    if BACKEND_TYPE == "copilot" and "model" in body:
+        copilot_model, _ = get_copilot_model(body["model"])
+        client_context_window = _detect_client_context_window(request, copilot_model)
+        copilot_limit = get_copilot_context_limit(copilot_model)
+        if copilot_limit > 0 and client_context_window > 0:
+            total_tokens = int(total_tokens * client_context_window / copilot_limit)
 
     return {"input_tokens": total_tokens}
 

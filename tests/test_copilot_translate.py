@@ -1027,3 +1027,123 @@ class TestOpenAIToAnthropicResponseCacheFields:
         result = openai_to_anthropic_response(resp, "model")
         assert result["usage"]["cache_creation_input_tokens"] == 0
         assert result["usage"]["cache_read_input_tokens"] == 0
+
+
+# --- Token Scaling Tests ---
+
+
+class TestStreamTranslatorTokenScaling:
+    def test_scaling_with_copilot_limit(self):
+        """With copilot_context_limit=128000 and client_context_window=200000, tokens scale to 200k."""
+        t = StreamTranslator(
+            "model",
+            estimated_input_tokens=100000,
+            copilot_context_limit=128000,
+            client_context_window=200000,
+        )
+        # 100000 * 200000 / 128000 = 156250
+        assert t.input_tokens == 156250
+
+    def test_scaling_usage_chunk(self):
+        """Usage-only chunk tokens should also be scaled."""
+        t = StreamTranslator(
+            "model",
+            estimated_input_tokens=0,
+            copilot_context_limit=128000,
+            client_context_window=200000,
+        )
+        t.translate_chunk({"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]})
+        t.translate_chunk({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        t.translate_chunk({"choices": [], "usage": {"prompt_tokens": 100000, "completion_tokens": 1000}})
+        # 100000 * 200000 / 128000 = 156250
+        assert t.input_tokens == 156250
+        # 1000 * 200000 / 128000 = 1562
+        assert t.output_tokens == 1562
+
+    def test_no_scaling_when_limit_zero(self):
+        """With copilot_context_limit=0 (unknown), tokens pass through unchanged."""
+        t = StreamTranslator(
+            "model",
+            estimated_input_tokens=100000,
+            copilot_context_limit=0,
+            client_context_window=200000,
+        )
+        assert t.input_tokens == 100000
+
+    def test_no_scaling_when_client_window_zero(self):
+        """With client_context_window=0 (unknown), tokens pass through unchanged."""
+        t = StreamTranslator(
+            "model",
+            estimated_input_tokens=100000,
+            copilot_context_limit=128000,
+            client_context_window=0,
+        )
+        assert t.input_tokens == 100000
+
+    def test_no_scaling_when_limit_matches_client_window(self):
+        """Scaling is identity when Copilot limit equals client window."""
+        t = StreamTranslator(
+            "model",
+            estimated_input_tokens=100000,
+            copilot_context_limit=200000,
+            client_context_window=200000,
+        )
+        assert t.input_tokens == 100000
+
+    def test_no_scaling_by_default(self):
+        """Default (no copilot_context_limit or client_context_window) should not scale."""
+        t = StreamTranslator("model", estimated_input_tokens=100000)
+        assert t.input_tokens == 100000
+
+    def test_scaling_in_first_chunk_usage(self):
+        """Usage from first chunk should be scaled."""
+        t = StreamTranslator("model", copilot_context_limit=128000, client_context_window=200000)
+        events = t.translate_chunk(
+            {
+                "choices": [{"delta": {"content": "hi"}, "finish_reason": None}],
+                "usage": {"prompt_tokens": 64000},
+            }
+        )
+        # 64000 * 200000 / 128000 = 100000
+        assert t.input_tokens == 100000
+        assert '"input_tokens": 100000' in events
+
+    def test_scaling_in_finish_chunk_with_usage(self):
+        """Usage from finish chunk should be scaled."""
+        t = StreamTranslator("model", copilot_context_limit=128000, client_context_window=200000)
+        t.translate_chunk({"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]})
+        t.translate_chunk(
+            {
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 64000, "completion_tokens": 500},
+            }
+        )
+        assert t.input_tokens == 100000
+        # 500 * 200000 / 128000 = 781
+        assert t.output_tokens == 781
+
+    def test_scaling_1m_context_window(self):
+        """With client_context_window=1M, tokens scale by ~7.8x."""
+        t = StreamTranslator(
+            "model",
+            estimated_input_tokens=100000,
+            copilot_context_limit=128000,
+            client_context_window=1_000_000,
+        )
+        # 100000 * 1000000 / 128000 = 781250
+        assert t.input_tokens == 781250
+
+    def test_scaling_1m_usage_chunk(self):
+        """Usage-only chunk with 1M window should scale appropriately."""
+        t = StreamTranslator(
+            "model",
+            copilot_context_limit=128000,
+            client_context_window=1_000_000,
+        )
+        t.translate_chunk({"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]})
+        t.translate_chunk({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        t.translate_chunk({"choices": [], "usage": {"prompt_tokens": 64000, "completion_tokens": 500}})
+        # 64000 * 1000000 / 128000 = 500000
+        assert t.input_tokens == 500000
+        # 500 * 1000000 / 128000 = 3906
+        assert t.output_tokens == 3906

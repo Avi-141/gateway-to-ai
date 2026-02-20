@@ -434,7 +434,13 @@ class StreamTranslator:
                    content_block_stop -> message_delta -> message_stop
     """
 
-    def __init__(self, model: str, estimated_input_tokens: int = 0):
+    def __init__(
+        self,
+        model: str,
+        estimated_input_tokens: int = 0,
+        copilot_context_limit: int = 0,
+        client_context_window: int = 0,
+    ):
         self.model = model
         self.block_index = 0
         self.started = False
@@ -442,12 +448,29 @@ class StreamTranslator:
         # Track tool calls by index
         self.tool_calls: dict[int, dict[str, Any]] = {}
         self.has_text_block = False
-        self.input_tokens = estimated_input_tokens
+        self._copilot_context_limit = copilot_context_limit
+        self._client_context_window = client_context_window
+        self.input_tokens = self._scale_tokens(estimated_input_tokens)
         self.output_tokens = 0
         self.cache_creation_input_tokens = 0
         self.cache_read_input_tokens = 0
         self._finish_reason: str | None = None
         self._finished = False
+
+    def _scale_tokens(self, tokens: int) -> int:
+        """Scale token count from Copilot's context window to the client's expected window.
+
+        When Copilot enforces a smaller prompt limit than the client expects,
+        raw token counts make usage appear lower than reality. Scaling corrects this
+        so Claude Code's percentage-based context tracking remains accurate.
+
+        The client_context_window is determined per-request: 1M when the anthropic-beta
+        header contains 'context-1m', otherwise the model's max_context_window_tokens
+        from the Copilot API (typically 200k).
+        """
+        if self._copilot_context_limit > 0 and self._client_context_window > 0:
+            return int(tokens * self._client_context_window / self._copilot_context_limit)
+        return tokens
 
     def _sse(self, event_type: str, data: dict[str, Any]) -> str:
         """Format an Anthropic SSE event."""
@@ -525,7 +548,7 @@ class StreamTranslator:
             # Capture usage from first chunk if available (unlikely in streaming)
             usage = chunk.get("usage") or {}
             if usage.get("prompt_tokens") is not None:
-                self.input_tokens = usage["prompt_tokens"]
+                self.input_tokens = self._scale_tokens(usage["prompt_tokens"])
             if usage.get("cache_creation_input_tokens") is not None:
                 self.cache_creation_input_tokens = usage["cache_creation_input_tokens"]
             if usage.get("cache_read_input_tokens") is not None:
@@ -538,9 +561,9 @@ class StreamTranslator:
         # Handle usage-only chunk (final chunk with include_usage)
         if not choices and usage:
             if usage.get("prompt_tokens") is not None:
-                self.input_tokens = usage["prompt_tokens"]
+                self.input_tokens = self._scale_tokens(usage["prompt_tokens"])
             if usage.get("completion_tokens") is not None:
-                self.output_tokens = usage["completion_tokens"]
+                self.output_tokens = self._scale_tokens(usage["completion_tokens"])
             if usage.get("cache_creation_input_tokens") is not None:
                 self.cache_creation_input_tokens = usage["cache_creation_input_tokens"]
             if usage.get("cache_read_input_tokens") is not None:
@@ -615,9 +638,9 @@ class StreamTranslator:
 
             # Capture usage from this chunk if present
             if usage.get("completion_tokens") is not None:
-                self.output_tokens = usage["completion_tokens"]
+                self.output_tokens = self._scale_tokens(usage["completion_tokens"])
             if usage.get("prompt_tokens") is not None:
-                self.input_tokens = usage["prompt_tokens"]
+                self.input_tokens = self._scale_tokens(usage["prompt_tokens"])
 
             # If usage was already provided in this chunk (no separate usage chunk),
             # emit message_delta/stop immediately

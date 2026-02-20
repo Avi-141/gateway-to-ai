@@ -10,6 +10,8 @@ from claudegate.models import (
     add_region_prefix,
     get_available_copilot_models,
     get_bedrock_model,
+    get_copilot_context_limit,
+    get_copilot_context_window,
     get_copilot_model,
     get_copilot_openai_model,
     is_claude_model,
@@ -544,3 +546,123 @@ class TestModelRequiresResponsesApi:
             ]
         )
         assert model_requires_responses_api("gpt-5.2") is False
+
+
+# --- get_copilot_context_limit ---
+
+
+class TestGetCopilotContextLimit:
+    @pytest.fixture(autouse=True)
+    def reset_registry(self):
+        """Reset the dynamic model registry before and after each test."""
+        set_copilot_models([])
+        yield
+        set_copilot_models([])
+
+    def test_returns_limit_from_dynamic_models(self):
+        set_copilot_models(
+            [
+                {
+                    "id": "claude-opus-4.6",
+                    "supported_endpoints": ["/chat/completions"],
+                    "capabilities": {"limits": {"max_prompt_tokens": 128000}},
+                },
+            ]
+        )
+        assert get_copilot_context_limit("claude-opus-4.6") == 128000
+
+    def test_returns_zero_for_unknown_model(self):
+        set_copilot_models([])
+        assert get_copilot_context_limit("unknown-model") == 0
+
+    def test_returns_zero_when_no_capabilities(self):
+        set_copilot_models(
+            [
+                {
+                    "id": "claude-opus-4.6",
+                    "supported_endpoints": ["/chat/completions"],
+                },
+            ]
+        )
+        assert get_copilot_context_limit("claude-opus-4.6") == 0
+
+    def test_multiple_models_with_different_limits(self):
+        set_copilot_models(
+            [
+                {
+                    "id": "claude-opus-4.6",
+                    "supported_endpoints": ["/chat/completions"],
+                    "capabilities": {"limits": {"max_prompt_tokens": 128000}},
+                },
+                {
+                    "id": "gpt-5.2",
+                    "supported_endpoints": ["/chat/completions"],
+                    "capabilities": {"limits": {"max_prompt_tokens": 256000}},
+                },
+            ]
+        )
+        assert get_copilot_context_limit("claude-opus-4.6") == 128000
+        assert get_copilot_context_limit("gpt-5.2") == 256000
+
+
+# --- get_copilot_context_window ---
+
+
+class TestGetCopilotContextWindow:
+    @pytest.fixture(autouse=True)
+    def reset_registry(self):
+        """Reset the dynamic model registry before and after each test."""
+        set_copilot_models([])
+        yield
+        set_copilot_models([])
+
+    def test_returns_context_window_from_dynamic_models(self):
+        set_copilot_models(
+            [
+                {
+                    "id": "claude-opus-4.6",
+                    "supported_endpoints": ["/chat/completions"],
+                    "capabilities": {
+                        "limits": {
+                            "max_prompt_tokens": 128000,
+                            "max_context_window_tokens": 200000,
+                        }
+                    },
+                },
+            ]
+        )
+        assert get_copilot_context_window("claude-opus-4.6") == 200000
+
+    def test_returns_zero_for_unknown_model(self):
+        set_copilot_models([])
+        assert get_copilot_context_window("unknown-model") == 0
+
+    def test_returns_zero_when_no_capabilities(self):
+        set_copilot_models(
+            [
+                {
+                    "id": "claude-opus-4.6",
+                    "supported_endpoints": ["/chat/completions"],
+                },
+            ]
+        )
+        assert get_copilot_context_window("claude-opus-4.6") == 0
+
+    def test_context_window_and_limit_independent(self):
+        """Both limits and context windows are stored independently."""
+        set_copilot_models(
+            [
+                {
+                    "id": "claude-opus-4.6",
+                    "supported_endpoints": ["/chat/completions"],
+                    "capabilities": {
+                        "limits": {
+                            "max_prompt_tokens": 128000,
+                            "max_context_window_tokens": 200000,
+                        }
+                    },
+                },
+            ]
+        )
+        assert get_copilot_context_limit("claude-opus-4.6") == 128000
+        assert get_copilot_context_window("claude-opus-4.6") == 200000

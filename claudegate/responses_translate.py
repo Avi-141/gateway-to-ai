@@ -439,16 +439,30 @@ class ResponsesStreamTranslator:
     - response.completed -> message_delta + message_stop
     """
 
-    def __init__(self, model: str, estimated_input_tokens: int = 0):
+    def __init__(
+        self,
+        model: str,
+        estimated_input_tokens: int = 0,
+        copilot_context_limit: int = 0,
+        client_context_window: int = 0,
+    ):
         self.model = model
         self.block_index = 0
         self.started = False
         self.current_block_type: str | None = None
         self.has_text_block = False
-        self.input_tokens = estimated_input_tokens
+        self._copilot_context_limit = copilot_context_limit
+        self._client_context_window = client_context_window
+        self.input_tokens = self._scale_tokens(estimated_input_tokens)
         self.output_tokens = 0
         self.cache_creation_input_tokens = 0
         self.cache_read_input_tokens = 0
+
+    def _scale_tokens(self, tokens: int) -> int:
+        """Scale token count from Copilot's context window to the client's expected window."""
+        if self._copilot_context_limit > 0 and self._client_context_window > 0:
+            return int(tokens * self._client_context_window / self._copilot_context_limit)
+        return tokens
 
     def _sse(self, event_type: str, data: dict[str, Any]) -> str:
         return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
@@ -521,7 +535,7 @@ class ResponsesStreamTranslator:
                 resp_obj = data.get("response") or {}
                 usage = resp_obj.get("usage") or {}
                 if usage.get("input_tokens") is not None:
-                    self.input_tokens = usage["input_tokens"]
+                    self.input_tokens = self._scale_tokens(usage["input_tokens"])
                 self.cache_creation_input_tokens = usage.get("cache_creation_input_tokens", 0)
                 self.cache_read_input_tokens = usage.get("cache_read_input_tokens", 0)
                 events += self._emit_message_start()
@@ -577,9 +591,11 @@ class ResponsesStreamTranslator:
 
             resp_obj = data.get("response") or {}
             usage = resp_obj.get("usage") or {}
-            self.output_tokens = usage.get("output_tokens", self.output_tokens)
+            raw_output = usage.get("output_tokens")
+            if raw_output is not None:
+                self.output_tokens = self._scale_tokens(raw_output)
             if usage.get("input_tokens") is not None:
-                self.input_tokens = usage["input_tokens"]
+                self.input_tokens = self._scale_tokens(usage["input_tokens"])
             if usage.get("cache_creation_input_tokens") is not None:
                 self.cache_creation_input_tokens = usage["cache_creation_input_tokens"]
             if usage.get("cache_read_input_tokens") is not None:

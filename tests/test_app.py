@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from botocore.exceptions import ClientError, ReadTimeoutError
 
-from claudegate.app import _count_content_tokens, _error_response, _validate_request
+from claudegate.app import _count_content_tokens, _detect_client_context_window, _error_response, _validate_request
 from claudegate.errors import CopilotHttpError, TransientBackendError
 from tests.conftest import make_client_error
 
@@ -1178,6 +1178,41 @@ class TestCountTokensRoute:
         )
         assert resp.status_code == 200
         assert resp.json()["input_tokens"] > 0
+
+
+# --- _detect_client_context_window ---
+
+
+class TestDetectClientContextWindow:
+    def test_returns_1m_with_context_1m_header(self):
+        """Should return 1M when anthropic-beta header contains context-1m."""
+        mock_request = MagicMock()
+        mock_request.headers = {"anthropic-beta": "context-1m-2025-08-07"}
+        result = _detect_client_context_window(mock_request, "claude-opus-4.6")
+        assert result == 1_000_000
+
+    def test_returns_1m_with_context_1m_among_other_betas(self):
+        """Should return 1M when context-1m is among other beta values."""
+        mock_request = MagicMock()
+        mock_request.headers = {"anthropic-beta": "some-beta,context-1m-2025-08-07,other-beta"}
+        result = _detect_client_context_window(mock_request, "claude-opus-4.6")
+        assert result == 1_000_000
+
+    def test_returns_copilot_context_window_without_header(self):
+        """Should return model's context window when no context-1m header."""
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        with patch("claudegate.app.get_copilot_context_window", return_value=200000):
+            result = _detect_client_context_window(mock_request, "claude-opus-4.6")
+        assert result == 200000
+
+    def test_returns_zero_when_no_header_and_unknown_model(self):
+        """Should return 0 when no header and model not in registry."""
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        with patch("claudegate.app.get_copilot_context_window", return_value=0):
+            result = _detect_client_context_window(mock_request, "unknown-model")
+        assert result == 0
 
 
 # --- POST /api/event_logging/batch ---
