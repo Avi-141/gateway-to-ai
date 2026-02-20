@@ -159,3 +159,5 @@ claude
 **Port conflict** — Set `CLAUDEGATE_PORT=9090` and update `ANTHROPIC_BASE_URL` to `http://localhost:9090`. Reinstall service with `claudegate uninstall && CLAUDEGATE_PORT=9090 claudegate install --env`.
 
 **`claudegate` not found (Windows)** — Ensure `%USERPROFILE%\.local\bin` is on your PATH.
+
+**Model not supported (`model_not_supported` 400)** — If you see `Copilot stream error 400: {"error":{"message":"The requested model is not supported.","code":"model_not_supported",...}}` in the claudegate logs, your GitHub Copilot subscription has likely lapsed. Renew it at [https://github.com/features/copilot](https://github.com/features/copilot).
