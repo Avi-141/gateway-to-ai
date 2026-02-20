@@ -128,6 +128,41 @@ def openai_streaming_chunks() -> list[dict[str, Any]]:
 
 
 @pytest.fixture
+def openai_streaming_chunks_with_usage() -> list[dict[str, Any]]:
+    """OpenAI streaming chunks where usage arrives in a separate final chunk.
+
+    Models the real OpenAI pattern with stream_options.include_usage:
+    1. Role init chunk
+    2. Text content chunks
+    3. Finish-reason chunk (no usage)
+    4. Usage-only chunk (choices: [], full usage stats)
+    """
+    return [
+        {
+            "id": "chatcmpl-abc123",
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": None}],
+        },
+        {
+            "id": "chatcmpl-abc123",
+            "choices": [{"index": 0, "delta": {"content": "Hello"}, "finish_reason": None}],
+        },
+        {
+            "id": "chatcmpl-abc123",
+            "choices": [{"index": 0, "delta": {"content": " world"}, "finish_reason": None}],
+        },
+        {
+            "id": "chatcmpl-abc123",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        },
+        {
+            "id": "chatcmpl-abc123",
+            "choices": [],
+            "usage": {"prompt_tokens": 42, "completion_tokens": 3, "total_tokens": 45},
+        },
+    ]
+
+
+@pytest.fixture
 def minimal_openai_request() -> dict[str, Any]:
     """Minimal valid OpenAI Chat Completions request body."""
     return {

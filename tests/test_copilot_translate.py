@@ -9,6 +9,7 @@ from claudegate.copilot_translate import (
     _translate_tool_choice,
     _translate_tools,
     anthropic_to_openai_request,
+    estimate_input_tokens,
     has_server_tools,
     openai_to_anthropic_response,
     strip_server_tools,
@@ -712,3 +713,260 @@ class TestAnthropicToOpenAIRequestServerTools:
         # Only the text part should remain as a user message
         assert len(result["messages"]) == 1
         assert result["messages"][0]["role"] == "user"
+
+
+# --- estimate_input_tokens ---
+
+
+class TestEstimateInputTokens:
+    def test_string_content_message(self):
+        body = {"messages": [{"role": "user", "content": "Hello, world!"}]}
+        result = estimate_input_tokens(body)
+        assert result > 0
+
+    def test_list_content_text_blocks(self):
+        body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Hello"},
+                        {"type": "text", "text": "World"},
+                    ],
+                }
+            ]
+        }
+        result = estimate_input_tokens(body)
+        assert result > 0
+
+    def test_tool_use_block(self):
+        body = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "tool_use", "id": "t1", "name": "get_weather", "input": {"city": "NYC"}},
+                    ],
+                }
+            ]
+        }
+        result = estimate_input_tokens(body)
+        assert result > 0
+
+    def test_tool_result_string(self):
+        body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "tool_result", "tool_use_id": "t1", "content": "72°F sunny"},
+                    ],
+                }
+            ]
+        }
+        result = estimate_input_tokens(body)
+        assert result > 0
+
+    def test_tool_result_list_content(self):
+        body = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "t1",
+                            "content": [{"type": "text", "text": "result data"}],
+                        },
+                    ],
+                }
+            ]
+        }
+        result = estimate_input_tokens(body)
+        assert result > 0
+
+    def test_system_prompt_string(self):
+        body = {"system": "You are a helpful assistant.", "messages": []}
+        result = estimate_input_tokens(body)
+        assert result > 0
+
+    def test_system_prompt_blocks(self):
+        body = {
+            "system": [{"type": "text", "text": "Part 1"}, {"type": "text", "text": "Part 2"}],
+            "messages": [],
+        }
+        result = estimate_input_tokens(body)
+        assert result > 0
+
+    def test_tools_definitions(self):
+        body = {
+            "messages": [],
+            "tools": [{"name": "get_weather", "description": "Get weather", "input_schema": {"type": "object"}}],
+        }
+        result = estimate_input_tokens(body)
+        assert result > 0
+
+    def test_empty_body(self):
+        assert estimate_input_tokens({}) == 0
+
+    def test_empty_string_content(self):
+        body = {"messages": [{"role": "user", "content": ""}]}
+        assert estimate_input_tokens(body) == 0
+
+    def test_no_double_counting_text_block(self):
+        """Text blocks should only be counted once (via block_type check, not generic text extraction)."""
+        body = {
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {"type": "text", "text": "hello"},
+                    ],
+                }
+            ]
+        }
+        # Count for just the text
+        text_only = estimate_input_tokens({"messages": [{"role": "user", "content": "hello"}]})
+        result = estimate_input_tokens(body)
+        # Should be roughly the same (both count "hello" once)
+        assert result == text_only
+
+
+# --- Additional StreamTranslator tests ---
+
+
+class TestStreamTranslatorUsage:
+    def test_usage_only_chunk_emits_deferred_message_end(self, openai_streaming_chunks_with_usage):
+        t = StreamTranslator("model", estimated_input_tokens=100)
+        all_events = ""
+        for chunk in openai_streaming_chunks_with_usage:
+            all_events += t.translate_chunk(chunk)
+
+        assert "message_start" in all_events
+        assert "message_delta" in all_events
+        assert "message_stop" in all_events
+        # Usage-only chunk should update the real prompt_tokens internally
+        assert t.input_tokens == 42
+        assert t.output_tokens == 3
+
+    def test_flush_fallback_when_no_usage_chunk(self):
+        t = StreamTranslator("model", estimated_input_tokens=50)
+        # Start
+        t.translate_chunk({"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]})
+        # Finish with no usage
+        t.translate_chunk({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        # No message_stop yet (waiting for usage chunk)
+        assert not t._finished
+
+        # Flush should emit message_delta/stop
+        events = t.flush()
+        assert "message_delta" in events
+        assert "message_stop" in events
+        assert t._finished
+
+    def test_finished_guard_prevents_double_emit(self):
+        t = StreamTranslator("model", estimated_input_tokens=10)
+        t.translate_chunk({"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]})
+        t.translate_chunk(
+            {"choices": [{"delta": {}, "finish_reason": "stop"}], "usage": {"prompt_tokens": 5, "completion_tokens": 2}}
+        )
+        assert t._finished
+        # Second flush should be a no-op
+        assert t.flush() == ""
+
+    def test_estimated_input_tokens_in_message_start(self):
+        t = StreamTranslator("model", estimated_input_tokens=999)
+        events = t.translate_chunk({"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]})
+        assert '"input_tokens": 999' in events
+
+    def test_usage_chunk_overrides_estimated_tokens(self, openai_streaming_chunks_with_usage):
+        t = StreamTranslator("model", estimated_input_tokens=999)
+        all_events = ""
+        for chunk in openai_streaming_chunks_with_usage:
+            all_events += t.translate_chunk(chunk)
+        # message_start has estimate (999), but message_delta should reflect real usage
+        assert t.input_tokens == 42
+
+    def test_cache_tokens_in_message_start(self):
+        t = StreamTranslator("model")
+        events = t.translate_chunk(
+            {
+                "choices": [{"delta": {"content": "hi"}, "finish_reason": None}],
+                "usage": {"prompt_tokens": 10, "cache_creation_input_tokens": 5, "cache_read_input_tokens": 3},
+            }
+        )
+        assert '"cache_creation_input_tokens": 5' in events
+        assert '"cache_read_input_tokens": 3' in events
+
+    def test_cache_tokens_in_usage_only_chunk(self):
+        t = StreamTranslator("model", estimated_input_tokens=10)
+        t.translate_chunk({"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]})
+        t.translate_chunk({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        events = t.translate_chunk(
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 2,
+                    "cache_creation_input_tokens": 7,
+                    "cache_read_input_tokens": 4,
+                },
+            }
+        )
+        assert "message_delta" in events
+        assert '"cache_creation_input_tokens": 7' in events
+        assert '"cache_read_input_tokens": 4' in events
+
+    def test_complete_sequence_with_usage_only_chunk(self, openai_streaming_chunks_with_usage):
+        t = StreamTranslator("model", estimated_input_tokens=100)
+        all_events = ""
+        for chunk in openai_streaming_chunks_with_usage:
+            all_events += t.translate_chunk(chunk)
+
+        # Full sequence
+        assert "message_start" in all_events
+        assert "content_block_start" in all_events
+        assert "text_delta" in all_events
+        assert "Hello" in all_events
+        assert " world" in all_events
+        assert "content_block_stop" in all_events
+        assert "message_delta" in all_events
+        assert "message_stop" in all_events
+        assert "end_turn" in all_events
+
+    def test_zero_prompt_tokens_not_ignored(self):
+        """Verify that prompt_tokens: 0 is not treated as falsy/missing."""
+        t = StreamTranslator("model", estimated_input_tokens=100)
+        t.translate_chunk({"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]})
+        t.translate_chunk({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        events = t.translate_chunk({"choices": [], "usage": {"prompt_tokens": 0, "completion_tokens": 1}})
+        assert "message_delta" in events
+        assert t.input_tokens == 0
+
+
+# --- Additional openai_to_anthropic_response tests ---
+
+
+class TestOpenAIToAnthropicResponseCacheFields:
+    def test_cache_token_fields(self):
+        resp = {
+            "choices": [{"message": {"content": "Hi"}, "finish_reason": "stop"}],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "cache_creation_input_tokens": 3,
+                "cache_read_input_tokens": 7,
+            },
+        }
+        result = openai_to_anthropic_response(resp, "model")
+        assert result["usage"]["cache_creation_input_tokens"] == 3
+        assert result["usage"]["cache_read_input_tokens"] == 7
+
+    def test_cache_token_fields_default_to_zero(self):
+        resp = {
+            "choices": [{"message": {"content": "Hi"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+        }
+        result = openai_to_anthropic_response(resp, "model")
+        assert result["usage"]["cache_creation_input_tokens"] == 0
+        assert result["usage"]["cache_read_input_tokens"] == 0

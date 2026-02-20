@@ -1,6 +1,7 @@
 """Anthropic <-> OpenAI format translation for GitHub Copilot backend.
 
-Pure functions for request/response translation. No I/O, no state (except StreamTranslator).
+Stateless translation functions (except StreamTranslator) and input token estimation
+via tiktoken. No network I/O.
 """
 
 import json
@@ -9,8 +10,16 @@ from typing import Any
 
 import tiktoken
 
-# Tokenizer for estimating input tokens when backend doesn't provide them
-_tokenizer = tiktoken.get_encoding("cl100k_base")
+# Lazy-initialized tokenizer for estimating input tokens
+_tokenizer: tiktoken.Encoding | None = None
+
+
+def _get_tokenizer() -> tiktoken.Encoding:
+    """Return the shared tokenizer, initializing on first use."""
+    global _tokenizer
+    if _tokenizer is None:
+        _tokenizer = tiktoken.get_encoding("cl100k_base")
+    return _tokenizer
 
 
 def estimate_input_tokens(body: dict[str, Any]) -> int:
@@ -20,44 +29,48 @@ def estimate_input_tokens(body: dict[str, Any]) -> int:
     the input token count. This is used as a fallback when the backend
     doesn't provide prompt_tokens (e.g. OpenAI streaming).
     """
+    tokenizer = _get_tokenizer()
     total = 0
 
     # System prompt
     system = body.get("system")
     if isinstance(system, str):
-        total += len(_tokenizer.encode(system))
+        total += len(tokenizer.encode(system))
     elif isinstance(system, list):
         for block in system:
             if isinstance(block, dict) and block.get("type") == "text":
-                total += len(_tokenizer.encode(block.get("text", "")))
+                total += len(tokenizer.encode(block.get("text", "")))
 
     # Messages
     for msg in body.get("messages", []):
         content = msg.get("content", "")
         if isinstance(content, str):
-            total += len(_tokenizer.encode(content))
+            total += len(tokenizer.encode(content))
         elif isinstance(content, list):
             for block in content:
-                if isinstance(block, dict):
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+                if block_type == "text":
                     text = block.get("text", "")
                     if text:
-                        total += len(_tokenizer.encode(text))
-                    if block.get("type") == "tool_use":
-                        total += len(_tokenizer.encode(block.get("name", "")))
-                        total += len(_tokenizer.encode(json.dumps(block.get("input", {}))))
-                    elif block.get("type") == "tool_result":
-                        tc = block.get("content", "")
-                        if isinstance(tc, str):
-                            total += len(_tokenizer.encode(tc))
-                        elif isinstance(tc, list):
-                            for sub in tc:
-                                if isinstance(sub, dict) and sub.get("type") == "text":
-                                    total += len(_tokenizer.encode(sub.get("text", "")))
+                        total += len(tokenizer.encode(text))
+                elif block_type == "tool_use":
+                    total += len(tokenizer.encode(block.get("name", "")))
+                    total += len(tokenizer.encode(json.dumps(block.get("input", {}))))
+                elif block_type == "tool_result":
+                    tc = block.get("content", "")
+                    if isinstance(tc, str):
+                        total += len(tokenizer.encode(tc))
+                    elif isinstance(tc, list):
+                        for sub in tc:
+                            if isinstance(sub, dict) and sub.get("type") == "text":
+                                total += len(tokenizer.encode(sub.get("text", "")))
 
     # Tool definitions
     tools = body.get("tools")
     if tools:
-        total += len(_tokenizer.encode(json.dumps(tools)))
+        total += len(tokenizer.encode(json.dumps(tools)))
 
     return total
 
@@ -485,11 +498,11 @@ class StreamTranslator:
         if not self.started:
             # Capture usage from first chunk if available (unlikely in streaming)
             usage = chunk.get("usage") or {}
-            if usage.get("prompt_tokens"):
+            if usage.get("prompt_tokens") is not None:
                 self.input_tokens = usage["prompt_tokens"]
-            if usage.get("cache_creation_input_tokens"):
+            if usage.get("cache_creation_input_tokens") is not None:
                 self.cache_creation_input_tokens = usage["cache_creation_input_tokens"]
-            if usage.get("cache_read_input_tokens"):
+            if usage.get("cache_read_input_tokens") is not None:
                 self.cache_read_input_tokens = usage["cache_read_input_tokens"]
             events += self._emit_message_start()
 
@@ -498,13 +511,13 @@ class StreamTranslator:
 
         # Handle usage-only chunk (final chunk with include_usage)
         if not choices and usage:
-            if usage.get("prompt_tokens"):
+            if usage.get("prompt_tokens") is not None:
                 self.input_tokens = usage["prompt_tokens"]
-            if usage.get("completion_tokens"):
+            if usage.get("completion_tokens") is not None:
                 self.output_tokens = usage["completion_tokens"]
-            if usage.get("cache_creation_input_tokens"):
+            if usage.get("cache_creation_input_tokens") is not None:
                 self.cache_creation_input_tokens = usage["cache_creation_input_tokens"]
-            if usage.get("cache_read_input_tokens"):
+            if usage.get("cache_read_input_tokens") is not None:
                 self.cache_read_input_tokens = usage["cache_read_input_tokens"]
             # If we already saw finish_reason, emit the deferred message_delta/stop now
             if self._finish_reason is not None and not self._finished:
@@ -575,14 +588,14 @@ class StreamTranslator:
             self._finish_reason = finish_reason
 
             # Capture usage from this chunk if present
-            if usage.get("completion_tokens"):
+            if usage.get("completion_tokens") is not None:
                 self.output_tokens = usage["completion_tokens"]
-            if usage.get("prompt_tokens"):
+            if usage.get("prompt_tokens") is not None:
                 self.input_tokens = usage["prompt_tokens"]
 
             # If usage was already provided in this chunk (no separate usage chunk),
             # emit message_delta/stop immediately
-            if usage.get("prompt_tokens") or usage.get("completion_tokens"):
+            if usage.get("prompt_tokens") is not None or usage.get("completion_tokens") is not None:
                 events += self._emit_message_end()
 
         return events

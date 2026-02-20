@@ -479,8 +479,9 @@ class CopilotBackend:
                     await asyncio.sleep(0)
 
             # Cleanup
-            if translator.current_block_type is not None:
-                yield translator.emit_content_block_stop()
+            flush_events = translator.flush()
+            if flush_events:
+                yield flush_events
 
             logger.info(f"{log_prefix}Copilot Responses stream complete, {chunk_count} chunks")
             yield "event: done\ndata: [DONE]\n\n"

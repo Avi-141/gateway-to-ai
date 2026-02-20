@@ -382,6 +382,31 @@ class TestResponsesToAnthropicResponse:
         result = responses_to_anthropic_response(resp, "claude-sonnet-4-5")
         assert result["stop_reason"] == "max_tokens"
 
+    def test_cache_token_fields(self):
+        resp = {
+            "id": "resp_abc",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "Hi"}]}],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "cache_creation_input_tokens": 3,
+                "cache_read_input_tokens": 7,
+            },
+        }
+        result = responses_to_anthropic_response(resp, "claude-sonnet-4-5")
+        assert result["usage"]["cache_creation_input_tokens"] == 3
+        assert result["usage"]["cache_read_input_tokens"] == 7
+
+    def test_cache_token_fields_default_to_zero(self):
+        resp = {
+            "id": "resp_abc",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "Hi"}]}],
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+        result = responses_to_anthropic_response(resp, "claude-sonnet-4-5")
+        assert result["usage"]["cache_creation_input_tokens"] == 0
+        assert result["usage"]["cache_read_input_tokens"] == 0
+
 
 # --- responses_to_openai_chat_response ---
 
@@ -536,6 +561,64 @@ class TestResponsesStreamTranslator:
 
         events2 = translator.translate_event("response.output_text.delta", {"delta": "Hi"})
         assert "message_start" not in events2
+
+    def test_cache_tokens_in_message_start(self):
+        translator = ResponsesStreamTranslator("claude-sonnet-4-5")
+        events = translator.translate_event(
+            "response.created",
+            {
+                "response": {
+                    "usage": {
+                        "input_tokens": 10,
+                        "cache_creation_input_tokens": 5,
+                        "cache_read_input_tokens": 3,
+                    }
+                }
+            },
+        )
+        assert '"cache_creation_input_tokens": 5' in events
+        assert '"cache_read_input_tokens": 3' in events
+
+    def test_cache_tokens_in_message_delta(self):
+        translator = ResponsesStreamTranslator("claude-sonnet-4-5")
+        translator.translate_event("response.created", {"response": {}})
+        translator.translate_event("response.output_text.delta", {"delta": "Hi"})
+        events = translator.translate_event(
+            "response.completed",
+            {
+                "response": {
+                    "status": "completed",
+                    "usage": {
+                        "output_tokens": 5,
+                        "cache_creation_input_tokens": 7,
+                        "cache_read_input_tokens": 4,
+                    },
+                    "output": [],
+                }
+            },
+        )
+        assert '"cache_creation_input_tokens": 7' in events
+        assert '"cache_read_input_tokens": 4' in events
+
+    def test_estimated_input_tokens(self):
+        translator = ResponsesStreamTranslator("claude-sonnet-4-5", estimated_input_tokens=999)
+        events = translator.translate_event("response.created", {"response": {}})
+        assert '"input_tokens": 999' in events
+
+    def test_flush_closes_open_block(self):
+        translator = ResponsesStreamTranslator("claude-sonnet-4-5")
+        translator.translate_event("response.created", {"response": {}})
+        translator.translate_event("response.output_text.delta", {"delta": "Hi"})
+        assert translator.current_block_type == "text"
+
+        events = translator.flush()
+        assert "content_block_stop" in events
+        assert translator.current_block_type is None
+
+    def test_flush_noop_when_no_open_block(self):
+        translator = ResponsesStreamTranslator("claude-sonnet-4-5")
+        translator.translate_event("response.created", {"response": {}})
+        assert translator.flush() == ""
 
 
 # --- ResponsesToOpenAIStreamTranslator ---

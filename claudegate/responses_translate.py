@@ -484,6 +484,12 @@ class ResponsesStreamTranslator:
         self.current_block_type = None
         return event
 
+    def flush(self) -> str:
+        """Close any open content block. Call after stream ends."""
+        if self.current_block_type is not None:
+            return self.emit_content_block_stop()
+        return ""
+
     def translate_event(self, event_type: str, data: dict[str, Any]) -> str:
         """Translate a single Responses API SSE event to Anthropic SSE events."""
         if not isinstance(data, dict):
@@ -494,7 +500,7 @@ class ResponsesStreamTranslator:
             if not self.started:
                 resp_obj = data.get("response") or {}
                 usage = resp_obj.get("usage") or {}
-                if usage.get("input_tokens"):
+                if usage.get("input_tokens") is not None:
                     self.input_tokens = usage["input_tokens"]
                 self.cache_creation_input_tokens = usage.get("cache_creation_input_tokens", 0)
                 self.cache_read_input_tokens = usage.get("cache_read_input_tokens", 0)
@@ -552,11 +558,11 @@ class ResponsesStreamTranslator:
             resp_obj = data.get("response") or {}
             usage = resp_obj.get("usage") or {}
             self.output_tokens = usage.get("output_tokens", self.output_tokens)
-            if usage.get("input_tokens"):
+            if usage.get("input_tokens") is not None:
                 self.input_tokens = usage["input_tokens"]
-            if usage.get("cache_creation_input_tokens"):
+            if usage.get("cache_creation_input_tokens") is not None:
                 self.cache_creation_input_tokens = usage["cache_creation_input_tokens"]
-            if usage.get("cache_read_input_tokens"):
+            if usage.get("cache_read_input_tokens") is not None:
                 self.cache_read_input_tokens = usage["cache_read_input_tokens"]
 
             # Determine stop reason
