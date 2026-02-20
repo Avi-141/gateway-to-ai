@@ -296,7 +296,7 @@ export ANTHROPIC_BASE_URL="http://localhost:8080"
 Install the `/models` plugin to list available models and their token limits directly in Claude Code:
 
 ```
-/plugin marketplace add github.com/Avi-141/gateway-to-ai
+/plugin marketplace add https://github.com/Avi-141/gateway-to-ai.git
 /plugin install models@claudegate
 ```
 
