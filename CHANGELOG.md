@@ -13,8 +13,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **Token count scaling** — dynamically scale `input_tokens` and `output_tokens` reported to Claude Code so its percentage-based context tracking accurately reflects Copilot's actual capacity. Looks up each model's `max_prompt_tokens` from the Copilot `/models` API and applies a per-model scaling factor. Supports both standard 200k and 1M context window variants (detected via `anthropic-beta: context-1m` header).
 - **`claudegate logs` command** — tail service logs on macOS (`tail -f /tmp/claudegate.log`) and Linux (`journalctl`). Supports `--lines` / `-n`, `--follow` / `--no-follow`, and `--since` (Linux only).
 
+### Changed
+
+- **Default model updated to Sonnet 4.6** — both `DEFAULT_BEDROCK_MODEL` and `DEFAULT_COPILOT_MODEL` now default to Claude Sonnet 4.6 instead of 4.5. Added Sonnet 4.6 to Bedrock and Copilot model maps. Fixed Opus 4.6 Bedrock model IDs to match actual AWS API output.
+
 ### Fixed
 
+- **Handle `model: "default"` sentinel** — Claude Code sends the literal string `"default"` for certain internal requests (e.g. sub-agent tool selection). This was falling through model mapping and getting rejected by Copilot with `model_not_supported`.
 - Fix `/models` plugin marketplace installation — move `marketplace.json` to `.claude-plugin/marketplace.json` where Claude Code expects it, and use full HTTPS URL for GitHub Enterprise clone.
 
 ## [0.4.0] - 2026-02-20

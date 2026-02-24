@@ -14,13 +14,15 @@ def is_claude_model(model: str) -> bool:
 
 
 # Default model when no match found
-DEFAULT_MODEL = "anthropic.claude-sonnet-4-5-20250929-v1:0"
+DEFAULT_BEDROCK_MODEL = "anthropic.claude-sonnet-4-6"
 
 # Map Anthropic model names to Bedrock model IDs (without region prefix)
 BEDROCK_MODEL_MAP = {
     # Opus 4.6
-    "claude-opus-4-6-20250515": "anthropic.claude-opus-4-6-20250515-v1:0",
-    "claude-opus-4-6": "anthropic.claude-opus-4-6-20250515-v1:0",
+    "claude-opus-4-6-20250515": "anthropic.claude-opus-4-6-v1",
+    "claude-opus-4-6": "anthropic.claude-opus-4-6-v1",
+    # Sonnet 4.6
+    "claude-sonnet-4-6": "anthropic.claude-sonnet-4-6",
     # Opus 4.5
     "claude-opus-4-5-20251101": "anthropic.claude-opus-4-5-20251101-v1:0",
     "claude-opus-4-5": "anthropic.claude-opus-4-5-20251101-v1:0",
@@ -89,19 +91,21 @@ def get_bedrock_model(model: str) -> str:
         if key in model:
             return add_region_prefix(value)
     # Default
-    return add_region_prefix(DEFAULT_MODEL)
+    return add_region_prefix(DEFAULT_BEDROCK_MODEL)
 
 
 # --- Copilot Model Mappings ---
 
 # Default Copilot model
-DEFAULT_COPILOT_MODEL = "claude-sonnet-4.5"
+DEFAULT_COPILOT_MODEL = "claude-sonnet-4.6"
 
 # Map Anthropic model names to Copilot model IDs
 COPILOT_MODEL_MAP = {
     # Opus 4.6
     "claude-opus-4-6-20250515": "claude-opus-4.6",
     "claude-opus-4-6": "claude-opus-4.6",
+    # Sonnet 4.6
+    "claude-sonnet-4-6": "claude-sonnet-4.6",
     # Opus 4.5
     "claude-opus-4-5-20251101": "claude-opus-4.5",
     "claude-opus-4-5": "claude-opus-4.5",
@@ -393,7 +397,7 @@ def get_copilot_model(model: str) -> tuple[str, str]:
             return model, model
 
         # Default (dynamic models loaded but no Claude match found)
-        return DEFAULT_COPILOT_MODEL, "claude-sonnet-4-5-20250929"
+        return DEFAULT_COPILOT_MODEL, "claude-sonnet-4-6"
 
     # --- No dynamic models: use hardcoded maps ---
 
@@ -415,4 +419,4 @@ def get_copilot_model(model: str) -> tuple[str, str]:
     if not is_claude_model(model):
         return model, model
     # Default
-    return DEFAULT_COPILOT_MODEL, "claude-sonnet-4-5-20250929"
+    return DEFAULT_COPILOT_MODEL, "claude-sonnet-4-6"

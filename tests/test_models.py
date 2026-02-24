@@ -6,7 +6,7 @@ from claudegate.models import (
     BEDROCK_MODEL_MAP,
     COPILOT_MODEL_MAP,
     COPILOT_OPENAI_MODEL_MAP,
-    DEFAULT_MODEL,
+    DEFAULT_BEDROCK_MODEL,
     add_region_prefix,
     get_available_copilot_models,
     get_bedrock_model,
@@ -68,12 +68,12 @@ class TestGetBedrockModel:
     def test_unknown_falls_back_to_default(self, monkeypatch):
         monkeypatch.setattr("claudegate.models.BEDROCK_REGION_PREFIX", "")
         result = get_bedrock_model("completely-unknown-model")
-        assert result == DEFAULT_MODEL
+        assert result == DEFAULT_BEDROCK_MODEL
 
     def test_empty_string_falls_back_to_default(self, monkeypatch):
         monkeypatch.setattr("claudegate.models.BEDROCK_REGION_PREFIX", "")
         result = get_bedrock_model("")
-        assert result == DEFAULT_MODEL
+        assert result == DEFAULT_BEDROCK_MODEL
 
 
 # --- get_copilot_model ---
@@ -398,8 +398,8 @@ class TestDynamicCopilotModels:
         model_id, name = get_copilot_model("claude-unknown-99-0")
         # Falls through Claude-specific lookups, but is_claude_model is True,
         # so it hits the Claude default
-        assert model_id == "claude-sonnet-4.5"
-        assert name == "claude-sonnet-4-5-20250929"
+        assert model_id == "claude-sonnet-4.6"
+        assert name == "claude-sonnet-4-6"
 
 
 # --- is_claude_model ---
