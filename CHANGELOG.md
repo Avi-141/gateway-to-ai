@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Accurate macOS service status** — `claudegate status` previously reported "running" whenever the service was *registered* with launchd, even if the process had crashed or failed to start. Now parses the PID from `launchctl list` output to distinguish between a truly running process (`running (PID 12345)`) and a loaded-but-dead service (`loaded but not running`). The `/api/status` endpoint (`get_service_status()`) uses the same logic.
 - **Block `sudo` for `install`/`uninstall` commands** — running `sudo claudegate install` on macOS silently writes the plist to `/var/root/Library/LaunchAgents/` and creates a root-owned log file, both invisible to the normal user. The commands now detect `sudo` and refuse with a clear error message.
 - **Filter unsupported beta flags for Bedrock** — Claude Code sends `anthropic-beta` header flags (e.g., `interleaved-thinking-*`, `context-management-*`, `prompt-caching-scope-*`) that Bedrock doesn't recognize, causing `ValidationException: invalid beta flag`. Beta flags are now filtered to a whitelist of Bedrock-supported prefixes (`context-1m-*`, `effort-*`). Unsupported flags are silently dropped.
 - **Handle `ClientError` in Bedrock streaming path** — non-transient errors like `ValidationException` and `AccessDeniedException` from `_open_bedrock_stream` were not caught in the streaming branch, falling through to the generic `except Exception` handler and returning 500. These now return proper error responses (400, 403).

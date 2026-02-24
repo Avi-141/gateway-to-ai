@@ -424,6 +424,28 @@ def _uninstall_windows() -> int:
 # -- Status ------------------------------------------------------------------
 
 
+def _launchd_pid(label: str) -> int | None:
+    """Return the PID of a launchd service, or None if not running."""
+    result = subprocess.run(
+        ["launchctl", "list", label],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        if '"PID"' in line:
+            # e.g. '"PID" = 12345;'
+            parts = line.split("=")
+            if len(parts) == 2:
+                pid_str = parts[1].strip().rstrip(";").strip()
+                try:
+                    return int(pid_str)
+                except ValueError:
+                    pass
+    return None
+
+
 def get_service_status() -> dict:
     """Return structured service status data for the dashboard API."""
     plat = _detect_platform()
@@ -434,12 +456,7 @@ def get_service_status() -> dict:
         if path.exists():
             result["installed"] = True
             result["service_file"] = str(path)
-            proc = subprocess.run(
-                ["launchctl", "list", _LAUNCHD_LABEL],
-                capture_output=True,
-                text=True,
-            )
-            result["running"] = proc.returncode == 0
+            result["running"] = _launchd_pid(_LAUNCHD_LABEL) is not None
     elif plat == "linux":
         path = _systemd_unit_path()
         if path.exists():
@@ -549,19 +566,11 @@ def _status_macos() -> int:
         return 1
 
     print(f"Service file: {path}")
-    result = subprocess.run(
-        ["launchctl", "list", _LAUNCHD_LABEL],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0:
-        print("Status: running")
-        # Parse PID from launchctl output
-        for line in result.stdout.splitlines():
-            if "PID" in line:
-                print(f"  {line.strip()}")
+    pid = _launchd_pid(_LAUNCHD_LABEL)
+    if pid is not None:
+        print(f"Status: running (PID {pid})")
     else:
-        print("Status: stopped")
+        print("Status: loaded but not running")
     return 0
 
 

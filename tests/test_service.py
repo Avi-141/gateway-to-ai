@@ -11,6 +11,7 @@ from claudegate.service import (
     _generate_plist,
     _generate_systemd_unit,
     _is_running_as_sudo,
+    _launchd_pid,
     _resolve_binary,
     install_service,
     restart_service,
@@ -408,6 +409,33 @@ def test_uninstall_linux_not_installed(tmp_path):
     assert result == 1
 
 
+# -- _launchd_pid helper -----------------------------------------------------
+
+
+def test_launchd_pid_running():
+    with patch("claudegate.service.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='{\n\t"LimitLoadToSessionType" = "Aqua";\n\t"PID" = 42;\n};\n',
+        )
+        assert _launchd_pid("com.claudegate") == 42
+
+
+def test_launchd_pid_not_running():
+    with patch("claudegate.service.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='{\n\t"LimitLoadToSessionType" = "Aqua";\n};\n',
+        )
+        assert _launchd_pid("com.claudegate") is None
+
+
+def test_launchd_pid_not_loaded():
+    with patch("claudegate.service.subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=1, stdout="")
+        assert _launchd_pid("com.claudegate") is None
+
+
 # -- Status (macOS) ----------------------------------------------------------
 
 
@@ -426,6 +454,29 @@ def test_status_macos_running(tmp_path, capsys):
     assert result == 0
     out = capsys.readouterr().out
     assert "running" in out
+    assert "12345" in out
+
+
+def test_status_macos_loaded_not_running(tmp_path, capsys):
+    plist_path = tmp_path / "com.claudegate.plist"
+    plist_path.write_text("<plist/>")
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="macos"),
+        patch("claudegate.service._plist_path", return_value=plist_path),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        # launchctl list returns 0 (service is loaded) but no PID line
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout='{\n\t"LimitLoadToSessionType" = "Aqua";\n};\n',
+            stderr="",
+        )
+        result = service_status()
+
+    assert result == 0
+    out = capsys.readouterr().out
+    assert "not running" in out
 
 
 def test_status_macos_stopped(tmp_path, capsys):
@@ -442,7 +493,7 @@ def test_status_macos_stopped(tmp_path, capsys):
 
     assert result == 0
     out = capsys.readouterr().out
-    assert "stopped" in out
+    assert "not running" in out
 
 
 def test_status_macos_not_installed(tmp_path, capsys):
