@@ -78,6 +78,28 @@ class TestCopilotUsageCache:
         assert result["stale"] is True
         await cache.close()
 
+    async def test_negative_remaining_capped_at_zero(self, httpx_mock, mock_ssl):
+        negative_response = {
+            **GITHUB_USER_RESPONSE,
+            "quota_snapshots": {
+                **GITHUB_USER_RESPONSE["quota_snapshots"],
+                "premium_interactions": {
+                    "entitlement": 1000,
+                    "remaining": -50,
+                    "percent_remaining": 0,
+                    "unlimited": False,
+                    "overage_permitted": True,
+                },
+            },
+        }
+        httpx_mock.add_response(json=negative_response)
+        cache = CopilotUsageCache("fake-token", ttl=60)
+        result = await cache.get()
+        assert result["premium"]["remaining"] == 0
+        assert result["premium"]["used"] == 1000
+        assert result["premium"]["percent_used"] == 100.0
+        await cache.close()
+
     async def test_auth_error_returns_none(self, httpx_mock, mock_ssl):
         httpx_mock.add_response(status_code=401, json={"message": "Bad credentials"})
         cache = CopilotUsageCache("bad-token", ttl=60)
