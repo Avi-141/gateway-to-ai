@@ -24,6 +24,7 @@ from .config import (
     logger,
 )
 from .copilot_translate import has_server_tools, strip_server_tools
+from .copilot_usage import CopilotUsageCache
 from .errors import ContextWindowExceededError, CopilotHttpError, TransientBackendError
 from .models import (
     BEDROCK_MODEL_MAP,
@@ -69,12 +70,13 @@ CREDENTIALS_EXPIRED_MSG = (
 
 # Copilot backend (initialized in lifespan if needed)
 _copilot_backend = None
+_copilot_usage_cache: CopilotUsageCache | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handle startup and shutdown events."""
-    global _copilot_backend
+    global _copilot_backend, _copilot_usage_cache
 
     # Attach ring buffer handler to loggers (must happen here, after
     # uvicorn's dictConfig has run and replaced all handler lists)
@@ -110,6 +112,9 @@ async def lifespan(app: FastAPI):
         _copilot_backend = CopilotBackend(auth, timeout=COPILOT_TIMEOUT)
         logger.info("Copilot backend initialized")
 
+        _copilot_usage_cache = CopilotUsageCache(github_token)
+        logger.info("Copilot usage cache initialized")
+
         models = await _copilot_backend.list_models()
         if models:
             set_copilot_models(models)
@@ -125,6 +130,8 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    if _copilot_usage_cache is not None:
+        await _copilot_usage_cache.close()
     if _copilot_backend is not None:
         await _copilot_backend.close()
     logger.info("Shutting down claudegate")
@@ -1150,12 +1157,20 @@ async def api_status(log_level: str | None = None) -> dict[str, Any]:
     # Recent logs
     logs = log_buffer.get_entries(limit=200, level_filter=log_level)
 
-    return {
+    # Copilot quota (if available)
+    copilot: dict[str, Any] | None = None
+    if _copilot_usage_cache is not None:
+        copilot = await _copilot_usage_cache.get()
+
+    result: dict[str, Any] = {
         "health": health,
         "service": service,
         "models": models_data,
         "logs": logs,
     }
+    if copilot is not None:
+        result["copilot"] = copilot
+    return result
 
 
 @app.post("/api/logs/clear")
