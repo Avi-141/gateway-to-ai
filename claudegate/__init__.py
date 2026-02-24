@@ -37,9 +37,34 @@ def main() -> None:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["install", "uninstall", "status"],
+        choices=["install", "uninstall", "status", "logs"],
         default=None,
         help="service management command (omit to start the server)",
+    )
+    parser.add_argument(
+        "-n",
+        "--lines",
+        type=int,
+        default=100,
+        help="number of log lines to show before following (logs command only)",
+    )
+    parser.add_argument(
+        "-f",
+        "--follow",
+        action="store_true",
+        default=True,
+        help="follow logs (logs command only, default: true)",
+    )
+    parser.add_argument(
+        "--no-follow",
+        action="store_false",
+        dest="follow",
+        help="do not follow logs after showing initial output (logs command only)",
+    )
+    parser.add_argument(
+        "--since",
+        default=None,
+        help="show logs since a given time (logs command only)",
     )
     parser.add_argument(
         "--env",
@@ -54,7 +79,7 @@ def main() -> None:
         _start_server()
         return
 
-    from .service import install_service, service_status, uninstall_service
+    from .service import install_service, service_logs, service_status, uninstall_service
 
     if args.command == "install":
         sys.exit(install_service(capture_env=args.env))
@@ -62,3 +87,5 @@ def main() -> None:
         sys.exit(uninstall_service())
     elif args.command == "status":
         sys.exit(service_status())
+    elif args.command == "logs":
+        sys.exit(service_logs(lines=args.lines, follow=args.follow, since=args.since))

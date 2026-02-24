@@ -266,6 +266,15 @@ This works on all platforms:
 # Check if the service is installed and running
 claudegate status
 
+# Tail service logs (macOS/Linux)
+claudegate logs
+
+# Show 200 lines without following
+claudegate logs -n 200 --no-follow
+
+# Linux only: show logs since a given time
+claudegate logs --since "10m ago"
+
 # Stop and remove the service
 claudegate uninstall
 ```

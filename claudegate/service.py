@@ -2,6 +2,7 @@
 
 import os
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -457,6 +458,70 @@ def service_status() -> int:
 
     _err(f"Unsupported platform: {plat}")
     return 1
+
+
+def service_logs(*, lines: int = 100, follow: bool = True, since: str | None = None) -> int:
+    plat = _detect_platform()
+
+    if lines <= 0:
+        _err("--lines must be a positive integer")
+        return 1
+
+    if plat == "macos":
+        return _logs_macos(lines=lines, follow=follow, since=since)
+    if plat == "linux":
+        return _logs_linux(lines=lines, follow=follow, since=since)
+
+    _err(f"'logs' currently supports macOS and Linux only (detected: {plat})")
+    return 1
+
+
+def _logs_macos(*, lines: int, follow: bool, since: str | None) -> int:
+    path = Path("/tmp/claudegate.log")  # noqa: S108
+    if not path.exists():
+        _err("macOS log file not found: /tmp/claudegate.log")
+        _err("Install/start the service first with 'claudegate install'.")
+        return 1
+
+    tail_cmd = ["tail", "-n", str(lines)]
+    if follow:
+        tail_cmd.append("-f")
+    tail_cmd.append(str(path))
+
+    if since:
+        _step("The --since option is not supported for macOS file logs; showing recent lines instead")
+        print()
+
+    return _stream_command(tail_cmd)
+
+
+def _logs_linux(*, lines: int, follow: bool, since: str | None) -> int:
+    path = _systemd_unit_path()
+    if not path.exists():
+        _err(f"Service file not found: {path}")
+        _err("Install/start the service first with 'claudegate install'.")
+        return 1
+
+    cmd = ["journalctl", "--user", "--unit", _SYSTEMD_UNIT, "--lines", str(lines), "--no-pager"]
+    if since:
+        cmd.extend(["--since", since])
+    if follow:
+        cmd.append("--follow")
+    return _stream_command(cmd)
+
+
+def _stream_command(cmd: list[str]) -> int:
+    _step(f"Running: {shlex.join(cmd)}")
+    print()
+    try:
+        proc = subprocess.run(cmd)
+    except KeyboardInterrupt:
+        print()
+        return 130
+    except FileNotFoundError:
+        _err(f"Required command not found: {cmd[0]}")
+        return 1
+    return proc.returncode
 
 
 def _status_macos() -> int:

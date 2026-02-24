@@ -12,6 +12,7 @@ from claudegate.service import (
     _generate_systemd_unit,
     _resolve_binary,
     install_service,
+    service_logs,
     service_status,
     uninstall_service,
 )
@@ -439,3 +440,120 @@ def test_status_unsupported_platform():
     with patch("claudegate.service._detect_platform", return_value="freebsd"):
         result = service_status()
     assert result == 1
+
+
+# -- Logs --------------------------------------------------------------------
+
+
+def test_logs_linux_follow_with_since(tmp_path):
+    unit_path = tmp_path / "claudegate.service"
+    unit_path.write_text("[Unit]")
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="linux"),
+        patch("claudegate.service._systemd_unit_path", return_value=unit_path),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=0)
+        result = service_logs(lines=200, follow=True, since="10m ago")
+
+    assert result == 0
+    cmd = mock_run.call_args.args[0]
+    assert cmd[:5] == ["journalctl", "--user", "--unit", "claudegate.service", "--lines"]
+    assert "200" in cmd
+    assert "--since" in cmd
+    assert "10m ago" in cmd
+    assert "--follow" in cmd
+
+
+def test_logs_linux_no_follow(tmp_path):
+    unit_path = tmp_path / "claudegate.service"
+    unit_path.write_text("[Unit]")
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="linux"),
+        patch("claudegate.service._systemd_unit_path", return_value=unit_path),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=0)
+        result = service_logs(lines=50, follow=False, since=None)
+
+    assert result == 0
+    cmd = mock_run.call_args.args[0]
+    assert "--follow" not in cmd
+
+
+def test_logs_linux_not_installed(tmp_path):
+    unit_path = tmp_path / "claudegate.service"
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="linux"),
+        patch("claudegate.service._systemd_unit_path", return_value=unit_path),
+    ):
+        result = service_logs(lines=100, follow=True, since=None)
+
+    assert result == 1
+
+
+def test_logs_macos_success(tmp_path):
+    log_path = tmp_path / "claudegate.log"
+    log_path.write_text("line1\n")
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="macos"),
+        patch("claudegate.service.Path") as mock_path_cls,
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        mock_path = MagicMock()
+        mock_path.exists.return_value = True
+        mock_path.__str__.return_value = str(log_path)
+        mock_path_cls.return_value = mock_path
+        mock_run.return_value = MagicMock(returncode=0)
+
+        result = service_logs(lines=25, follow=True, since=None)
+
+    assert result == 0
+    cmd = mock_run.call_args.args[0]
+    assert cmd == ["tail", "-n", "25", "-f", str(mock_path)]
+
+
+def test_logs_macos_not_installed(tmp_path):
+    with (
+        patch("claudegate.service._detect_platform", return_value="macos"),
+        patch("claudegate.service.Path") as mock_path_cls,
+    ):
+        mock_path = MagicMock()
+        mock_path.exists.return_value = False
+        mock_path_cls.return_value = mock_path
+
+        result = service_logs(lines=100, follow=True, since=None)
+
+    assert result == 1
+
+
+def test_logs_invalid_lines():
+    with patch("claudegate.service._detect_platform", return_value="linux"):
+        result = service_logs(lines=0, follow=True, since=None)
+
+    assert result == 1
+
+
+def test_logs_unsupported_platform():
+    with patch("claudegate.service._detect_platform", return_value="windows"):
+        result = service_logs(lines=100, follow=True, since=None)
+
+    assert result == 1
+
+
+def test_logs_keyboard_interrupt_linux(tmp_path):
+    unit_path = tmp_path / "claudegate.service"
+    unit_path.write_text("[Unit]")
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="linux"),
+        patch("claudegate.service._systemd_unit_path", return_value=unit_path),
+        patch("claudegate.service.subprocess.run", side_effect=KeyboardInterrupt),
+    ):
+        result = service_logs(lines=100, follow=True, since=None)
+
+    assert result == 130
