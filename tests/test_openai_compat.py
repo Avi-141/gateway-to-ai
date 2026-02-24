@@ -13,6 +13,7 @@ from claudegate.errors import TransientBackendError
 from tests.conftest import make_client_error
 
 app_module = sys.modules["claudegate.app"]
+_bs = app_module._backend_state
 
 
 # --- _openai_error_response ---
@@ -88,7 +89,7 @@ class TestChatCompletionsRoute:
 
     @pytest.mark.anyio
     async def test_non_streaming_bedrock(self, async_client, mock_bedrock_client, minimal_openai_request, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         mock_response = {
             "body": BytesIO(
                 json.dumps(
@@ -117,7 +118,7 @@ class TestChatCompletionsRoute:
 
     @pytest.mark.anyio
     async def test_streaming_bedrock(self, async_client, mock_bedrock_client, minimal_openai_request, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         minimal_openai_request["stream"] = True
 
         # Build Anthropic SSE chunks
@@ -170,7 +171,7 @@ class TestChatCompletionsRoute:
     @pytest.mark.anyio
     async def test_max_tokens_default(self, async_client, mock_bedrock_client, monkeypatch):
         """max_tokens should default to 4096 when not provided (unlike Anthropic endpoint)."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         mock_response = {
             "body": BytesIO(
                 json.dumps(
@@ -199,7 +200,7 @@ class TestChatCompletionsRoute:
     @pytest.mark.anyio
     async def test_error_format_is_openai(self, async_client, mock_bedrock_client, minimal_openai_request, monkeypatch):
         """Error responses should use OpenAI error format, not Anthropic."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         mock_bedrock_client.invoke_model.side_effect = make_client_error("ExpiredTokenException", "Token expired")
 
         resp = await async_client.post("/v1/chat/completions", json=minimal_openai_request)
@@ -211,7 +212,7 @@ class TestChatCompletionsRoute:
 
     @pytest.mark.anyio
     async def test_throttling_error(self, async_client, mock_bedrock_client, minimal_openai_request, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         mock_bedrock_client.invoke_model.side_effect = make_client_error("ThrottlingException", "Rate limited")
 
         resp = await async_client.post("/v1/chat/completions", json=minimal_openai_request)
@@ -219,7 +220,7 @@ class TestChatCompletionsRoute:
 
     @pytest.mark.anyio
     async def test_read_timeout_error(self, async_client, mock_bedrock_client, minimal_openai_request, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         mock_bedrock_client.invoke_model.side_effect = ReadTimeoutError(endpoint_url="https://bedrock.example.com")
 
         resp = await async_client.post("/v1/chat/completions", json=minimal_openai_request)
@@ -227,7 +228,7 @@ class TestChatCompletionsRoute:
 
     @pytest.mark.anyio
     async def test_unexpected_exception(self, async_client, mock_bedrock_client, minimal_openai_request, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         mock_bedrock_client.invoke_model.side_effect = RuntimeError("kaboom")
 
         resp = await async_client.post("/v1/chat/completions", json=minimal_openai_request)
@@ -245,7 +246,7 @@ class TestChatCompletionsCopilotDirect:
     @pytest.mark.anyio
     async def test_copilot_direct_non_streaming(self, async_client, monkeypatch):
         """Copilot backend should call handle_openai_messages, not handle_messages."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
 
         mock_backend = AsyncMock()
         from fastapi.responses import JSONResponse
@@ -257,7 +258,7 @@ class TestChatCompletionsCopilotDirect:
             "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
         }
         mock_backend.handle_openai_messages.return_value = JSONResponse(content=openai_resp)
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         resp = await async_client.post(
             "/v1/chat/completions",
@@ -273,7 +274,7 @@ class TestChatCompletionsCopilotDirect:
     @pytest.mark.anyio
     async def test_gpt_model_passes_through(self, async_client, monkeypatch):
         """Non-Claude models (GPT, o-series) should work via direct Copilot path."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
 
         mock_backend = AsyncMock()
         from fastapi.responses import JSONResponse
@@ -285,7 +286,7 @@ class TestChatCompletionsCopilotDirect:
             "usage": {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7},
         }
         mock_backend.handle_openai_messages.return_value = JSONResponse(content=openai_resp)
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         resp = await async_client.post(
             "/v1/chat/completions",
@@ -298,8 +299,8 @@ class TestChatCompletionsCopilotDirect:
     @pytest.mark.anyio
     async def test_copilot_not_initialized(self, async_client, monkeypatch):
         """When copilot backend is not initialized, should return auth error."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
-        monkeypatch.setattr(app_module, "_copilot_backend", None)
+        monkeypatch.setattr(_bs, "_primary", "copilot")
+        monkeypatch.setattr(_bs, "_copilot_backend", None)
 
         resp = await async_client.post(
             "/v1/chat/completions",
@@ -310,14 +311,14 @@ class TestChatCompletionsCopilotDirect:
     @pytest.mark.anyio
     async def test_fallback_copilot_primary_429_bedrock_fallback(self, async_client, mock_bedrock_client, monkeypatch):
         """Copilot primary 429 should fall back to Bedrock with translation."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
+        monkeypatch.setattr(_bs, "_fallback", "bedrock")
 
         mock_backend = AsyncMock()
         mock_backend.handle_openai_messages.side_effect = TransientBackendError(
             429, "rate_limit_error", "rate limited", "copilot"
         )
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         # Bedrock fallback succeeds
         mock_response = {
@@ -349,8 +350,8 @@ class TestChatCompletionsCopilotDirect:
     @pytest.mark.anyio
     async def test_fallback_bedrock_primary_429_copilot_fallback(self, async_client, mock_bedrock_client, monkeypatch):
         """Bedrock primary 429 should fall back to Copilot with direct path."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        monkeypatch.setattr(_bs, "_fallback", "copilot")
 
         mock_bedrock_client.invoke_model.side_effect = make_client_error("ThrottlingException", "Rate limited")
 
@@ -364,7 +365,7 @@ class TestChatCompletionsCopilotDirect:
             "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
         }
         mock_backend.handle_openai_messages.return_value = JSONResponse(content=openai_resp)
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         resp = await async_client.post(
             "/v1/chat/completions",
@@ -383,7 +384,7 @@ class TestChatCompletionsCopilotDirect:
 class TestModelsRouteOpenAI:
     @pytest.mark.anyio
     async def test_openai_format(self, async_client, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         resp = await async_client.get("/v1/models")
         assert resp.status_code == 200
         body = resp.json()
@@ -397,7 +398,7 @@ class TestModelsRouteOpenAI:
     @pytest.mark.anyio
     async def test_copilot_includes_non_claude_models(self, async_client, monkeypatch):
         """Copilot backend should include GPT, Gemini, and other models."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
         resp = await async_client.get("/v1/models")
         assert resp.status_code == 200
         body = resp.json()
@@ -412,7 +413,7 @@ class TestModelsRouteOpenAI:
     @pytest.mark.anyio
     async def test_copilot_model_owned_by(self, async_client, monkeypatch):
         """Models should have correct owned_by based on provider."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
         resp = await async_client.get("/v1/models")
         body = resp.json()
         model_map = {m["id"]: m["owned_by"] for m in body["data"]}

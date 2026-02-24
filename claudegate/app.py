@@ -12,6 +12,7 @@ from botocore.exceptions import ClientError, ReadTimeoutError
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
+from .backend_state import BackendState, parse_backend_string
 from .bedrock_client import get_bedrock_client, reset_bedrock_client
 from .config import (
     BACKEND_TYPE,
@@ -68,61 +69,63 @@ CREDENTIALS_EXPIRED_MSG = (
     "AWS credentials have expired. Please re-authenticate in your terminal to refresh your credentials, then retry."
 )
 
-# Copilot backend (initialized in lifespan if needed)
-_copilot_backend = None
-_copilot_usage_cache: CopilotUsageCache | None = None
+# Backend state (initialized in lifespan)
+_backend_state = BackendState(BACKEND_TYPE, FALLBACK_BACKEND)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handle startup and shutdown events."""
-    global _copilot_backend, _copilot_usage_cache
-
     # Attach ring buffer handler to loggers (must happen here, after
     # uvicorn's dictConfig has run and replaced all handler lists)
     from .log_buffer import attach_log_buffer
 
     attach_log_buffer()
 
+    primary = _backend_state.primary
+    fallback = _backend_state.fallback
+
     # Validate fallback config
-    if FALLBACK_BACKEND:
-        if FALLBACK_BACKEND == BACKEND_TYPE:
-            raise ValueError(f"FALLBACK_BACKEND cannot be the same as BACKEND_TYPE: {BACKEND_TYPE}")
+    if fallback:
+        if fallback == primary:
+            raise ValueError(f"FALLBACK_BACKEND cannot be the same as BACKEND_TYPE: {primary}")
         valid = {"bedrock", "copilot"}
-        if FALLBACK_BACKEND not in valid:
-            raise ValueError(f"Invalid FALLBACK_BACKEND: {FALLBACK_BACKEND}, must be one of {valid}")
+        if fallback not in valid:
+            raise ValueError(f"Invalid FALLBACK_BACKEND: {fallback}, must be one of {valid}")
 
     # Startup
     logger.info(f"Starting claudegate v{__version__}")
     logger.info(f"Host: {os.environ.get('CLAUDEGATE_HOST', DEFAULT_HOST)}")
     logger.info(f"Port: {os.environ.get('CLAUDEGATE_PORT', DEFAULT_PORT)}")
-    logger.info(f"Backend: {BACKEND_TYPE}")
-    if FALLBACK_BACKEND:
-        logger.info(f"Fallback: {FALLBACK_BACKEND}")
+    logger.info(f"Backend: {primary}")
+    if fallback:
+        logger.info(f"Fallback: {fallback}")
     logger.info(f"Log Level: {LOG_LEVEL}")
 
     # Initialize copilot if it's primary or fallback
-    needs_copilot = BACKEND_TYPE == "copilot" or FALLBACK_BACKEND == "copilot"
+    needs_copilot = primary == "copilot" or fallback == "copilot"
     if needs_copilot:
         from .copilot_auth import CopilotAuth, get_github_token
         from .copilot_client import CopilotBackend
 
         github_token = get_github_token()
         auth = CopilotAuth(github_token)
-        _copilot_backend = CopilotBackend(auth, timeout=COPILOT_TIMEOUT)
+        copilot_backend = CopilotBackend(auth, timeout=COPILOT_TIMEOUT)
         logger.info("Copilot backend initialized")
 
-        _copilot_usage_cache = CopilotUsageCache(github_token)
+        copilot_usage_cache = CopilotUsageCache(github_token)
         logger.info("Copilot usage cache initialized")
 
-        models = await _copilot_backend.list_models()
+        _backend_state.set_copilot_backend(copilot_backend, copilot_usage_cache)
+
+        models = await copilot_backend.list_models()
         if models:
             set_copilot_models(models)
             logger.info(f"Loaded {len(models)} models from Copilot API")
         else:
             logger.warning("No models fetched from Copilot API, using hardcoded maps")
 
-    needs_bedrock = BACKEND_TYPE == "bedrock" or FALLBACK_BACKEND == "bedrock"
+    needs_bedrock = primary == "bedrock" or fallback == "bedrock"
     if needs_bedrock:
         logger.info(f"AWS Region: {os.environ.get('AWS_REGION', 'us-west-2')}")
         logger.info(f"Bedrock Region Prefix: {BEDROCK_REGION_PREFIX or '(none)'}")
@@ -130,10 +133,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
-    if _copilot_usage_cache is not None:
-        await _copilot_usage_cache.close()
-    if _copilot_backend is not None:
-        await _copilot_backend.close()
+    await _backend_state.close()
     logger.info("Shutting down claudegate")
 
 
@@ -427,7 +427,8 @@ async def _call_copilot(
     Raises TransientBackendError for fallback-eligible errors.
     Raises CopilotHttpError, RuntimeError, httpx.TimeoutException for non-fallback errors.
     """
-    if _copilot_backend is None:
+    copilot = _backend_state.copilot_backend
+    if copilot is None:
         raise RuntimeError("Copilot backend not initialized")
     copilot_model, anthropic_model = get_copilot_model(body["model"])
     log_prefix = f"[{request_id}] " if request_id else ""
@@ -435,10 +436,10 @@ async def _call_copilot(
     client_context_window = _detect_client_context_window(request, copilot_model)
     if model_requires_responses_api(copilot_model):
         logger.info(f"{log_prefix}Routing to Responses API for {copilot_model}")
-        return await _copilot_backend.handle_responses_messages(
+        return await copilot.handle_responses_messages(
             body, request_id, stream, copilot_model, anthropic_model, client_context_window
         )
-    return await _copilot_backend.handle_messages(
+    return await copilot.handle_messages(
         body, request_id, stream, copilot_model, anthropic_model, client_context_window
     )
 
@@ -449,7 +450,8 @@ async def _call_copilot_openai(body: dict[str, Any], request_id: str, stream: bo
     Raises TransientBackendError for fallback-eligible errors.
     Raises CopilotHttpError, RuntimeError, httpx.TimeoutException for non-fallback errors.
     """
-    if _copilot_backend is None:
+    copilot = _backend_state.copilot_backend
+    if copilot is None:
         raise RuntimeError("Copilot backend not initialized")
     copilot_model = get_copilot_openai_model(body["model"])
     log_prefix = f"[{request_id}] " if request_id else ""
@@ -458,8 +460,8 @@ async def _call_copilot_openai(body: dict[str, Any], request_id: str, stream: bo
     )
     if model_requires_responses_api(copilot_model):
         logger.info(f"{log_prefix}Routing to Responses API for {copilot_model}")
-        return await _copilot_backend.handle_openai_responses_messages(body, request_id, stream, copilot_model)
-    return await _copilot_backend.handle_openai_messages(body, request_id, stream, copilot_model)
+        return await copilot.handle_openai_responses_messages(body, request_id, stream, copilot_model)
+    return await copilot.handle_openai_messages(body, request_id, stream, copilot_model)
 
 
 async def _call_bedrock_for_openai(
@@ -520,7 +522,8 @@ async def _call_copilot_responses(
 
     Routes: if model supports /responses -> passthrough, else -> via chat.
     """
-    if _copilot_backend is None:
+    copilot = _backend_state.copilot_backend
+    if copilot is None:
         raise RuntimeError("Copilot backend not initialized")
 
     model = body.get("model", "")
@@ -532,10 +535,10 @@ async def _call_copilot_responses(
 
     if model_supports_responses_api(copilot_model):
         logger.info(f"{log_prefix}Responses passthrough to {copilot_model}")
-        return await _copilot_backend.handle_responses_passthrough(body, request_id, stream)
+        return await copilot.handle_responses_passthrough(body, request_id, stream)
     else:
         logger.info(f"{log_prefix}Responses via chat for {copilot_model}")
-        return await _copilot_backend.handle_responses_via_chat(body, request_id, stream, copilot_model)
+        return await copilot.handle_responses_via_chat(body, request_id, stream, copilot_model)
 
 
 async def _call_bedrock_for_responses(
@@ -615,7 +618,7 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
     # Bedrock only supports Claude models, so non-Claude models need Copilot.
     requested_model = body["model"]
     if not is_claude_model(requested_model):
-        copilot_available = BACKEND_TYPE == "copilot" or FALLBACK_BACKEND == "copilot"
+        copilot_available = _backend_state.primary == "copilot" or _backend_state.fallback == "copilot"
         if not copilot_available:
             return _error_response(
                 400,
@@ -642,8 +645,8 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
     # Route requests with server-side tools (e.g. web_search) appropriately.
     # Copilot doesn't support server-side tools, so route to Bedrock if available,
     # or strip them from the request if Copilot-only.
-    if has_server_tools(body) and BACKEND_TYPE == "copilot":
-        if FALLBACK_BACKEND == "bedrock":
+    if has_server_tools(body) and _backend_state.primary == "copilot":
+        if _backend_state.fallback == "bedrock":
             logger.info(f"{log_prefix}Server-side tools detected, routing to Bedrock fallback")
             try:
                 return await _call_bedrock(body, request, request_id, stream)
@@ -668,31 +671,34 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
             return lambda: _call_copilot(body, request, request_id, stream)
         return lambda: _call_bedrock(body, request, request_id, stream)
 
-    primary_call = _get_backend_caller(BACKEND_TYPE)
+    # Capture current backend config for this request
+    current_primary = _backend_state.primary
+    current_fallback = _backend_state.fallback
+    primary_call = _get_backend_caller(current_primary)
 
     try:
         return await primary_call()
     except ContextWindowExceededError as e:
         max_tokens = body.get("max_tokens", 0)
-        if FALLBACK_BACKEND:
+        if current_fallback:
             logger.warning(
                 f"{log_prefix}Context window exceeded on {e.backend} "
-                f"({e.prompt_tokens} > {e.context_limit}), falling back to {FALLBACK_BACKEND}"
+                f"({e.prompt_tokens} > {e.context_limit}), falling back to {current_fallback}"
             )
-            fallback_call = _get_backend_caller(FALLBACK_BACKEND)
+            fallback_call = _get_backend_caller(current_fallback)
             try:
                 return await fallback_call()
             except ContextWindowExceededError:
-                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) also exceeded context window")
+                logger.error(f"{log_prefix}Fallback ({current_fallback}) also exceeded context window")
                 return _context_window_error_response(e, max_tokens)
             except TransientBackendError as fallback_err:
-                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) failed with {fallback_err.status_code}")
+                logger.error(f"{log_prefix}Fallback ({current_fallback}) failed with {fallback_err.status_code}")
                 return _context_window_error_response(e, max_tokens)
             except CopilotHttpError as fallback_err:
-                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) HTTP error: {fallback_err}")
+                logger.error(f"{log_prefix}Fallback ({current_fallback}) HTTP error: {fallback_err}")
                 return _context_window_error_response(e, max_tokens)
             except RuntimeError as fallback_err:
-                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) auth error: {fallback_err}")
+                logger.error(f"{log_prefix}Fallback ({current_fallback}) auth error: {fallback_err}")
                 return _context_window_error_response(e, max_tokens)
         else:
             logger.error(
@@ -701,26 +707,26 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
             )
             return _context_window_error_response(e, max_tokens)
     except TransientBackendError as e:
-        if not FALLBACK_BACKEND:
+        if not current_fallback:
             logger.error(f"{log_prefix}{e.backend} transient error {e.status_code}, no fallback configured")
             return _error_response(e.status_code, e.error_type, e.message)
 
         logger.warning(
-            f"{log_prefix}Primary ({BACKEND_TYPE}) failed with {e.status_code}, falling back to {FALLBACK_BACKEND}"
+            f"{log_prefix}Primary ({current_primary}) failed with {e.status_code}, falling back to {current_fallback}"
         )
 
-        fallback_call = _get_backend_caller(FALLBACK_BACKEND)
+        fallback_call = _get_backend_caller(current_fallback)
         try:
             return await fallback_call()
         except TransientBackendError as fallback_err:
-            logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) also failed with {fallback_err.status_code}")
+            logger.error(f"{log_prefix}Fallback ({current_fallback}) also failed with {fallback_err.status_code}")
             return _error_response(fallback_err.status_code, fallback_err.error_type, fallback_err.message)
         except CopilotHttpError as fallback_err:
             return _error_response(fallback_err.status_code, "api_error", fallback_err.detail)
         except RuntimeError as fallback_err:
             return _error_response(401, "authentication_error", str(fallback_err))
         except Exception as fallback_err:
-            logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) unexpected error: {fallback_err}")
+            logger.error(f"{log_prefix}Fallback ({current_fallback}) unexpected error: {fallback_err}")
             return _error_response(500, "api_error", str(fallback_err))
     except CopilotHttpError as e:
         return _error_response(e.status_code, "api_error", e.detail)
@@ -769,31 +775,34 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
             return lambda: _call_copilot_openai(body, request_id, stream)
         return lambda: _call_bedrock_for_openai(body, request, request_id, stream)
 
-    primary_call = _get_backend_caller(BACKEND_TYPE)
+    # Capture current backend config for this request
+    current_primary = _backend_state.primary
+    current_fallback = _backend_state.fallback
+    primary_call = _get_backend_caller(current_primary)
 
     try:
         return await primary_call()
     except ContextWindowExceededError as e:
         _ctx_msg = _openai_context_window_message(e)
-        if FALLBACK_BACKEND:
+        if current_fallback:
             logger.warning(
                 f"{log_prefix}Context window exceeded on {e.backend} "
-                f"({e.prompt_tokens} > {e.context_limit}), falling back to {FALLBACK_BACKEND}"
+                f"({e.prompt_tokens} > {e.context_limit}), falling back to {current_fallback}"
             )
-            fallback_call = _get_backend_caller(FALLBACK_BACKEND)
+            fallback_call = _get_backend_caller(current_fallback)
             try:
                 return await fallback_call()
             except ContextWindowExceededError:
-                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) also exceeded context window")
+                logger.error(f"{log_prefix}Fallback ({current_fallback}) also exceeded context window")
                 return _openai_error_response(400, _ctx_msg)
             except TransientBackendError as fallback_err:
-                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) failed with {fallback_err.status_code}")
+                logger.error(f"{log_prefix}Fallback ({current_fallback}) failed with {fallback_err.status_code}")
                 return _openai_error_response(400, _ctx_msg)
             except CopilotHttpError as fallback_err:
-                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) HTTP error: {fallback_err}")
+                logger.error(f"{log_prefix}Fallback ({current_fallback}) HTTP error: {fallback_err}")
                 return _openai_error_response(400, _ctx_msg)
             except RuntimeError as fallback_err:
-                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) auth error: {fallback_err}")
+                logger.error(f"{log_prefix}Fallback ({current_fallback}) auth error: {fallback_err}")
                 return _openai_error_response(400, _ctx_msg)
         else:
             logger.error(
@@ -802,26 +811,26 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
             )
             return _openai_error_response(400, _ctx_msg)
     except TransientBackendError as e:
-        if not FALLBACK_BACKEND:
+        if not current_fallback:
             logger.error(f"{log_prefix}{e.backend} transient error {e.status_code}, no fallback configured")
             return _openai_error_response(e.status_code, e.message, "server_error")
 
         logger.warning(
-            f"{log_prefix}Primary ({BACKEND_TYPE}) failed with {e.status_code}, falling back to {FALLBACK_BACKEND}"
+            f"{log_prefix}Primary ({current_primary}) failed with {e.status_code}, falling back to {current_fallback}"
         )
 
-        fallback_call = _get_backend_caller(FALLBACK_BACKEND)
+        fallback_call = _get_backend_caller(current_fallback)
         try:
             return await fallback_call()
         except TransientBackendError as fallback_err:
-            logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) also failed with {fallback_err.status_code}")
+            logger.error(f"{log_prefix}Fallback ({current_fallback}) also failed with {fallback_err.status_code}")
             return _openai_error_response(fallback_err.status_code, fallback_err.message, "server_error")
         except CopilotHttpError as fallback_err:
             return _openai_error_response(fallback_err.status_code, fallback_err.detail, "server_error")
         except RuntimeError as fallback_err:
             return _openai_error_response(401, str(fallback_err), "authentication_error")
         except Exception as fallback_err:
-            logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) unexpected error: {fallback_err}")
+            logger.error(f"{log_prefix}Fallback ({current_fallback}) unexpected error: {fallback_err}")
             return _openai_error_response(500, str(fallback_err), "server_error")
     except CopilotHttpError as e:
         return _openai_error_response(e.status_code, e.detail, "server_error")
@@ -864,31 +873,34 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
             return lambda: _call_copilot_responses(body, request_id, stream)
         return lambda: _call_bedrock_for_responses(body, request, request_id, stream)
 
-    primary_call = _get_backend_caller(BACKEND_TYPE)
+    # Capture current backend config for this request
+    current_primary = _backend_state.primary
+    current_fallback = _backend_state.fallback
+    primary_call = _get_backend_caller(current_primary)
 
     try:
         return await primary_call()
     except ContextWindowExceededError as e:
         _ctx_msg = _openai_context_window_message(e)
-        if FALLBACK_BACKEND:
+        if current_fallback:
             logger.warning(
                 f"{log_prefix}Context window exceeded on {e.backend} "
-                f"({e.prompt_tokens} > {e.context_limit}), falling back to {FALLBACK_BACKEND}"
+                f"({e.prompt_tokens} > {e.context_limit}), falling back to {current_fallback}"
             )
-            fallback_call = _get_backend_caller(FALLBACK_BACKEND)
+            fallback_call = _get_backend_caller(current_fallback)
             try:
                 return await fallback_call()
             except ContextWindowExceededError:
-                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) also exceeded context window")
+                logger.error(f"{log_prefix}Fallback ({current_fallback}) also exceeded context window")
                 return _openai_error_response(400, _ctx_msg)
             except TransientBackendError as fallback_err:
-                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) failed with {fallback_err.status_code}")
+                logger.error(f"{log_prefix}Fallback ({current_fallback}) failed with {fallback_err.status_code}")
                 return _openai_error_response(400, _ctx_msg)
             except CopilotHttpError as fallback_err:
-                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) HTTP error: {fallback_err}")
+                logger.error(f"{log_prefix}Fallback ({current_fallback}) HTTP error: {fallback_err}")
                 return _openai_error_response(400, _ctx_msg)
             except RuntimeError as fallback_err:
-                logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) auth error: {fallback_err}")
+                logger.error(f"{log_prefix}Fallback ({current_fallback}) auth error: {fallback_err}")
                 return _openai_error_response(400, _ctx_msg)
         else:
             logger.error(
@@ -897,26 +909,26 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
             )
             return _openai_error_response(400, _ctx_msg)
     except TransientBackendError as e:
-        if not FALLBACK_BACKEND:
+        if not current_fallback:
             logger.error(f"{log_prefix}{e.backend} transient error {e.status_code}, no fallback configured")
             return _openai_error_response(e.status_code, e.message, "server_error")
 
         logger.warning(
-            f"{log_prefix}Primary ({BACKEND_TYPE}) failed with {e.status_code}, falling back to {FALLBACK_BACKEND}"
+            f"{log_prefix}Primary ({current_primary}) failed with {e.status_code}, falling back to {current_fallback}"
         )
 
-        fallback_call = _get_backend_caller(FALLBACK_BACKEND)
+        fallback_call = _get_backend_caller(current_fallback)
         try:
             return await fallback_call()
         except TransientBackendError as fallback_err:
-            logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) also failed with {fallback_err.status_code}")
+            logger.error(f"{log_prefix}Fallback ({current_fallback}) also failed with {fallback_err.status_code}")
             return _openai_error_response(fallback_err.status_code, fallback_err.message, "server_error")
         except CopilotHttpError as fallback_err:
             return _openai_error_response(fallback_err.status_code, fallback_err.detail, "server_error")
         except RuntimeError as fallback_err:
             return _openai_error_response(401, str(fallback_err), "authentication_error")
         except Exception as fallback_err:
-            logger.error(f"{log_prefix}Fallback ({FALLBACK_BACKEND}) unexpected error: {fallback_err}")
+            logger.error(f"{log_prefix}Fallback ({current_fallback}) unexpected error: {fallback_err}")
             return _openai_error_response(500, str(fallback_err), "server_error")
     except CopilotHttpError as e:
         return _openai_error_response(e.status_code, e.detail, "server_error")
@@ -931,12 +943,12 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
 @app.get("/health")
 async def health(check_bedrock: bool = False, check_copilot: bool = False) -> dict[str, Any]:
     """Health check endpoint. Use ?check_bedrock=true or ?check_copilot=true for deep check."""
-    result: dict[str, Any] = {"status": "ok", "version": __version__, "backend": BACKEND_TYPE}
+    result: dict[str, Any] = {"status": "ok", "version": __version__, "backend": _backend_state.primary}
 
-    if FALLBACK_BACKEND:
-        result["fallback"] = FALLBACK_BACKEND
+    if _backend_state.fallback:
+        result["fallback"] = _backend_state.fallback
 
-    if check_bedrock and BACKEND_TYPE == "bedrock":
+    if check_bedrock and _backend_state.primary == "bedrock":
         try:
             bedrock = get_bedrock_client()
             bedrock.invoke_model(
@@ -954,9 +966,9 @@ async def health(check_bedrock: bool = False, check_copilot: bool = False) -> di
             result["status"] = "degraded"
             result["bedrock"] = f"error: {e}"
 
-    if check_copilot and BACKEND_TYPE == "copilot" and _copilot_backend is not None:
+    if check_copilot and _backend_state.primary == "copilot" and _backend_state.copilot_backend is not None:
         try:
-            token = await _copilot_backend._auth.get_token()
+            token = await _backend_state.copilot_backend._auth.get_token()
             result["copilot"] = "ok" if token else "no token"
         except Exception as e:
             result["status"] = "degraded"
@@ -993,7 +1005,7 @@ async def list_models() -> dict[str, Any]:
     When Copilot is the backend, uses dynamically fetched models if available,
     otherwise falls back to hardcoded maps.
     """
-    if BACKEND_TYPE == "copilot":
+    if _backend_state.primary == "copilot":
         dynamic_models = get_available_copilot_models()
         if dynamic_models:
             models = []
@@ -1039,7 +1051,7 @@ async def list_models() -> dict[str, Any]:
             for model_id in BEDROCK_MODEL_MAP
         ]
         # When Copilot is a fallback, also include non-Claude models from Copilot
-        if FALLBACK_BACKEND == "copilot":
+        if _backend_state.fallback == "copilot":
             bedrock_ids = set(BEDROCK_MODEL_MAP.keys())
             dynamic_models = get_available_copilot_models()
             if dynamic_models:
@@ -1099,7 +1111,7 @@ async def count_tokens(request: Request) -> dict[str, int]:
         total_tokens += len(tokenizer.encode(json.dumps(body["tools"])))
 
     # Scale token count for Copilot backend
-    if BACKEND_TYPE == "copilot" and "model" in body:
+    if _backend_state.primary == "copilot" and "model" in body:
         copilot_model, _ = get_copilot_model(body["model"])
         client_context_window = _detect_client_context_window(request, copilot_model)
         copilot_limit = get_copilot_context_limit(copilot_model)
@@ -1113,6 +1125,35 @@ async def count_tokens(request: Request) -> dict[str, int]:
 async def event_logging() -> dict[str, str]:
     """Stub for telemetry - just acknowledge."""
     return {"status": "ok"}
+
+
+@app.get("/api/backend")
+async def get_backend() -> dict[str, str]:
+    """Return current backend configuration."""
+    return {"primary": _backend_state.primary, "fallback": _backend_state.fallback}
+
+
+@app.post("/api/backend")
+async def set_backend(request: Request) -> JSONResponse:
+    """Switch backend at runtime.
+
+    Body: {"backend": "copilot"} or {"backend": "copilot,bedrock"}
+    """
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON"})
+
+    backend_value = body.get("backend", "")
+    if not backend_value:
+        return JSONResponse(status_code=400, content={"error": "Missing required field: backend"})
+
+    try:
+        primary, fallback = parse_backend_string(backend_value)
+        result = await _backend_state.switch(primary, fallback)
+        return JSONResponse(content=result)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1133,9 +1174,9 @@ async def api_status(log_level: str | None = None) -> dict[str, Any]:
     from .service import get_service_status
 
     # Health info (reuse logic from /health)
-    health: dict[str, Any] = {"status": "ok", "version": __version__, "backend": BACKEND_TYPE}
-    if FALLBACK_BACKEND:
-        health["fallback"] = FALLBACK_BACKEND
+    health: dict[str, Any] = {"status": "ok", "version": __version__, "backend": _backend_state.primary}
+    if _backend_state.fallback:
+        health["fallback"] = _backend_state.fallback
 
     # Models (reuse logic from /v1/models), deduplicated and sorted by owner then model ID
     models_response = await list_models()
@@ -1159,8 +1200,8 @@ async def api_status(log_level: str | None = None) -> dict[str, Any]:
 
     # Copilot quota (if available)
     copilot: dict[str, Any] | None = None
-    if _copilot_usage_cache is not None:
-        copilot = await _copilot_usage_cache.get()
+    if _backend_state.copilot_usage_cache is not None:
+        copilot = await _backend_state.copilot_usage_cache.get()
 
     result: dict[str, Any] = {
         "health": health,

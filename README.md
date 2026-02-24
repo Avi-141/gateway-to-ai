@@ -116,6 +116,8 @@ export CLAUDEGATE_BACKEND="copilot,bedrock"
 export CLAUDEGATE_BACKEND="bedrock,copilot"
 ```
 
+You can also switch backends at runtime without restarting — see [Runtime Backend Switching](#runtime-backend-switching).
+
 ### Copilot Configuration
 
 ```bash
@@ -236,6 +238,39 @@ claudegate logs --since "10m ago"
 claudegate uninstall
 ```
 
+### Runtime Backend Switching
+
+Switch backends at runtime without restarting:
+
+**CLI:**
+```bash
+# Show current backend
+claudegate backend
+
+# Switch to bedrock
+claudegate backend bedrock
+
+# Switch to copilot with bedrock fallback
+claudegate backend copilot,bedrock
+```
+
+**API:**
+```bash
+# Get current backend
+curl http://localhost:8080/api/backend
+
+# Switch backend
+curl -X POST http://localhost:8080/api/backend \
+  -H "Content-Type: application/json" \
+  -d '{"backend": "copilot,bedrock"}'
+```
+
+**Dashboard:** Use the backend dropdown in the Status panel at `http://localhost:8080`.
+
+**Claude Code:** Install the claudegate plugin (see below) and use `/backend copilot` or `/backend bedrock,copilot`.
+
+Runtime changes are ephemeral — they don't survive restarts. The `CLAUDEGATE_BACKEND` env var remains the startup source of truth. If switching to Copilot and it wasn't initialized at startup, the OAuth device flow will run automatically.
+
 ### Configure Open WebUI
 
 Point Open WebUI at claudegate as an OpenAI-compatible backend:
@@ -257,16 +292,17 @@ export ANTHROPIC_API_KEY="sk-ant-dummy-key"  # Any value starting with sk-ant-
 export ANTHROPIC_BASE_URL="http://localhost:8080"
 ```
 
-#### /models Plugin
+#### Claude Code Plugin
 
-Install the `/models` plugin to list available models and their token limits directly in Claude Code:
+Install the claudegate plugin to list models and switch backends directly in Claude Code:
 
 ```
 /plugin marketplace add https://github.com/Avi-141/gateway-to-ai.git
 /plugin install models@claudegate
+/plugin install backend@claudegate
 ```
 
-Then type `/models` to see a table of available models.
+Then type `/models` to see available models or `/backend copilot` to switch backends.
 
 ### Configure Codex CLI
 
@@ -322,6 +358,8 @@ curl -X POST http://localhost:8080/v1/responses \
 |----------|--------|-------------|
 | `/` | GET | Web dashboard with live status, models, and log viewer |
 | `/api/status` | GET | Combined JSON status (health, service, models, logs) |
+| `/api/backend` | GET | Return current backend configuration |
+| `/api/backend` | POST | Switch backend at runtime (body: `{"backend": "copilot,bedrock"}`) |
 | `/v1/messages` | POST | Anthropic Messages API endpoint |
 | `/v1/chat/completions` | POST | OpenAI-compatible Chat Completions endpoint |
 | `/v1/responses` | POST | OpenAI-compatible Responses API endpoint |

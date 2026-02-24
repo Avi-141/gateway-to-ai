@@ -117,6 +117,27 @@ DASHBOARD_HTML = """\
     border-radius: 4px;
     transition: width 0.3s;
   }
+  .backend-switch { display: flex; gap: 6px; align-items: center; margin-top: 6px; font-size: 0.85rem; }
+  .backend-switch select {
+    font-size: 0.8rem;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 3px 6px;
+    max-width: 200px;
+  }
+  .backend-switch button {
+    font-size: 0.8rem;
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    padding: 4px 12px;
+    cursor: pointer;
+  }
+  .backend-switch button:hover { opacity: 0.85; }
+  .backend-switch button:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -126,6 +147,16 @@ DASHBOARD_HTML = """\
   <div class="panel" id="status-panel">
     <h2>Status</h2>
     <div id="status-content"><span class="label">Loading...</span></div>
+    <div class="backend-switch">
+      <span style="color:var(--text-dim);white-space:nowrap;margin-right:auto">Switch backend</span>
+      <select id="backend-select">
+        <option value="copilot">copilot</option>
+        <option value="bedrock">bedrock</option>
+        <option value="copilot,bedrock">copilot + bedrock fallback</option>
+        <option value="bedrock,copilot">bedrock + copilot fallback</option>
+      </select>
+      <button id="backend-apply">Apply</button>
+    </div>
   </div>
   <div class="panel" id="service-panel">
     <h2>Service</h2>
@@ -167,6 +198,8 @@ DASHBOARD_HTML = """\
   const levelSelect = document.getElementById('log-level');
   const autoScroll = document.getElementById('auto-scroll');
   const errorBanner = document.getElementById('error-banner');
+  const backendSelect = document.getElementById('backend-select');
+  const backendApply = document.getElementById('backend-apply');
 
   document.getElementById('clear-logs').addEventListener('click', function() {
     fetch('/api/logs/clear', { method: 'POST' })
@@ -176,6 +209,31 @@ DASHBOARD_HTML = """\
       })
       .catch(function(err) {
         errorBanner.textContent = 'Failed to clear logs: ' + err.message;
+        errorBanner.style.display = 'block';
+      });
+  });
+
+  backendApply.addEventListener('click', function() {
+    backendApply.disabled = true;
+    fetch('/api/backend', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ backend: backendSelect.value })
+    })
+      .then(function(r) { return r.json().then(function(d) { return { ok: r.ok, data: d }; }); })
+      .then(function(res) {
+        backendApply.disabled = false;
+        if (!res.ok) {
+          errorBanner.textContent = 'Backend switch failed: ' + (res.data.error || 'unknown error');
+          errorBanner.style.display = 'block';
+        } else {
+          errorBanner.style.display = 'none';
+          fetchStatus();
+        }
+      })
+      .catch(function(err) {
+        backendApply.disabled = false;
+        errorBanner.textContent = 'Backend switch failed: ' + err.message;
         errorBanner.style.display = 'block';
       });
   });
@@ -196,6 +254,10 @@ DASHBOARD_HTML = """\
       kv('Status', badge(d.health.status === 'ok', 'healthy', d.health.status)) +
       kv('Backend', d.health.backend || '?') +
       kv('Fallback', d.health.fallback || 'none');
+    // Sync dropdown with current backend
+    var current = d.health.backend || '';
+    if (d.health.fallback) current += ',' + d.health.fallback;
+    backendSelect.value = current;
   }
 
   function renderService(d) {

@@ -37,9 +37,15 @@ def main() -> None:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["install", "uninstall", "start", "stop", "restart", "status", "logs"],
+        choices=["install", "uninstall", "start", "stop", "restart", "status", "logs", "backend"],
         default=None,
         help="service management command (omit to start the server)",
+    )
+    parser.add_argument(
+        "args",
+        nargs="*",
+        default=[],
+        help="positional arguments for the command (e.g. backend value)",
     )
     parser.add_argument(
         "-n",
@@ -103,3 +109,8 @@ def main() -> None:
         sys.exit(service_status())
     elif args.command == "logs":
         sys.exit(service_logs(lines=args.lines, follow=args.follow, since=args.since))
+    elif args.command == "backend":
+        from .cli_backend import backend_command
+
+        backend_value = args.args[0] if args.args else None
+        sys.exit(backend_command(backend_value))

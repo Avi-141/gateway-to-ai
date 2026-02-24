@@ -36,6 +36,22 @@ def reset_bedrock_singleton():
     reset_bedrock_client()
 
 
+@pytest.fixture(autouse=True)
+def reset_backend_state():
+    """Reset _backend_state to default values between tests."""
+    from claudegate.app import _backend_state
+
+    _backend_state._primary = "copilot"
+    _backend_state._fallback = ""
+    _backend_state._copilot_backend = None
+    _backend_state._copilot_usage_cache = None
+    yield
+    _backend_state._primary = "copilot"
+    _backend_state._fallback = ""
+    _backend_state._copilot_backend = None
+    _backend_state._copilot_usage_cache = None
+
+
 @pytest.fixture
 def async_client():
     """HTTPX async client wired to the FastAPI app (no lifespan)."""

@@ -1,6 +1,7 @@
 """Tests for cross-backend fallback logic."""
 
 import json
+import sys
 from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,6 +10,9 @@ import pytest
 
 from claudegate.app import app
 from claudegate.errors import ContextWindowExceededError, TransientBackendError
+
+app_module = sys.modules["claudegate.app"]
+_bs = app_module._backend_state
 
 
 @pytest.fixture
@@ -68,10 +72,10 @@ class TestFallbackNonStreaming:
         mock_copilot = _mock_copilot_backend_success()
 
         with (
-            patch("claudegate.app.BACKEND_TYPE", "bedrock"),
-            patch("claudegate.app.FALLBACK_BACKEND", "copilot"),
+            patch.object(_bs, "_primary", "bedrock"),
+            patch.object(_bs, "_fallback", "copilot"),
             patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
-            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch.object(_bs, "_copilot_backend", mock_copilot),
         ):
             resp = await fallback_client.post("/v1/messages", json=minimal_body)
 
@@ -92,10 +96,10 @@ class TestFallbackNonStreaming:
         mock_copilot.close = AsyncMock()
 
         with (
-            patch("claudegate.app.BACKEND_TYPE", "bedrock"),
-            patch("claudegate.app.FALLBACK_BACKEND", "copilot"),
+            patch.object(_bs, "_primary", "bedrock"),
+            patch.object(_bs, "_fallback", "copilot"),
             patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
-            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch.object(_bs, "_copilot_backend", mock_copilot),
         ):
             resp = await fallback_client.post("/v1/messages", json=minimal_body)
 
@@ -110,8 +114,8 @@ class TestFallbackNonStreaming:
         mock_bedrock.invoke_model.side_effect = make_client_error("ExpiredTokenException", "expired")
 
         with (
-            patch("claudegate.app.BACKEND_TYPE", "bedrock"),
-            patch("claudegate.app.FALLBACK_BACKEND", "copilot"),
+            patch.object(_bs, "_primary", "bedrock"),
+            patch.object(_bs, "_fallback", "copilot"),
             patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
             patch("claudegate.app.reset_bedrock_client"),
         ):
@@ -127,8 +131,8 @@ class TestFallbackNonStreaming:
         mock_bedrock.invoke_model.side_effect = make_client_error("ThrottlingException", "rate limited")
 
         with (
-            patch("claudegate.app.BACKEND_TYPE", "bedrock"),
-            patch("claudegate.app.FALLBACK_BACKEND", ""),
+            patch.object(_bs, "_primary", "bedrock"),
+            patch.object(_bs, "_fallback", ""),
             patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
         ):
             resp = await fallback_client.post("/v1/messages", json=minimal_body)
@@ -142,10 +146,10 @@ class TestFallbackNonStreaming:
         mock_copilot = _mock_copilot_backend_success()
 
         with (
-            patch("claudegate.app.BACKEND_TYPE", "bedrock"),
-            patch("claudegate.app.FALLBACK_BACKEND", "copilot"),
+            patch.object(_bs, "_primary", "bedrock"),
+            patch.object(_bs, "_fallback", "copilot"),
             patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
-            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch.object(_bs, "_copilot_backend", mock_copilot),
         ):
             resp = await fallback_client.post("/v1/messages", json=minimal_body)
 
@@ -166,9 +170,9 @@ class TestFallbackNonStreaming:
         mock_bedrock = _mock_bedrock_success()
 
         with (
-            patch("claudegate.app.BACKEND_TYPE", "copilot"),
-            patch("claudegate.app.FALLBACK_BACKEND", "bedrock"),
-            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch.object(_bs, "_primary", "copilot"),
+            patch.object(_bs, "_fallback", "bedrock"),
+            patch.object(_bs, "_copilot_backend", mock_copilot),
             patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
         ):
             resp = await fallback_client.post("/v1/messages", json=minimal_body)
@@ -204,10 +208,10 @@ class TestFallbackStreaming:
         minimal_body["stream"] = True
 
         with (
-            patch("claudegate.app.BACKEND_TYPE", "bedrock"),
-            patch("claudegate.app.FALLBACK_BACKEND", "copilot"),
+            patch.object(_bs, "_primary", "bedrock"),
+            patch.object(_bs, "_fallback", "copilot"),
             patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
-            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch.object(_bs, "_copilot_backend", mock_copilot),
         ):
             resp = await fallback_client.post("/v1/messages", json=minimal_body)
 
@@ -228,9 +232,9 @@ class TestContextWindowFallback:
         mock_bedrock = _mock_bedrock_success()
 
         with (
-            patch("claudegate.app.BACKEND_TYPE", "copilot"),
-            patch("claudegate.app.FALLBACK_BACKEND", "bedrock"),
-            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch.object(_bs, "_primary", "copilot"),
+            patch.object(_bs, "_fallback", "bedrock"),
+            patch.object(_bs, "_copilot_backend", mock_copilot),
             patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
         ):
             resp = await fallback_client.post("/v1/messages", json=minimal_body)
@@ -247,9 +251,9 @@ class TestContextWindowFallback:
         mock_copilot.close = AsyncMock()
 
         with (
-            patch("claudegate.app.BACKEND_TYPE", "copilot"),
-            patch("claudegate.app.FALLBACK_BACKEND", ""),
-            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch.object(_bs, "_primary", "copilot"),
+            patch.object(_bs, "_fallback", ""),
+            patch.object(_bs, "_copilot_backend", mock_copilot),
         ):
             resp = await fallback_client.post("/v1/messages", json=minimal_body)
 
@@ -274,9 +278,9 @@ class TestContextWindowFallback:
         mock_bedrock.invoke_model.side_effect = make_client_error("ThrottlingException", "rate limited")
 
         with (
-            patch("claudegate.app.BACKEND_TYPE", "copilot"),
-            patch("claudegate.app.FALLBACK_BACKEND", "bedrock"),
-            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch.object(_bs, "_primary", "copilot"),
+            patch.object(_bs, "_fallback", "bedrock"),
+            patch.object(_bs, "_copilot_backend", mock_copilot),
             patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
         ):
             resp = await fallback_client.post("/v1/messages", json=minimal_body)
@@ -301,9 +305,9 @@ class TestContextWindowFallback:
         }
 
         with (
-            patch("claudegate.app.BACKEND_TYPE", "copilot"),
-            patch("claudegate.app.FALLBACK_BACKEND", "bedrock"),
-            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch.object(_bs, "_primary", "copilot"),
+            patch.object(_bs, "_fallback", "bedrock"),
+            patch.object(_bs, "_copilot_backend", mock_copilot),
             patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
         ):
             resp = await fallback_client.post("/v1/chat/completions", json=openai_body)
@@ -323,9 +327,9 @@ class TestContextWindowFallback:
         }
 
         with (
-            patch("claudegate.app.BACKEND_TYPE", "copilot"),
-            patch("claudegate.app.FALLBACK_BACKEND", ""),
-            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch.object(_bs, "_primary", "copilot"),
+            patch.object(_bs, "_fallback", ""),
+            patch.object(_bs, "_copilot_backend", mock_copilot),
         ):
             resp = await fallback_client.post("/v1/chat/completions", json=openai_body)
 
@@ -343,9 +347,9 @@ class TestContextWindowFallback:
         mock_copilot.close = AsyncMock()
 
         with (
-            patch("claudegate.app.BACKEND_TYPE", "copilot"),
-            patch("claudegate.app.FALLBACK_BACKEND", ""),
-            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch.object(_bs, "_primary", "copilot"),
+            patch.object(_bs, "_fallback", ""),
+            patch.object(_bs, "_copilot_backend", mock_copilot),
         ):
             resp = await fallback_client.post("/v1/messages", json=minimal_body)
 

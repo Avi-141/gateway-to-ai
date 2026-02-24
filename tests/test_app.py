@@ -14,6 +14,7 @@ from tests.conftest import make_client_error
 
 # Get the actual module object (not the FastAPI app re-exported by __init__)
 app_module = sys.modules["claudegate.app"]
+_bs = app_module._backend_state
 
 
 # --- _error_response ---
@@ -117,7 +118,7 @@ class TestMessagesRoute:
     async def test_non_streaming_success(
         self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch
     ):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         mock_response = {
             "body": BytesIO(
                 json.dumps(
@@ -143,7 +144,7 @@ class TestMessagesRoute:
     async def test_streaming_returns_sse(
         self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch
     ):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         minimal_anthropic_request["stream"] = True
 
         # Mock streaming response
@@ -157,7 +158,7 @@ class TestMessagesRoute:
 
     @pytest.mark.anyio
     async def test_expired_token(self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         mock_bedrock_client.invoke_model.side_effect = make_client_error("ExpiredTokenException", "Token expired")
 
         resp = await async_client.post("/v1/messages", json=minimal_anthropic_request)
@@ -167,7 +168,7 @@ class TestMessagesRoute:
     async def test_validation_exception(
         self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch
     ):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         mock_bedrock_client.invoke_model.side_effect = make_client_error("ValidationException", "Bad input")
 
         resp = await async_client.post("/v1/messages", json=minimal_anthropic_request)
@@ -175,7 +176,7 @@ class TestMessagesRoute:
 
     @pytest.mark.anyio
     async def test_access_denied(self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         mock_bedrock_client.invoke_model.side_effect = make_client_error("AccessDeniedException", "No access")
 
         resp = await async_client.post("/v1/messages", json=minimal_anthropic_request)
@@ -183,7 +184,7 @@ class TestMessagesRoute:
 
     @pytest.mark.anyio
     async def test_throttling(self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         mock_bedrock_client.invoke_model.side_effect = make_client_error("ThrottlingException", "Rate limited")
 
         resp = await async_client.post("/v1/messages", json=minimal_anthropic_request)
@@ -191,7 +192,7 @@ class TestMessagesRoute:
 
     @pytest.mark.anyio
     async def test_model_timeout(self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         mock_bedrock_client.invoke_model.side_effect = make_client_error("ModelTimeoutException", "Timed out")
 
         resp = await async_client.post("/v1/messages", json=minimal_anthropic_request)
@@ -201,7 +202,7 @@ class TestMessagesRoute:
     async def test_generic_client_error(
         self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch
     ):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         mock_bedrock_client.invoke_model.side_effect = make_client_error("SomeOtherError", "Unknown")
 
         resp = await async_client.post("/v1/messages", json=minimal_anthropic_request)
@@ -209,7 +210,7 @@ class TestMessagesRoute:
 
     @pytest.mark.anyio
     async def test_read_timeout_error(self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         mock_bedrock_client.invoke_model.side_effect = ReadTimeoutError(endpoint_url="https://bedrock.example.com")
 
         resp = await async_client.post("/v1/messages", json=minimal_anthropic_request)
@@ -219,7 +220,7 @@ class TestMessagesRoute:
     async def test_unexpected_exception(
         self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch
     ):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         mock_bedrock_client.invoke_model.side_effect = RuntimeError("kaboom")
 
         resp = await async_client.post("/v1/messages", json=minimal_anthropic_request)
@@ -228,7 +229,7 @@ class TestMessagesRoute:
     @pytest.mark.anyio
     async def test_non_claude_model_via_copilot(self, async_client, monkeypatch):
         """Non-Claude models (GPT, Gemini) should route correctly via /v1/messages with Copilot."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
 
         mock_backend = AsyncMock()
         from fastapi.responses import JSONResponse
@@ -243,7 +244,7 @@ class TestMessagesRoute:
             "usage": {"input_tokens": 5, "output_tokens": 3},
         }
         mock_backend.handle_messages.return_value = JSONResponse(content=anthropic_resp)
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         resp = await async_client.post(
             "/v1/messages",
@@ -265,10 +266,10 @@ class TestMessagesRoute:
     @pytest.mark.anyio
     async def test_copilot_http_error(self, async_client, monkeypatch):
         """CopilotHttpError from primary should return error response."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
         mock_backend = AsyncMock()
         mock_backend.handle_messages.side_effect = CopilotHttpError(403, "Forbidden")
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         resp = await async_client.post(
             "/v1/messages",
@@ -284,8 +285,8 @@ class TestMessagesRoute:
     @pytest.mark.anyio
     async def test_runtime_error_auth(self, async_client, monkeypatch):
         """RuntimeError from copilot should return 401 auth error."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
-        monkeypatch.setattr(app_module, "_copilot_backend", None)
+        monkeypatch.setattr(_bs, "_primary", "copilot")
+        monkeypatch.setattr(_bs, "_copilot_backend", None)
 
         resp = await async_client.post(
             "/v1/messages",
@@ -300,10 +301,10 @@ class TestMessagesRoute:
     @pytest.mark.anyio
     async def test_generic_exception(self, async_client, monkeypatch):
         """Unexpected exception from copilot primary should return 500."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
         mock_backend = AsyncMock()
         mock_backend.handle_messages.side_effect = ValueError("unexpected")
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         resp = await async_client.post(
             "/v1/messages",
@@ -319,8 +320,8 @@ class TestMessagesRoute:
     @pytest.mark.anyio
     async def test_non_claude_model_bedrock_only_returns_error(self, async_client, monkeypatch):
         """Non-Claude model with Bedrock-only backend returns 400 error."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        monkeypatch.setattr(_bs, "_fallback", "")
 
         resp = await async_client.post(
             "/v1/messages",
@@ -339,8 +340,8 @@ class TestMessagesRoute:
     @pytest.mark.anyio
     async def test_non_claude_model_bedrock_with_copilot_fallback(self, async_client, monkeypatch):
         """Non-Claude model with Bedrock primary + Copilot fallback routes to Copilot."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        monkeypatch.setattr(_bs, "_fallback", "copilot")
 
         mock_backend = AsyncMock()
         from fastapi.responses import JSONResponse
@@ -355,7 +356,7 @@ class TestMessagesRoute:
             "usage": {"input_tokens": 5, "output_tokens": 3},
         }
         mock_backend.handle_messages.return_value = JSONResponse(content=anthropic_resp)
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         resp = await async_client.post(
             "/v1/messages",
@@ -372,12 +373,12 @@ class TestMessagesRoute:
     @pytest.mark.anyio
     async def test_non_claude_model_copilot_error_handling(self, async_client, monkeypatch):
         """Non-Claude model routing to Copilot handles errors correctly."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        monkeypatch.setattr(_bs, "_fallback", "copilot")
 
         mock_backend = AsyncMock()
         mock_backend.handle_messages.side_effect = CopilotHttpError(429, "Rate limited")
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         resp = await async_client.post(
             "/v1/messages",
@@ -398,7 +399,7 @@ class TestStreamingErrors:
     @pytest.mark.anyio
     async def test_expired_credentials_mid_stream(self, async_client, monkeypatch):
         """Expired credentials during streaming should inject error content blocks."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
 
         # Create a mock response whose body iterator raises ExpiredTokenException
         expired_error = ClientError(
@@ -439,7 +440,7 @@ class TestStreamingErrors:
     @pytest.mark.anyio
     async def test_generic_client_error_mid_stream(self, async_client, monkeypatch):
         """Non-expired ClientError during streaming should yield an error event."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
 
         generic_error = ClientError(
             error_response={"Error": {"Code": "InternalServerException", "Message": "Internal error"}},
@@ -472,7 +473,7 @@ class TestStreamingErrors:
     @pytest.mark.anyio
     async def test_generic_exception_mid_stream(self, async_client, monkeypatch):
         """Non-ClientError exception during streaming should yield an error event."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
 
         def failing_body():
             chunk_data = json.dumps({"type": "message_start", "message": {}}).encode()
@@ -508,8 +509,8 @@ class TestMessagesFallbackErrors:
     @pytest.mark.anyio
     async def test_fallback_copilot_http_error(self, async_client, monkeypatch):
         """Primary transient -> fallback CopilotHttpError."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        monkeypatch.setattr(_bs, "_fallback", "copilot")
 
         mock_bedrock = MagicMock()
         mock_bedrock.invoke_model.side_effect = make_client_error("ThrottlingException", "rate limited")
@@ -519,7 +520,7 @@ class TestMessagesFallbackErrors:
 
         with (
             patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
-            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch.object(_bs, "_copilot_backend", mock_copilot),
         ):
             resp = await async_client.post(
                 "/v1/messages",
@@ -536,8 +537,8 @@ class TestMessagesFallbackErrors:
     @pytest.mark.anyio
     async def test_fallback_runtime_error(self, async_client, monkeypatch):
         """Primary transient -> fallback RuntimeError (auth)."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        monkeypatch.setattr(_bs, "_fallback", "copilot")
 
         mock_bedrock = MagicMock()
         mock_bedrock.invoke_model.side_effect = make_client_error("ThrottlingException", "rate limited")
@@ -547,7 +548,7 @@ class TestMessagesFallbackErrors:
 
         with (
             patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
-            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch.object(_bs, "_copilot_backend", mock_copilot),
         ):
             resp = await async_client.post(
                 "/v1/messages",
@@ -564,8 +565,8 @@ class TestMessagesFallbackErrors:
     @pytest.mark.anyio
     async def test_fallback_generic_exception(self, async_client, monkeypatch):
         """Primary transient -> fallback unexpected exception."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        monkeypatch.setattr(_bs, "_fallback", "copilot")
 
         mock_bedrock = MagicMock()
         mock_bedrock.invoke_model.side_effect = make_client_error("ThrottlingException", "rate limited")
@@ -575,7 +576,7 @@ class TestMessagesFallbackErrors:
 
         with (
             patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
-            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch.object(_bs, "_copilot_backend", mock_copilot),
         ):
             resp = await async_client.post(
                 "/v1/messages",
@@ -596,7 +597,7 @@ class TestMessagesFallbackErrors:
 class TestCopilotResponsesRouting:
     @pytest.mark.anyio
     async def test_messages_route_uses_responses_backend_for_responses_only_model(self, async_client, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
 
         from fastapi.responses import JSONResponse
 
@@ -616,7 +617,7 @@ class TestCopilotResponsesRouting:
                 "usage": {"input_tokens": 1, "output_tokens": 1},
             }
         )
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         resp = await async_client.post(
             "/v1/messages",
@@ -635,7 +636,7 @@ class TestCopilotResponsesRouting:
     async def test_chat_completions_route_uses_responses_backend_for_responses_only_model(
         self, async_client, monkeypatch
     ):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
 
         from fastapi.responses import JSONResponse
 
@@ -656,7 +657,7 @@ class TestCopilotResponsesRouting:
                 "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
             }
         )
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         resp = await async_client.post(
             "/v1/chat/completions",
@@ -672,7 +673,7 @@ class TestCopilotResponsesRouting:
 
     @pytest.mark.anyio
     async def test_messages_route_uses_chat_backend_when_chat_completions_supported(self, async_client, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
 
         from fastapi.responses import JSONResponse
 
@@ -692,7 +693,7 @@ class TestCopilotResponsesRouting:
                 "usage": {"input_tokens": 1, "output_tokens": 1},
             }
         )
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         resp = await async_client.post(
             "/v1/messages",
@@ -714,14 +715,14 @@ class TestChatCompletionsFallbackErrors:
     @pytest.mark.anyio
     async def test_no_fallback_configured(self, async_client, monkeypatch):
         """Transient error with no fallback returns OpenAI-format error."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
+        monkeypatch.setattr(_bs, "_fallback", "")
 
         mock_copilot = AsyncMock()
         mock_copilot.handle_openai_messages.side_effect = TransientBackendError(
             429, "rate_limit_error", "rate limited", "copilot"
         )
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_copilot)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_copilot)
 
         resp = await async_client.post(
             "/v1/chat/completions",
@@ -735,14 +736,14 @@ class TestChatCompletionsFallbackErrors:
     @pytest.mark.anyio
     async def test_fallback_both_fail_transient(self, async_client, monkeypatch):
         """Primary transient -> fallback also transient."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
+        monkeypatch.setattr(_bs, "_fallback", "bedrock")
 
         mock_copilot = AsyncMock()
         mock_copilot.handle_openai_messages.side_effect = TransientBackendError(
             429, "rate_limit_error", "rate limited", "copilot"
         )
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_copilot)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_copilot)
 
         mock_bedrock = MagicMock()
         mock_bedrock.invoke_model.side_effect = make_client_error("ThrottlingException", "also rate limited")
@@ -760,8 +761,8 @@ class TestChatCompletionsFallbackErrors:
     @pytest.mark.anyio
     async def test_fallback_copilot_http_error(self, async_client, monkeypatch):
         """Primary transient -> fallback CopilotHttpError (OpenAI format)."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        monkeypatch.setattr(_bs, "_fallback", "copilot")
 
         mock_bedrock = MagicMock()
         mock_bedrock.invoke_model.side_effect = make_client_error("ThrottlingException", "rate limited")
@@ -771,7 +772,7 @@ class TestChatCompletionsFallbackErrors:
 
         with (
             patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
-            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch.object(_bs, "_copilot_backend", mock_copilot),
         ):
             resp = await async_client.post(
                 "/v1/chat/completions",
@@ -786,8 +787,8 @@ class TestChatCompletionsFallbackErrors:
     @pytest.mark.anyio
     async def test_fallback_runtime_error(self, async_client, monkeypatch):
         """Primary transient -> fallback RuntimeError (auth, OpenAI format)."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        monkeypatch.setattr(_bs, "_fallback", "copilot")
 
         mock_bedrock = MagicMock()
         mock_bedrock.invoke_model.side_effect = make_client_error("ThrottlingException", "rate limited")
@@ -797,7 +798,7 @@ class TestChatCompletionsFallbackErrors:
 
         with (
             patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
-            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch.object(_bs, "_copilot_backend", mock_copilot),
         ):
             resp = await async_client.post(
                 "/v1/chat/completions",
@@ -811,8 +812,8 @@ class TestChatCompletionsFallbackErrors:
     @pytest.mark.anyio
     async def test_fallback_generic_exception(self, async_client, monkeypatch):
         """Primary transient -> fallback unexpected exception (OpenAI format)."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        monkeypatch.setattr(_bs, "_fallback", "copilot")
 
         mock_bedrock = MagicMock()
         mock_bedrock.invoke_model.side_effect = make_client_error("ThrottlingException", "rate limited")
@@ -822,7 +823,7 @@ class TestChatCompletionsFallbackErrors:
 
         with (
             patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
-            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch.object(_bs, "_copilot_backend", mock_copilot),
         ):
             resp = await async_client.post(
                 "/v1/chat/completions",
@@ -836,11 +837,11 @@ class TestChatCompletionsFallbackErrors:
     @pytest.mark.anyio
     async def test_primary_copilot_http_error(self, async_client, monkeypatch):
         """Primary CopilotHttpError (non-transient) returns OpenAI-format error."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
 
         mock_copilot = AsyncMock()
         mock_copilot.handle_openai_messages.side_effect = CopilotHttpError(403, "Forbidden")
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_copilot)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_copilot)
 
         resp = await async_client.post(
             "/v1/chat/completions",
@@ -853,8 +854,8 @@ class TestChatCompletionsFallbackErrors:
     @pytest.mark.anyio
     async def test_primary_runtime_error(self, async_client, monkeypatch):
         """Primary RuntimeError returns 401 in OpenAI format."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
-        monkeypatch.setattr(app_module, "_copilot_backend", None)
+        monkeypatch.setattr(_bs, "_primary", "copilot")
+        monkeypatch.setattr(_bs, "_copilot_backend", None)
 
         resp = await async_client.post(
             "/v1/chat/completions",
@@ -867,11 +868,11 @@ class TestChatCompletionsFallbackErrors:
     @pytest.mark.anyio
     async def test_primary_generic_exception(self, async_client, monkeypatch):
         """Primary unexpected exception returns 500 in OpenAI format."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
 
         mock_copilot = AsyncMock()
         mock_copilot.handle_openai_messages.side_effect = ValueError("unexpected")
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_copilot)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_copilot)
 
         resp = await async_client.post(
             "/v1/chat/completions",
@@ -896,7 +897,7 @@ class TestHealthRoute:
 
     @pytest.mark.anyio
     async def test_check_bedrock_ok(self, async_client, mock_bedrock_client, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         mock_bedrock_client.invoke_model.return_value = {
             "body": BytesIO(json.dumps({"content": [{"text": "hi"}]}).encode())
         }
@@ -907,7 +908,7 @@ class TestHealthRoute:
 
     @pytest.mark.anyio
     async def test_check_bedrock_error(self, async_client, mock_bedrock_client, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         mock_bedrock_client.invoke_model.side_effect = RuntimeError("fail")
 
         resp = await async_client.get("/health?check_bedrock=true")
@@ -919,13 +920,13 @@ class TestHealthRoute:
     @pytest.mark.anyio
     async def test_check_copilot_ok(self, async_client, monkeypatch):
         """Deep copilot health check returns ok when token is valid."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
 
         mock_auth = AsyncMock()
         mock_auth.get_token.return_value = "valid-token"
         mock_backend = AsyncMock()
         mock_backend._auth = mock_auth
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         resp = await async_client.get("/health?check_copilot=true")
         assert resp.status_code == 200
@@ -935,13 +936,13 @@ class TestHealthRoute:
     @pytest.mark.anyio
     async def test_check_copilot_no_token(self, async_client, monkeypatch):
         """Deep copilot health check returns 'no token' when token is None."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
 
         mock_auth = AsyncMock()
         mock_auth.get_token.return_value = None
         mock_backend = AsyncMock()
         mock_backend._auth = mock_auth
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         resp = await async_client.get("/health?check_copilot=true")
         assert resp.status_code == 200
@@ -951,13 +952,13 @@ class TestHealthRoute:
     @pytest.mark.anyio
     async def test_check_copilot_error(self, async_client, monkeypatch):
         """Deep copilot health check returns degraded on exception."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
 
         mock_auth = AsyncMock()
         mock_auth.get_token.side_effect = RuntimeError("auth failed")
         mock_backend = AsyncMock()
         mock_backend._auth = mock_auth
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         resp = await async_client.get("/health?check_copilot=true")
         assert resp.status_code == 200
@@ -968,7 +969,7 @@ class TestHealthRoute:
     @pytest.mark.anyio
     async def test_health_with_fallback(self, async_client, monkeypatch):
         """Health check includes fallback field when configured."""
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+        monkeypatch.setattr(_bs, "_fallback", "copilot")
 
         resp = await async_client.get("/health")
         assert resp.status_code == 200
@@ -993,7 +994,7 @@ class TestVersionRoute:
 class TestModelsRoute:
     @pytest.mark.anyio
     async def test_bedrock_models(self, async_client, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         resp = await async_client.get("/v1/models")
         assert resp.status_code == 200
         body = resp.json()
@@ -1005,7 +1006,7 @@ class TestModelsRoute:
 
     @pytest.mark.anyio
     async def test_copilot_models(self, async_client, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
         resp = await async_client.get("/v1/models")
         assert resp.status_code == 200
         body = resp.json()
@@ -1016,7 +1017,7 @@ class TestModelsRoute:
         """When dynamic models are available, /v1/models returns them."""
         from claudegate.models import set_copilot_models
 
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
         dynamic = [
             {
                 "id": "claude-sonnet-4.5",
@@ -1066,7 +1067,7 @@ class TestModelsRoute:
         """When dynamic models are empty, /v1/models falls back to hardcoded maps."""
         from claudegate.models import set_copilot_models
 
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
         set_copilot_models([])
         resp = await async_client.get("/v1/models")
         assert resp.status_code == 200
@@ -1079,8 +1080,8 @@ class TestModelsRoute:
         """When Bedrock is primary with Copilot fallback, /v1/models includes non-Claude models."""
         from claudegate.models import set_copilot_models
 
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        monkeypatch.setattr(_bs, "_fallback", "copilot")
         dynamic = [
             {"id": "claude-sonnet-4.5", "owned_by": "anthropic"},
             {
@@ -1127,8 +1128,8 @@ class TestModelsRoute:
         """When no dynamic models, Bedrock+Copilot fallback uses hardcoded non-Claude models."""
         from claudegate.models import set_copilot_models
 
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        monkeypatch.setattr(_bs, "_fallback", "copilot")
         set_copilot_models([])
 
         resp = await async_client.get("/v1/models")
@@ -1237,8 +1238,8 @@ class TestServerToolRouting:
         self, async_client, mock_bedrock_client, monkeypatch
     ):
         """Copilot primary + Bedrock fallback: server tools route to Bedrock."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
+        monkeypatch.setattr(_bs, "_fallback", "bedrock")
 
         mock_response = {
             "body": BytesIO(
@@ -1275,8 +1276,8 @@ class TestServerToolRouting:
     @pytest.mark.anyio
     async def test_copilot_only_strips_server_tools(self, async_client, monkeypatch):
         """Copilot primary with no fallback: server tools are stripped."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
+        monkeypatch.setattr(_bs, "_fallback", "")
 
         mock_backend = AsyncMock()
         from fastapi.responses import JSONResponse
@@ -1291,7 +1292,7 @@ class TestServerToolRouting:
             "usage": {"input_tokens": 5, "output_tokens": 3},
         }
         mock_backend.handle_messages.return_value = JSONResponse(content=anthropic_resp)
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         resp = await async_client.post(
             "/v1/messages",
@@ -1312,8 +1313,8 @@ class TestServerToolRouting:
     @pytest.mark.anyio
     async def test_copilot_with_bedrock_fallback_falls_back_on_bedrock_error(self, async_client, monkeypatch):
         """Copilot primary + Bedrock fallback: if Bedrock fails, strips tools and uses Copilot."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
+        monkeypatch.setattr(_bs, "_fallback", "bedrock")
 
         mock_bedrock = MagicMock()
         mock_bedrock.invoke_model.side_effect = make_client_error("ThrottlingException", "rate limited")
@@ -1334,7 +1335,7 @@ class TestServerToolRouting:
 
         with (
             patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
-            patch("claudegate.app._copilot_backend", mock_copilot),
+            patch.object(_bs, "_copilot_backend", mock_copilot),
         ):
             resp = await async_client.post(
                 "/v1/messages",
@@ -1355,7 +1356,7 @@ class TestServerToolRouting:
     @pytest.mark.anyio
     async def test_bedrock_primary_passes_server_tools_through(self, async_client, mock_bedrock_client, monkeypatch):
         """Bedrock primary: server tools pass through natively (no stripping)."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
 
         mock_response = {
             "body": BytesIO(
@@ -1391,8 +1392,8 @@ class TestServerToolRouting:
     @pytest.mark.anyio
     async def test_no_server_tools_no_rerouting(self, async_client, monkeypatch):
         """Requests without server tools follow normal routing."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
+        monkeypatch.setattr(_bs, "_fallback", "bedrock")
 
         mock_backend = AsyncMock()
         from fastapi.responses import JSONResponse
@@ -1407,7 +1408,7 @@ class TestServerToolRouting:
             "usage": {"input_tokens": 5, "output_tokens": 3},
         }
         mock_backend.handle_messages.return_value = JSONResponse(content=anthropic_resp)
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         resp = await async_client.post(
             "/v1/messages",
@@ -1453,7 +1454,7 @@ class TestResponsesRoute:
     async def test_bedrock_non_streaming(
         self, async_client, mock_bedrock_client, minimal_responses_request, monkeypatch
     ):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         mock_response = {
             "body": BytesIO(
                 json.dumps(
@@ -1480,7 +1481,7 @@ class TestResponsesRoute:
 
     @pytest.mark.anyio
     async def test_bedrock_streaming(self, async_client, mock_bedrock_client, minimal_responses_request, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
         minimal_responses_request["stream"] = True
 
         # Mock streaming response with message_start and content
@@ -1541,7 +1542,7 @@ class TestResponsesRoute:
     @pytest.mark.anyio
     async def test_copilot_passthrough(self, async_client, monkeypatch):
         """Model supporting /responses goes through passthrough."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
 
         from claudegate.models import set_copilot_models
 
@@ -1558,7 +1559,7 @@ class TestResponsesRoute:
             "usage": {"input_tokens": 5, "output_tokens": 3},
         }
         mock_backend.handle_responses_passthrough.return_value = JSONResponse(content=responses_resp)
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         try:
             resp = await async_client.post(
@@ -1576,7 +1577,7 @@ class TestResponsesRoute:
     @pytest.mark.anyio
     async def test_copilot_via_chat(self, async_client, monkeypatch):
         """Model without /responses support uses chat completions translation."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
 
         from claudegate.models import set_copilot_models
 
@@ -1593,7 +1594,7 @@ class TestResponsesRoute:
             "usage": {"input_tokens": 5, "output_tokens": 3},
         }
         mock_backend.handle_responses_via_chat.return_value = JSONResponse(content=responses_resp)
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         try:
             resp = await async_client.post(
@@ -1610,10 +1611,10 @@ class TestResponsesRoute:
 
     @pytest.mark.anyio
     async def test_copilot_http_error(self, async_client, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
         mock_backend = AsyncMock()
         mock_backend.handle_responses_passthrough.side_effect = CopilotHttpError(403, "Forbidden")
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         from claudegate.models import set_copilot_models
 
@@ -1635,8 +1636,8 @@ class TestResponsesRoute:
 
     @pytest.mark.anyio
     async def test_auth_error(self, async_client, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
-        monkeypatch.setattr(app_module, "_copilot_backend", None)
+        monkeypatch.setattr(_bs, "_primary", "copilot")
+        monkeypatch.setattr(_bs, "_copilot_backend", None)
 
         resp = await async_client.post(
             "/v1/responses",
@@ -1651,13 +1652,13 @@ class TestResponsesRoute:
 
     @pytest.mark.anyio
     async def test_transient_error_no_fallback(self, async_client, monkeypatch):
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
+        monkeypatch.setattr(_bs, "_fallback", "")
         mock_backend = AsyncMock()
         mock_backend.handle_responses_passthrough.side_effect = TransientBackendError(
             429, "rate_limit_error", "rate limited", "copilot"
         )
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         from claudegate.models import set_copilot_models
 
@@ -1678,8 +1679,8 @@ class TestResponsesRoute:
     @pytest.mark.anyio
     async def test_bedrock_non_claude_model_error(self, async_client, monkeypatch):
         """Non-Claude model on Bedrock-only returns error."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "bedrock")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "")
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        monkeypatch.setattr(_bs, "_fallback", "")
 
         resp = await async_client.post(
             "/v1/responses",
@@ -1694,14 +1695,14 @@ class TestResponsesRoute:
     @pytest.mark.anyio
     async def test_fallback_on_transient_error(self, async_client, monkeypatch):
         """Primary transient -> fallback succeeds."""
-        monkeypatch.setattr(app_module, "BACKEND_TYPE", "copilot")
-        monkeypatch.setattr(app_module, "FALLBACK_BACKEND", "bedrock")
+        monkeypatch.setattr(_bs, "_primary", "copilot")
+        monkeypatch.setattr(_bs, "_fallback", "bedrock")
 
         mock_backend = AsyncMock()
         mock_backend.handle_responses_passthrough.side_effect = TransientBackendError(
             429, "rate_limit_error", "rate limited", "copilot"
         )
-        monkeypatch.setattr(app_module, "_copilot_backend", mock_backend)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         from claudegate.models import set_copilot_models
 

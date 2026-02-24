@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Runtime backend switching** — switch between `copilot`, `bedrock`, or fallback configurations at runtime without restarting the server. Available via API (`POST /api/backend`), web dashboard dropdown, CLI (`claudegate backend <value>`), and Claude Code skill (`/backend`). Changes are ephemeral; the `CLAUDEGATE_BACKEND` env var remains the startup source of truth. If switching to Copilot and it wasn't initialized at startup, authentication is performed lazily.
+- **`/backend` Claude Code skill** — install the claudegate plugin to switch backends from Claude Code with `/backend copilot`, `/backend bedrock,copilot`, etc.
+- **`claudegate backend` CLI command** — query (`claudegate backend`) or switch (`claudegate backend copilot`) the backend on a running server.
 - **`start`, `stop`, `restart` service commands** — manage the service lifecycle without a full uninstall/reinstall cycle. Works on macOS (launchctl), Linux (systemd), and Windows (schtasks).
 - **Copilot premium usage quota** — `/api/status` now includes Copilot premium request usage data (plan type, used/total/remaining, percent used, reset date) fetched from the GitHub API with a 60-second stale-while-revalidate cache. The dashboard shows a color-coded progress bar (green/orange/red) and stale data indicator.
 - **Token count scaling** — dynamically scale `input_tokens` and `output_tokens` reported to Claude Code so its percentage-based context tracking accurately reflects Copilot's actual capacity. Looks up each model's `max_prompt_tokens` from the Copilot `/models` API and applies a per-model scaling factor. Supports both standard 200k and 1M context window variants (detected via `anthropic-beta: context-1m` header).

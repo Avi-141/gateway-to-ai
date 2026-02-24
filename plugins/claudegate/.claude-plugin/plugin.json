@@ -1,7 +1,7 @@
 {
-  "name": "models",
-  "description": "List available models from a claudegate proxy instance",
-  "version": "1.0.0",
+  "name": "claudegate",
+  "description": "Skills for managing a claudegate proxy instance",
+  "version": "1.1.0",
   "author": {
     "name": "claudegate"
   },

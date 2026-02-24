@@ -1,5 +1,6 @@
 """Tests for CopilotUsageCache and /api/status copilot integration."""
 
+import sys
 from unittest.mock import AsyncMock, patch
 
 import httpx
@@ -7,6 +8,9 @@ import pytest
 
 from claudegate.app import app
 from claudegate.copilot_usage import CopilotUsageCache
+
+app_module = sys.modules["claudegate.app"]
+_bs = app_module._backend_state
 
 GITHUB_USER_RESPONSE = {
     "copilot_plan": "enterprise",
@@ -121,7 +125,7 @@ class TestApiStatusCopilotIntegration:
             "cache_ttl_seconds": 60,
             "stale": False,
         }
-        with patch("claudegate.app._copilot_usage_cache", mock_cache):
+        with patch.object(_bs, "_copilot_usage_cache", mock_cache):
             resp = await async_client.get("/api/status")
         data = resp.json()
         assert data["copilot"]["plan"] == "enterprise"
