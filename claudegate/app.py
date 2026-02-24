@@ -47,6 +47,7 @@ from .openai_translate import (
     anthropic_to_openai_response,
     openai_to_anthropic_request,
 )
+from .request_stats import request_stats
 from .responses_translate import (
     AnthropicToResponsesStreamTranslator,
     anthropic_to_responses_response,
@@ -675,12 +676,14 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
     current_primary = _backend_state.primary
     current_fallback = _backend_state.fallback
     primary_call = _get_backend_caller(current_primary)
+    request_stats.record_request(current_primary)
 
     try:
         return await primary_call()
     except ContextWindowExceededError as e:
         max_tokens = body.get("max_tokens", 0)
         if current_fallback:
+            request_stats.record_fallback()
             logger.warning(
                 f"{log_prefix}Context window exceeded on {e.backend} "
                 f"({e.prompt_tokens} > {e.context_limit}), falling back to {current_fallback}"
@@ -690,27 +693,34 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
                 return await fallback_call()
             except ContextWindowExceededError:
                 logger.error(f"{log_prefix}Fallback ({current_fallback}) also exceeded context window")
+                request_stats.record_error()
                 return _context_window_error_response(e, max_tokens)
             except TransientBackendError as fallback_err:
                 logger.error(f"{log_prefix}Fallback ({current_fallback}) failed with {fallback_err.status_code}")
+                request_stats.record_error()
                 return _context_window_error_response(e, max_tokens)
             except CopilotHttpError as fallback_err:
                 logger.error(f"{log_prefix}Fallback ({current_fallback}) HTTP error: {fallback_err}")
+                request_stats.record_error()
                 return _context_window_error_response(e, max_tokens)
             except RuntimeError as fallback_err:
                 logger.error(f"{log_prefix}Fallback ({current_fallback}) auth error: {fallback_err}")
+                request_stats.record_error()
                 return _context_window_error_response(e, max_tokens)
         else:
             logger.error(
                 f"{log_prefix}Context window exceeded on {e.backend} "
                 f"({e.prompt_tokens} > {e.context_limit}), no fallback configured"
             )
+            request_stats.record_error()
             return _context_window_error_response(e, max_tokens)
     except TransientBackendError as e:
         if not current_fallback:
             logger.error(f"{log_prefix}{e.backend} transient error {e.status_code}, no fallback configured")
+            request_stats.record_error()
             return _error_response(e.status_code, e.error_type, e.message)
 
+        request_stats.record_fallback()
         logger.warning(
             f"{log_prefix}Primary ({current_primary}) failed with {e.status_code}, falling back to {current_fallback}"
         )
@@ -720,21 +730,28 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
             return await fallback_call()
         except TransientBackendError as fallback_err:
             logger.error(f"{log_prefix}Fallback ({current_fallback}) also failed with {fallback_err.status_code}")
+            request_stats.record_error()
             return _error_response(fallback_err.status_code, fallback_err.error_type, fallback_err.message)
         except CopilotHttpError as fallback_err:
+            request_stats.record_error()
             return _error_response(fallback_err.status_code, "api_error", fallback_err.detail)
         except RuntimeError as fallback_err:
+            request_stats.record_error()
             return _error_response(401, "authentication_error", str(fallback_err))
         except Exception as fallback_err:
             logger.error(f"{log_prefix}Fallback ({current_fallback}) unexpected error: {fallback_err}")
+            request_stats.record_error()
             return _error_response(500, "api_error", str(fallback_err))
     except CopilotHttpError as e:
+        request_stats.record_error()
         return _error_response(e.status_code, "api_error", e.detail)
     except RuntimeError as e:
         logger.error(f"{log_prefix}Auth error: {e}")
+        request_stats.record_error()
         return _error_response(401, "authentication_error", str(e))
     except Exception as e:
         logger.error(f"{log_prefix}Unexpected error: {e}")
+        request_stats.record_error()
         return _error_response(500, "api_error", str(e))
 
 
@@ -779,12 +796,14 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
     current_primary = _backend_state.primary
     current_fallback = _backend_state.fallback
     primary_call = _get_backend_caller(current_primary)
+    request_stats.record_request(current_primary)
 
     try:
         return await primary_call()
     except ContextWindowExceededError as e:
         _ctx_msg = _openai_context_window_message(e)
         if current_fallback:
+            request_stats.record_fallback()
             logger.warning(
                 f"{log_prefix}Context window exceeded on {e.backend} "
                 f"({e.prompt_tokens} > {e.context_limit}), falling back to {current_fallback}"
@@ -794,27 +813,34 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
                 return await fallback_call()
             except ContextWindowExceededError:
                 logger.error(f"{log_prefix}Fallback ({current_fallback}) also exceeded context window")
+                request_stats.record_error()
                 return _openai_error_response(400, _ctx_msg)
             except TransientBackendError as fallback_err:
                 logger.error(f"{log_prefix}Fallback ({current_fallback}) failed with {fallback_err.status_code}")
+                request_stats.record_error()
                 return _openai_error_response(400, _ctx_msg)
             except CopilotHttpError as fallback_err:
                 logger.error(f"{log_prefix}Fallback ({current_fallback}) HTTP error: {fallback_err}")
+                request_stats.record_error()
                 return _openai_error_response(400, _ctx_msg)
             except RuntimeError as fallback_err:
                 logger.error(f"{log_prefix}Fallback ({current_fallback}) auth error: {fallback_err}")
+                request_stats.record_error()
                 return _openai_error_response(400, _ctx_msg)
         else:
             logger.error(
                 f"{log_prefix}Context window exceeded on {e.backend} "
                 f"({e.prompt_tokens} > {e.context_limit}), no fallback configured"
             )
+            request_stats.record_error()
             return _openai_error_response(400, _ctx_msg)
     except TransientBackendError as e:
         if not current_fallback:
             logger.error(f"{log_prefix}{e.backend} transient error {e.status_code}, no fallback configured")
+            request_stats.record_error()
             return _openai_error_response(e.status_code, e.message, "server_error")
 
+        request_stats.record_fallback()
         logger.warning(
             f"{log_prefix}Primary ({current_primary}) failed with {e.status_code}, falling back to {current_fallback}"
         )
@@ -824,21 +850,28 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
             return await fallback_call()
         except TransientBackendError as fallback_err:
             logger.error(f"{log_prefix}Fallback ({current_fallback}) also failed with {fallback_err.status_code}")
+            request_stats.record_error()
             return _openai_error_response(fallback_err.status_code, fallback_err.message, "server_error")
         except CopilotHttpError as fallback_err:
+            request_stats.record_error()
             return _openai_error_response(fallback_err.status_code, fallback_err.detail, "server_error")
         except RuntimeError as fallback_err:
+            request_stats.record_error()
             return _openai_error_response(401, str(fallback_err), "authentication_error")
         except Exception as fallback_err:
             logger.error(f"{log_prefix}Fallback ({current_fallback}) unexpected error: {fallback_err}")
+            request_stats.record_error()
             return _openai_error_response(500, str(fallback_err), "server_error")
     except CopilotHttpError as e:
+        request_stats.record_error()
         return _openai_error_response(e.status_code, e.detail, "server_error")
     except RuntimeError as e:
         logger.error(f"{log_prefix}Auth error: {e}")
+        request_stats.record_error()
         return _openai_error_response(401, str(e), "authentication_error")
     except Exception as e:
         logger.error(f"{log_prefix}Unexpected error: {e}")
+        request_stats.record_error()
         return _openai_error_response(500, str(e), "server_error")
 
 
@@ -877,12 +910,14 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
     current_primary = _backend_state.primary
     current_fallback = _backend_state.fallback
     primary_call = _get_backend_caller(current_primary)
+    request_stats.record_request(current_primary)
 
     try:
         return await primary_call()
     except ContextWindowExceededError as e:
         _ctx_msg = _openai_context_window_message(e)
         if current_fallback:
+            request_stats.record_fallback()
             logger.warning(
                 f"{log_prefix}Context window exceeded on {e.backend} "
                 f"({e.prompt_tokens} > {e.context_limit}), falling back to {current_fallback}"
@@ -892,27 +927,34 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
                 return await fallback_call()
             except ContextWindowExceededError:
                 logger.error(f"{log_prefix}Fallback ({current_fallback}) also exceeded context window")
+                request_stats.record_error()
                 return _openai_error_response(400, _ctx_msg)
             except TransientBackendError as fallback_err:
                 logger.error(f"{log_prefix}Fallback ({current_fallback}) failed with {fallback_err.status_code}")
+                request_stats.record_error()
                 return _openai_error_response(400, _ctx_msg)
             except CopilotHttpError as fallback_err:
                 logger.error(f"{log_prefix}Fallback ({current_fallback}) HTTP error: {fallback_err}")
+                request_stats.record_error()
                 return _openai_error_response(400, _ctx_msg)
             except RuntimeError as fallback_err:
                 logger.error(f"{log_prefix}Fallback ({current_fallback}) auth error: {fallback_err}")
+                request_stats.record_error()
                 return _openai_error_response(400, _ctx_msg)
         else:
             logger.error(
                 f"{log_prefix}Context window exceeded on {e.backend} "
                 f"({e.prompt_tokens} > {e.context_limit}), no fallback configured"
             )
+            request_stats.record_error()
             return _openai_error_response(400, _ctx_msg)
     except TransientBackendError as e:
         if not current_fallback:
             logger.error(f"{log_prefix}{e.backend} transient error {e.status_code}, no fallback configured")
+            request_stats.record_error()
             return _openai_error_response(e.status_code, e.message, "server_error")
 
+        request_stats.record_fallback()
         logger.warning(
             f"{log_prefix}Primary ({current_primary}) failed with {e.status_code}, falling back to {current_fallback}"
         )
@@ -922,21 +964,28 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
             return await fallback_call()
         except TransientBackendError as fallback_err:
             logger.error(f"{log_prefix}Fallback ({current_fallback}) also failed with {fallback_err.status_code}")
+            request_stats.record_error()
             return _openai_error_response(fallback_err.status_code, fallback_err.message, "server_error")
         except CopilotHttpError as fallback_err:
+            request_stats.record_error()
             return _openai_error_response(fallback_err.status_code, fallback_err.detail, "server_error")
         except RuntimeError as fallback_err:
+            request_stats.record_error()
             return _openai_error_response(401, str(fallback_err), "authentication_error")
         except Exception as fallback_err:
             logger.error(f"{log_prefix}Fallback ({current_fallback}) unexpected error: {fallback_err}")
+            request_stats.record_error()
             return _openai_error_response(500, str(fallback_err), "server_error")
     except CopilotHttpError as e:
+        request_stats.record_error()
         return _openai_error_response(e.status_code, e.detail, "server_error")
     except RuntimeError as e:
         logger.error(f"{log_prefix}Auth error: {e}")
+        request_stats.record_error()
         return _openai_error_response(401, str(e), "authentication_error")
     except Exception as e:
         logger.error(f"{log_prefix}Unexpected error: {e}")
+        request_stats.record_error()
         return _openai_error_response(500, str(e), "server_error")
 
 
@@ -1211,6 +1260,7 @@ async def api_status(log_level: str | None = None) -> dict[str, Any]:
     }
     if copilot is not None:
         result["copilot"] = copilot
+    result["stats"] = request_stats.snapshot()
     return result
 
 

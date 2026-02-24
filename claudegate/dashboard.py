@@ -166,6 +166,10 @@ DASHBOARD_HTML = """\
     <h2>Copilot Usage</h2>
     <div id="copilot-content"></div>
   </div>
+  <div class="panel" id="stats-panel">
+    <h2>Request Stats</h2>
+    <div id="stats-content"><span class="label">Loading...</span></div>
+  </div>
   <div class="panel full" id="models-panel">
     <h2>Models</h2>
     <div id="models-content"><span class="label">Loading...</span></div>
@@ -193,6 +197,7 @@ DASHBOARD_HTML = """\
   const serviceEl = document.getElementById('service-content');
   const copilotPanel = document.getElementById('copilot-panel');
   const copilotEl = document.getElementById('copilot-content');
+  const statsEl = document.getElementById('stats-content');
   const modelsEl = document.getElementById('models-content');
   const logViewer = document.getElementById('log-viewer');
   const levelSelect = document.getElementById('log-level');
@@ -291,6 +296,17 @@ DASHBOARD_HTML = """\
       kv('Reset', c.reset_date || '?');
   }
 
+  function renderStats(d) {
+    var s = d.stats || {};
+    var byBackend = s.requests_by_backend || {};
+    var parts = Object.keys(byBackend).map(function(k) { return k + ': ' + byBackend[k]; });
+    statsEl.innerHTML =
+      kv('Total requests', String(s.total_requests || 0)) +
+      kv('By backend', parts.length ? parts.join(', ') : 'none') +
+      kv('Errors', String(s.errors || 0)) +
+      kv('Fallbacks', String(s.fallbacks || 0));
+  }
+
   function fmt(n) {
     if (n == null) return '-';
     if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
@@ -342,6 +358,7 @@ DASHBOARD_HTML = """\
         renderStatus(d);
         renderService(d);
         renderCopilot(d);
+        renderStats(d);
         renderModels(d);
         renderLogs(d.logs || []);
       })
