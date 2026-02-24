@@ -104,6 +104,19 @@ DASHBOARD_HTML = """\
     display: none;
   }
   @media (max-width: 700px) { .panels { grid-template-columns: 1fr; } }
+  .progress-bar {
+    width: 100%;
+    height: 8px;
+    background: var(--border);
+    border-radius: 4px;
+    overflow: hidden;
+    margin: 6px 0 2px;
+  }
+  .progress-fill {
+    height: 100%;
+    border-radius: 4px;
+    transition: width 0.3s;
+  }
 </style>
 </head>
 <body>
@@ -117,6 +130,10 @@ DASHBOARD_HTML = """\
   <div class="panel" id="service-panel">
     <h2>Service</h2>
     <div id="service-content"><span class="label">Loading...</span></div>
+  </div>
+  <div class="panel" id="copilot-panel" style="display:none">
+    <h2>Copilot Usage</h2>
+    <div id="copilot-content"></div>
   </div>
   <div class="panel full" id="models-panel">
     <h2>Models</h2>
@@ -143,6 +160,8 @@ DASHBOARD_HTML = """\
 (function() {
   const statusEl = document.getElementById('status-content');
   const serviceEl = document.getElementById('service-content');
+  const copilotPanel = document.getElementById('copilot-panel');
+  const copilotEl = document.getElementById('copilot-content');
   const modelsEl = document.getElementById('models-content');
   const logViewer = document.getElementById('log-viewer');
   const levelSelect = document.getElementById('log-level');
@@ -186,6 +205,28 @@ DASHBOARD_HTML = """\
       kv('Installed', badge(s.installed, 'yes', 'no')) +
       kv('Running', badge(s.running, 'yes', 'no')) +
       kv('Service file', s.service_file || 'n/a');
+  }
+
+  function renderCopilot(d) {
+    if (!d.copilot) {
+      copilotPanel.style.display = 'none';
+      return;
+    }
+    copilotPanel.style.display = '';
+    const c = d.copilot;
+    const p = c.premium;
+    const pct = p.percent_used || 0;
+    const barColor = pct >= 90 ? 'var(--red)' : pct >= 70 ? 'var(--orange)' : 'var(--green)';
+    const staleTag = c.stale ? ' <span class="badge badge-yellow">stale</span>' : '';
+    copilotEl.innerHTML =
+      kv('Plan', c.plan + staleTag) +
+      kv('Premium', p.used + ' / ' + p.total + ' (' + pct + '%)') +
+      '<div class="progress-bar"><div class="progress-fill" style="width:' +
+        pct + '%;background:' + barColor + '"></div></div>' +
+      kv('Remaining', String(p.remaining)) +
+      kv('Chat', c.chat.unlimited ? 'unlimited' : 'limited') +
+      kv('Completions', c.completions.unlimited ? 'unlimited' : 'limited') +
+      kv('Reset', c.reset_date || '?');
   }
 
   function fmt(n) {
@@ -238,6 +279,7 @@ DASHBOARD_HTML = """\
         errorBanner.style.display = 'none';
         renderStatus(d);
         renderService(d);
+        renderCopilot(d);
         renderModels(d);
         renderLogs(d.logs || []);
       })
