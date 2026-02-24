@@ -5,13 +5,8 @@
   },
   "plugins": [
     {
-      "name": "models",
-      "description": "List available models from the claudegate proxy",
-      "source": "./plugins/claudegate"
-    },
-    {
-      "name": "backend",
-      "description": "Switch the claudegate proxy backend at runtime",
+      "name": "claudegate",
+      "description": "Skills for managing a claudegate proxy instance",
       "source": "./plugins/claudegate"
     }
   ]
