@@ -101,13 +101,12 @@ class TestGetServiceStatus:
 
     @patch("claudegate.service._detect_platform", return_value="macos")
     @patch("claudegate.service._plist_path")
-    @patch("claudegate.service.subprocess.run")
-    def test_macos_installed_running(self, mock_run, mock_path, _mock_plat):
+    @patch("claudegate.service._launchd_pid", return_value=12345)
+    def test_macos_installed_running(self, _mock_pid, mock_path, _mock_plat):
         from claudegate.service import get_service_status
 
         mock_path.return_value.exists.return_value = True
         mock_path.return_value.__str__ = lambda self: "/Users/test/Library/LaunchAgents/com.claudegate.plist"
-        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
         status = get_service_status()
         assert status["platform"] == "macos"
