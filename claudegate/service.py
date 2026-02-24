@@ -43,6 +43,11 @@ def _err(msg: str) -> None:
 # -- Internal helpers --------------------------------------------------------
 
 
+def _is_running_as_sudo() -> bool:
+    """Detect if the process is running via sudo."""
+    return os.geteuid() == 0 and os.environ.get("SUDO_USER") is not None
+
+
 def _detect_platform() -> str:
     s = platform.system()
     if s == "Darwin":
@@ -71,6 +76,7 @@ def _capture_env_vars() -> dict[str, str]:
 
 def _generate_plist(binary: str, env_vars: dict[str, str] | None = None) -> str:
     env_dict: dict[str, str] = {
+        "HOME": str(Path.home()),
         "PATH": "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin",
         "NO_COLOR": "1",
     }
@@ -152,6 +158,12 @@ def _systemd_unit_path() -> Path:
 
 def install_service(*, capture_env: bool = False) -> int:
     _header("Installing claudegate as a system service...")
+
+    if _is_running_as_sudo():
+        _err("Do not run 'claudegate install' with sudo.")
+        _err("The service runs as your user and needs your user's HOME directory.")
+        _err("Run without sudo:  claudegate install")
+        return 1
 
     plat = _detect_platform()
     _step(f"Detecting platform... {plat}")
@@ -309,6 +321,12 @@ def _install_windows(binary: str) -> int:
 
 def uninstall_service() -> int:
     _header("Uninstalling claudegate system service...")
+
+    if _is_running_as_sudo():
+        _err("Do not run 'claudegate uninstall' with sudo.")
+        _err("The service runs as your user and needs your user's HOME directory.")
+        _err("Run without sudo:  claudegate uninstall")
+        return 1
 
     plat = _detect_platform()
     _step(f"Detecting platform... {plat}")

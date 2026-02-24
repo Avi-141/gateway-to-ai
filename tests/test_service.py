@@ -10,6 +10,7 @@ from claudegate.service import (
     _detect_platform,
     _generate_plist,
     _generate_systemd_unit,
+    _is_running_as_sudo,
     _resolve_binary,
     install_service,
     restart_service,
@@ -76,6 +77,50 @@ def test_capture_env_vars_empty():
     with patch.dict(os.environ, {"HOME": "/home/user"}, clear=True):
         result = _capture_env_vars()
     assert result == {}
+
+
+# -- Sudo detection ----------------------------------------------------------
+
+
+def test_is_running_as_sudo_true():
+    with (
+        patch("claudegate.service.os.geteuid", return_value=0),
+        patch.dict(os.environ, {"SUDO_USER": "alice"}, clear=False),
+    ):
+        assert _is_running_as_sudo() is True
+
+
+def test_is_running_as_sudo_false_not_root():
+    with (
+        patch("claudegate.service.os.geteuid", return_value=1000),
+        patch.dict(os.environ, {}, clear=False),
+    ):
+        assert _is_running_as_sudo() is False
+
+
+def test_is_running_as_sudo_false_root_no_sudo_user():
+    env = {k: v for k, v in os.environ.items() if k != "SUDO_USER"}
+    with (
+        patch("claudegate.service.os.geteuid", return_value=0),
+        patch.dict(os.environ, env, clear=True),
+    ):
+        assert _is_running_as_sudo() is False
+
+
+def test_install_refuses_under_sudo():
+    with (
+        patch("claudegate.service._is_running_as_sudo", return_value=True),
+    ):
+        result = install_service(capture_env=False)
+    assert result == 1
+
+
+def test_uninstall_refuses_under_sudo():
+    with (
+        patch("claudegate.service._is_running_as_sudo", return_value=True),
+    ):
+        result = uninstall_service()
+    assert result == 1
 
 
 # -- Plist generation --------------------------------------------------------
@@ -155,6 +200,7 @@ def test_install_macos_success(tmp_path):
     plist_path = tmp_path / "com.claudegate.plist"
 
     with (
+        patch("claudegate.service._is_running_as_sudo", return_value=False),
         patch("claudegate.service._detect_platform", return_value="macos"),
         patch("claudegate.service._resolve_binary", return_value="/usr/local/bin/claudegate"),
         patch("claudegate.service._plist_path", return_value=plist_path),
@@ -175,6 +221,7 @@ def test_install_macos_already_exists(tmp_path):
     plist_path.write_text("existing")
 
     with (
+        patch("claudegate.service._is_running_as_sudo", return_value=False),
         patch("claudegate.service._detect_platform", return_value="macos"),
         patch("claudegate.service._resolve_binary", return_value="/usr/local/bin/claudegate"),
         patch("claudegate.service._plist_path", return_value=plist_path),
@@ -194,6 +241,7 @@ def test_install_macos_with_env(tmp_path):
     plist_path = tmp_path / "com.claudegate.plist"
 
     with (
+        patch("claudegate.service._is_running_as_sudo", return_value=False),
         patch("claudegate.service._detect_platform", return_value="macos"),
         patch("claudegate.service._resolve_binary", return_value="/usr/local/bin/claudegate"),
         patch("claudegate.service._plist_path", return_value=plist_path),
@@ -213,6 +261,7 @@ def test_install_macos_launchctl_fails(tmp_path):
     plist_path = tmp_path / "com.claudegate.plist"
 
     with (
+        patch("claudegate.service._is_running_as_sudo", return_value=False),
         patch("claudegate.service._detect_platform", return_value="macos"),
         patch("claudegate.service._resolve_binary", return_value="/usr/local/bin/claudegate"),
         patch("claudegate.service._plist_path", return_value=plist_path),
@@ -231,6 +280,7 @@ def test_install_linux_success(tmp_path):
     unit_path = tmp_path / "claudegate.service"
 
     with (
+        patch("claudegate.service._is_running_as_sudo", return_value=False),
         patch("claudegate.service._detect_platform", return_value="linux"),
         patch("claudegate.service._resolve_binary", return_value="/usr/local/bin/claudegate"),
         patch("claudegate.service._systemd_unit_path", return_value=unit_path),
@@ -251,6 +301,7 @@ def test_install_linux_already_exists(tmp_path):
     unit_path.write_text("existing")
 
     with (
+        patch("claudegate.service._is_running_as_sudo", return_value=False),
         patch("claudegate.service._detect_platform", return_value="linux"),
         patch("claudegate.service._resolve_binary", return_value="/usr/local/bin/claudegate"),
         patch("claudegate.service._systemd_unit_path", return_value=unit_path),
@@ -271,6 +322,7 @@ def test_install_linux_already_exists(tmp_path):
 
 def test_install_binary_not_found():
     with (
+        patch("claudegate.service._is_running_as_sudo", return_value=False),
         patch("claudegate.service._detect_platform", return_value="macos"),
         patch("claudegate.service._resolve_binary", return_value=None),
     ):
@@ -281,6 +333,7 @@ def test_install_binary_not_found():
 
 def test_install_unsupported_platform():
     with (
+        patch("claudegate.service._is_running_as_sudo", return_value=False),
         patch("claudegate.service._detect_platform", return_value="freebsd"),
         patch("claudegate.service._resolve_binary", return_value="/usr/local/bin/claudegate"),
     ):
@@ -297,6 +350,7 @@ def test_uninstall_macos_success(tmp_path):
     plist_path.write_text("<plist/>")
 
     with (
+        patch("claudegate.service._is_running_as_sudo", return_value=False),
         patch("claudegate.service._detect_platform", return_value="macos"),
         patch("claudegate.service._plist_path", return_value=plist_path),
         patch("claudegate.service.subprocess.run") as mock_run,
@@ -312,6 +366,7 @@ def test_uninstall_macos_not_installed(tmp_path):
     plist_path = tmp_path / "com.claudegate.plist"
 
     with (
+        patch("claudegate.service._is_running_as_sudo", return_value=False),
         patch("claudegate.service._detect_platform", return_value="macos"),
         patch("claudegate.service._plist_path", return_value=plist_path),
     ):
@@ -328,6 +383,7 @@ def test_uninstall_linux_success(tmp_path):
     unit_path.write_text("[Unit]")
 
     with (
+        patch("claudegate.service._is_running_as_sudo", return_value=False),
         patch("claudegate.service._detect_platform", return_value="linux"),
         patch("claudegate.service._systemd_unit_path", return_value=unit_path),
         patch("claudegate.service.subprocess.run") as mock_run,
@@ -343,6 +399,7 @@ def test_uninstall_linux_not_installed(tmp_path):
     unit_path = tmp_path / "claudegate.service"
 
     with (
+        patch("claudegate.service._is_running_as_sudo", return_value=False),
         patch("claudegate.service._detect_platform", return_value="linux"),
         patch("claudegate.service._systemd_unit_path", return_value=unit_path),
     ):

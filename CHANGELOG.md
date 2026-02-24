@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Block `sudo` for `install`/`uninstall` commands** — running `sudo claudegate install` on macOS silently writes the plist to `/var/root/Library/LaunchAgents/` and creates a root-owned log file, both invisible to the normal user. The commands now detect `sudo` and refuse with a clear error message.
 - **Filter unsupported beta flags for Bedrock** — Claude Code sends `anthropic-beta` header flags (e.g., `interleaved-thinking-*`, `context-management-*`, `prompt-caching-scope-*`) that Bedrock doesn't recognize, causing `ValidationException: invalid beta flag`. Beta flags are now filtered to a whitelist of Bedrock-supported prefixes (`context-1m-*`, `effort-*`). Unsupported flags are silently dropped.
 - **Handle `ClientError` in Bedrock streaming path** — non-transient errors like `ValidationException` and `AccessDeniedException` from `_open_bedrock_stream` were not caught in the streaming branch, falling through to the generic `except Exception` handler and returning 500. These now return proper error responses (400, 403).
 - **Add region prefix for pass-through Bedrock model IDs** — when Claude Code sends a raw Bedrock model ID (e.g., `anthropic.claude-haiku-4-5-20251001-v1:0`), it was returned without the cross-region inference profile prefix (`us.`), causing Bedrock to reject it with "on-demand throughput isn't supported".
