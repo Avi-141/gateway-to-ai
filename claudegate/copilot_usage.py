@@ -46,11 +46,12 @@ class CopilotUsageCache:
         if self._data is not None:
             # Stale — return old data, refresh in background
             self._ensure_refresh_scheduled()
-            return {**self._data, "stale": True, "cached_at": self._data["cached_at"]}
+            return {**self._data, "stale": True}
 
         # No data at all — must wait for first fetch
         await self._refresh()
-        self._ensure_refresh_scheduled()
+        if self._data is not None:
+            self._ensure_refresh_scheduled()
         return self._data
 
     async def _refresh(self) -> None:
@@ -117,15 +118,16 @@ class CopilotUsageCache:
         try:
             while True:
                 await asyncio.sleep(self._ttl)
-                await self._refresh()
+                try:
+                    await self._refresh()
+                except Exception as e:
+                    logger.warning("Copilot usage background refresh error: %s", e)
                 # Stop if nobody asked during the last TTL period
                 if (time.time() - self._last_accessed) >= self._ttl:
                     logger.debug("Copilot usage cache going idle (no recent requests)")
                     break
         except asyncio.CancelledError:
             raise
-        except Exception as e:
-            logger.warning("Copilot usage background refresh failed unexpectedly: %s", e)
 
     async def close(self) -> None:
         """Cancel background task and close HTTP client."""
