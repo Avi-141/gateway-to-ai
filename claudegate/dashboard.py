@@ -233,6 +233,7 @@ DASHBOARD_HTML = """\
           errorBanner.style.display = 'block';
         } else {
           errorBanner.style.display = 'none';
+          backendDirty = false;
           fetchStatus();
         }
       })
@@ -253,16 +254,21 @@ DASHBOARD_HTML = """\
     return '<div class="kv"><span class="label">' + label + '</span><span>' + value + '</span></div>';
   }
 
+  var backendDirty = false;
+  backendSelect.addEventListener('change', function() { backendDirty = true; });
+
   function renderStatus(d) {
     statusEl.innerHTML =
       kv('Version', d.health.version || '?') +
       kv('Status', badge(d.health.status === 'ok', 'healthy', d.health.status)) +
       kv('Backend', d.health.backend || '?') +
       kv('Fallback', d.health.fallback || 'none');
-    // Sync dropdown with current backend
-    var current = d.health.backend || '';
-    if (d.health.fallback) current += ',' + d.health.fallback;
-    backendSelect.value = current;
+    // Sync dropdown with current backend (skip if user has a pending selection)
+    if (!backendDirty) {
+      var current = d.health.backend || '';
+      if (d.health.fallback) current += ',' + d.health.fallback;
+      backendSelect.value = current;
+    }
   }
 
   function renderService(d) {
