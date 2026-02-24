@@ -83,9 +83,12 @@ def get_bedrock_model(model: str) -> str:
     # Direct match
     if model in BEDROCK_MODEL_MAP:
         return add_region_prefix(BEDROCK_MODEL_MAP[model])
-    # Already a Bedrock model ID (with or without prefix)
+    # Already a Bedrock model ID — ensure region prefix is applied
     if "anthropic." in model:
-        return model
+        # Strip existing region prefix (e.g., "us.anthropic..." -> "anthropic...")
+        # then re-add it to ensure consistency
+        bare = model.split("anthropic.", 1)[-1]
+        return add_region_prefix(f"anthropic.{bare}")
     # Partial match
     for key, value in BEDROCK_MODEL_MAP.items():
         if key in model:

@@ -243,18 +243,51 @@ def _count_content_tokens(content: Any) -> int:
 # --- Bedrock Helpers ---
 
 
+# Beta flag prefixes that Bedrock accepts in the anthropic_beta body field.
+# Bedrock handles most features (thinking, caching, tool use) via dedicated body
+# parameters, but some features still require explicit beta flags.
+# Ref: https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages.html
+_BEDROCK_BETA_PREFIXES = (
+    "context-1m-",  # 1M token context window (Sonnet 4.5, Sonnet 4, Opus 4.6)
+    "effort-",  # Effort parameter for Opus 4.5
+)
+
+
+def _filter_beta_flags(flags: list[str]) -> list[str]:
+    """Keep only beta flags whose prefix Bedrock recognises."""
+    return [f for f in flags if any(f.startswith(p) for p in _BEDROCK_BETA_PREFIXES)]
+
+
 def _build_bedrock_body(body: dict[str, Any], request: Request) -> dict[str, Any]:
-    """Build Bedrock request body from Anthropic request."""
+    """Build Bedrock request body from Anthropic request.
+
+    Beta flags are filtered to only those Bedrock supports. Unsupported flags
+    (e.g., interleaved-thinking, claude-code, prompt-caching-scope) are dropped
+    since Bedrock controls those features via dedicated body parameters.
+    """
     bedrock_body: dict[str, Any] = {
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": body["max_tokens"],
         "messages": body["messages"],
     }
 
-    # Check for anthropic-beta header and convert to body field
+    # Merge beta flags from header and body, filter to Bedrock-supported prefixes
+    beta_flags: list[str] = []
     beta_header = request.headers.get("anthropic-beta")
     if beta_header:
-        bedrock_body["anthropic_beta"] = [b.strip() for b in beta_header.split(",")]
+        beta_flags.extend(b.strip() for b in beta_header.split(","))
+    if "anthropic_beta" in body:
+        beta_flags.extend(body["anthropic_beta"])
+    if beta_flags:
+        # Deduplicate while preserving order
+        seen: set[str] = set()
+        unique_flags = [f for f in beta_flags if f not in seen and not seen.add(f)]  # type: ignore[func-returns-value]
+        filtered = _filter_beta_flags(unique_flags)
+        dropped = [f for f in unique_flags if f not in filtered]
+        if dropped:
+            logger.debug(f"Dropped unsupported beta flags for Bedrock: {dropped}")
+        if filtered:
+            bedrock_body["anthropic_beta"] = filtered
 
     # Optional fields - pass through all supported Anthropic API parameters
     optional_fields = [
@@ -267,7 +300,6 @@ def _build_bedrock_body(body: dict[str, Any], request: Request) -> dict[str, Any
         "thinking",
         "stop_sequences",
         "metadata",
-        "anthropic_beta",
     ]
     for field in optional_fields:
         if field in body:
@@ -358,8 +390,25 @@ async def _call_bedrock(
     bedrock_body = _build_bedrock_body(body, request)
 
     if stream:
-        # Two-phase: open (can raise TransientBackendError), then iterate
-        response = _open_bedrock_stream(bedrock_model, bedrock_body)
+        # Two-phase: open (can raise TransientBackendError or ClientError), then iterate
+        try:
+            response = _open_bedrock_stream(bedrock_model, bedrock_body)
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code", "")
+            error_message = e.response.get("Error", {}).get("Message", str(e))
+            if error_code in ("ExpiredTokenException", "ExpiredToken"):
+                logger.error(f"{log_prefix}Credentials expired")
+                reset_bedrock_client()
+                return _error_response(401, "authentication_error", CREDENTIALS_EXPIRED_MSG)
+            elif error_code == "ValidationException":
+                logger.error(f"{log_prefix}Validation error: {error_message}")
+                return _error_response(400, "invalid_request_error", error_message)
+            elif error_code == "AccessDeniedException":
+                logger.error(f"{log_prefix}Access denied: {error_message}")
+                return _error_response(403, "permission_error", error_message)
+            else:
+                logger.error(f"{log_prefix}Bedrock error ({error_code}): {error_message}")
+                return _error_response(500, "api_error", error_message)
         return StreamingResponse(
             _stream_bedrock_chunks(response, request_id),
             media_type="text/event-stream",
