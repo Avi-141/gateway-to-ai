@@ -41,65 +41,13 @@ A lightweight proxy that translates Anthropic API requests to GitHub Copilot or 
 
 ## Supported Models
 
-### Copilot Backend (Claude Models)
+Available models are fetched dynamically from each backend at startup. View them via:
 
-| Anthropic Model | Copilot Model |
-|-----------------|---------------|
-| claude-opus-4-6-20250515 | claude-opus-4.6 |
-| claude-opus-4-5-20251101 | claude-opus-4.5 |
-| claude-opus-4-1-20250805 | claude-opus-4.1 |
-| claude-opus-4-20250514 | claude-opus-4 |
-| claude-sonnet-4-5-20250929 | claude-sonnet-4.5 |
-| claude-sonnet-4-20250514 | claude-sonnet-4 |
-| claude-haiku-4-5-20251001 | claude-haiku-4.5 |
-| claude-3-7-sonnet-20250219 | claude-3.7-sonnet |
-| claude-3-5-sonnet-20241022 | claude-3.5-sonnet |
-| claude-3-5-haiku-20241022 | claude-3.5-haiku |
+- **Web dashboard** — open `http://localhost:8080` in your browser
+- **API** — `GET http://localhost:8080/v1/models`
+- **Claude Code** — install the `/models` plugin (see below)
 
-### Copilot Backend (Non-Claude Models)
-
-When using the Copilot backend, non-Claude models are available via both `/v1/messages` (Anthropic format) and `/v1/chat/completions` (OpenAI format):
-
-| Model | Provider |
-|-------|----------|
-| gpt-5.3-codex | OpenAI |
-| gpt-5.2-codex | OpenAI |
-| gpt-5.2 | OpenAI |
-| gpt-5.1-codex-max | OpenAI |
-| gpt-5.1-codex-mini | OpenAI |
-| gpt-5.1-codex | OpenAI |
-| gpt-5.1 | OpenAI |
-| gpt-5-codex | OpenAI |
-| gpt-5-mini | OpenAI |
-| gpt-5 | OpenAI |
-| gpt-4.1 | OpenAI |
-| gpt-4o | OpenAI |
-| gemini-3-pro-preview | Google |
-| gemini-3-flash-preview | Google |
-| gemini-2.5-pro | Google |
-| grok-code-fast-1 | xAI |
-| raptor-mini | Other |
-
-These models work via both endpoints when using the Copilot backend. On `/v1/chat/completions`, they pass through directly with zero format translations. On `/v1/messages`, requests are translated to OpenAI format and responses are translated back to Anthropic format. On `/v1/responses`, models that natively support the Responses API get zero-translation passthrough; others are translated via Chat Completions format. Codex models (`gpt-5.x-codex`) that only support the Responses API are handled automatically — the proxy detects the required endpoint and translates accordingly. Model availability depends on your Copilot plan.
-
-### Bedrock Backend
-
-| Anthropic Model | Bedrock Model |
-|-----------------|---------------|
-| claude-opus-4-6-20250515 | us.anthropic.claude-opus-4-6-20250515-v1:0 |
-| claude-opus-4-5-20251101 | us.anthropic.claude-opus-4-5-20251101-v1:0 |
-| claude-opus-4-1-20250805 | us.anthropic.claude-opus-4-1-20250805-v1:0 |
-| claude-opus-4-20250514 | us.anthropic.claude-opus-4-20250514-v1:0 |
-| claude-sonnet-4-5-20250929 | us.anthropic.claude-sonnet-4-5-20250929-v1:0 |
-| claude-sonnet-4-20250514 | us.anthropic.claude-sonnet-4-20250514-v1:0 |
-| claude-3-7-sonnet-20250219 | us.anthropic.claude-3-7-sonnet-20250219-v1:0 |
-| claude-3-5-sonnet-20241022 | us.anthropic.claude-3-5-sonnet-20241022-v2:0 |
-| claude-3-5-sonnet-20240620 | us.anthropic.claude-3-5-sonnet-20240620-v1:0 |
-| claude-haiku-4-5-20251001 | us.anthropic.claude-haiku-4-5-20251001-v1:0 |
-| claude-3-5-haiku-20241022 | us.anthropic.claude-3-5-haiku-20241022-v1:0 |
-| claude-3-haiku-20240307 | us.anthropic.claude-3-haiku-20240307-v1:0 |
-| claude-3-opus-20240229 | us.anthropic.claude-3-opus-20240229-v1:0 |
-| claude-3-sonnet-20240229 | us.anthropic.claude-3-sonnet-20240229-v1:0 |
+The Copilot backend supports Claude models (translated to Anthropic format) and non-Claude models like GPT, Gemini, and others (passed through via OpenAI format). The Bedrock backend supports all Claude models available in your AWS region.
 
 ## Prerequisites
 
