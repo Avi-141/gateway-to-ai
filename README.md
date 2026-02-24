@@ -266,6 +266,15 @@ This works on all platforms:
 # Check if the service is installed and running
 claudegate status
 
+# Stop the service
+claudegate stop
+
+# Start the service
+claudegate start
+
+# Restart the service
+claudegate restart
+
 # Tail service logs (macOS/Linux)
 claudegate logs
 

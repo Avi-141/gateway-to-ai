@@ -12,8 +12,11 @@ from claudegate.service import (
     _generate_systemd_unit,
     _resolve_binary,
     install_service,
+    restart_service,
     service_logs,
     service_status,
+    start_service,
+    stop_service,
     uninstall_service,
 )
 
@@ -556,3 +559,402 @@ def test_logs_keyboard_interrupt_linux(tmp_path):
         result = service_logs(lines=100, follow=True, since=None)
 
     assert result == 130
+
+
+# -- Start (macOS) -----------------------------------------------------------
+
+
+def test_start_macos_success(tmp_path):
+    plist_path = tmp_path / "com.claudegate.plist"
+    plist_path.write_text("<plist/>")
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="macos"),
+        patch("claudegate.service._plist_path", return_value=plist_path),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        result = start_service()
+
+    assert result == 0
+    mock_run.assert_called_once()
+    cmd = mock_run.call_args.args[0]
+    assert "load" in cmd
+
+
+def test_start_macos_not_installed(tmp_path):
+    plist_path = tmp_path / "com.claudegate.plist"
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="macos"),
+        patch("claudegate.service._plist_path", return_value=plist_path),
+    ):
+        result = start_service()
+
+    assert result == 1
+
+
+def test_start_macos_launchctl_fails(tmp_path):
+    plist_path = tmp_path / "com.claudegate.plist"
+    plist_path.write_text("<plist/>")
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="macos"),
+        patch("claudegate.service._plist_path", return_value=plist_path),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=1, stderr="load failed")
+        result = start_service()
+
+    assert result == 1
+
+
+# -- Start (Linux) -----------------------------------------------------------
+
+
+def test_start_linux_success(tmp_path):
+    unit_path = tmp_path / "claudegate.service"
+    unit_path.write_text("[Unit]")
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="linux"),
+        patch("claudegate.service._systemd_unit_path", return_value=unit_path),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        result = start_service()
+
+    assert result == 0
+    cmd = mock_run.call_args.args[0]
+    assert cmd == ["systemctl", "--user", "start", "claudegate.service"]
+
+
+def test_start_linux_not_installed(tmp_path):
+    unit_path = tmp_path / "claudegate.service"
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="linux"),
+        patch("claudegate.service._systemd_unit_path", return_value=unit_path),
+    ):
+        result = start_service()
+
+    assert result == 1
+
+
+def test_start_linux_systemctl_fails(tmp_path):
+    unit_path = tmp_path / "claudegate.service"
+    unit_path.write_text("[Unit]")
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="linux"),
+        patch("claudegate.service._systemd_unit_path", return_value=unit_path),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=1, stderr="start failed")
+        result = start_service()
+
+    assert result == 1
+
+
+# -- Start (Windows) ---------------------------------------------------------
+
+
+def test_start_windows_success():
+    with (
+        patch("claudegate.service._detect_platform", return_value="windows"),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        result = start_service()
+
+    assert result == 0
+    cmd = mock_run.call_args.args[0]
+    assert cmd == ["schtasks", "/Run", "/TN", "Claudegate"]
+
+
+def test_start_windows_fails():
+    with (
+        patch("claudegate.service._detect_platform", return_value="windows"),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=1, stderr="run failed")
+        result = start_service()
+
+    assert result == 1
+
+
+# -- Start (unsupported) ----------------------------------------------------
+
+
+def test_start_unsupported_platform():
+    with patch("claudegate.service._detect_platform", return_value="freebsd"):
+        result = start_service()
+    assert result == 1
+
+
+# -- Stop (macOS) ------------------------------------------------------------
+
+
+def test_stop_macos_success(tmp_path):
+    plist_path = tmp_path / "com.claudegate.plist"
+    plist_path.write_text("<plist/>")
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="macos"),
+        patch("claudegate.service._plist_path", return_value=plist_path),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        result = stop_service()
+
+    assert result == 0
+    cmd = mock_run.call_args.args[0]
+    assert "unload" in cmd
+
+
+def test_stop_macos_not_installed(tmp_path):
+    plist_path = tmp_path / "com.claudegate.plist"
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="macos"),
+        patch("claudegate.service._plist_path", return_value=plist_path),
+    ):
+        result = stop_service()
+
+    assert result == 1
+
+
+def test_stop_macos_launchctl_fails(tmp_path):
+    plist_path = tmp_path / "com.claudegate.plist"
+    plist_path.write_text("<plist/>")
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="macos"),
+        patch("claudegate.service._plist_path", return_value=plist_path),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=1, stderr="unload failed")
+        result = stop_service()
+
+    assert result == 1
+
+
+# -- Stop (Linux) ------------------------------------------------------------
+
+
+def test_stop_linux_success(tmp_path):
+    unit_path = tmp_path / "claudegate.service"
+    unit_path.write_text("[Unit]")
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="linux"),
+        patch("claudegate.service._systemd_unit_path", return_value=unit_path),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        result = stop_service()
+
+    assert result == 0
+    cmd = mock_run.call_args.args[0]
+    assert cmd == ["systemctl", "--user", "stop", "claudegate.service"]
+
+
+def test_stop_linux_not_installed(tmp_path):
+    unit_path = tmp_path / "claudegate.service"
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="linux"),
+        patch("claudegate.service._systemd_unit_path", return_value=unit_path),
+    ):
+        result = stop_service()
+
+    assert result == 1
+
+
+def test_stop_linux_systemctl_fails(tmp_path):
+    unit_path = tmp_path / "claudegate.service"
+    unit_path.write_text("[Unit]")
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="linux"),
+        patch("claudegate.service._systemd_unit_path", return_value=unit_path),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=1, stderr="stop failed")
+        result = stop_service()
+
+    assert result == 1
+
+
+# -- Stop (Windows) ----------------------------------------------------------
+
+
+def test_stop_windows_success():
+    with (
+        patch("claudegate.service._detect_platform", return_value="windows"),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        result = stop_service()
+
+    assert result == 0
+    cmd = mock_run.call_args.args[0]
+    assert cmd == ["schtasks", "/End", "/TN", "Claudegate"]
+
+
+def test_stop_windows_fails():
+    with (
+        patch("claudegate.service._detect_platform", return_value="windows"),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=1, stderr="end failed")
+        result = stop_service()
+
+    assert result == 1
+
+
+# -- Stop (unsupported) -----------------------------------------------------
+
+
+def test_stop_unsupported_platform():
+    with patch("claudegate.service._detect_platform", return_value="freebsd"):
+        result = stop_service()
+    assert result == 1
+
+
+# -- Restart (macOS) ---------------------------------------------------------
+
+
+def test_restart_macos_success(tmp_path):
+    plist_path = tmp_path / "com.claudegate.plist"
+    plist_path.write_text("<plist/>")
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="macos"),
+        patch("claudegate.service._plist_path", return_value=plist_path),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        result = restart_service()
+
+    assert result == 0
+    # unload + load
+    assert mock_run.call_count == 2
+
+
+def test_restart_macos_not_installed(tmp_path):
+    plist_path = tmp_path / "com.claudegate.plist"
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="macos"),
+        patch("claudegate.service._plist_path", return_value=plist_path),
+    ):
+        result = restart_service()
+
+    assert result == 1
+
+
+def test_restart_macos_load_fails(tmp_path):
+    plist_path = tmp_path / "com.claudegate.plist"
+    plist_path.write_text("<plist/>")
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="macos"),
+        patch("claudegate.service._plist_path", return_value=plist_path),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        # unload succeeds, load fails
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stderr=""),
+            MagicMock(returncode=1, stderr="load failed"),
+        ]
+        result = restart_service()
+
+    assert result == 1
+
+
+# -- Restart (Linux) ---------------------------------------------------------
+
+
+def test_restart_linux_success(tmp_path):
+    unit_path = tmp_path / "claudegate.service"
+    unit_path.write_text("[Unit]")
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="linux"),
+        patch("claudegate.service._systemd_unit_path", return_value=unit_path),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        result = restart_service()
+
+    assert result == 0
+    cmd = mock_run.call_args.args[0]
+    assert cmd == ["systemctl", "--user", "restart", "claudegate.service"]
+
+
+def test_restart_linux_not_installed(tmp_path):
+    unit_path = tmp_path / "claudegate.service"
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="linux"),
+        patch("claudegate.service._systemd_unit_path", return_value=unit_path),
+    ):
+        result = restart_service()
+
+    assert result == 1
+
+
+def test_restart_linux_systemctl_fails(tmp_path):
+    unit_path = tmp_path / "claudegate.service"
+    unit_path.write_text("[Unit]")
+
+    with (
+        patch("claudegate.service._detect_platform", return_value="linux"),
+        patch("claudegate.service._systemd_unit_path", return_value=unit_path),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=1, stderr="restart failed")
+        result = restart_service()
+
+    assert result == 1
+
+
+# -- Restart (Windows) -------------------------------------------------------
+
+
+def test_restart_windows_success():
+    with (
+        patch("claudegate.service._detect_platform", return_value="windows"),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        mock_run.return_value = MagicMock(returncode=0, stderr="")
+        result = restart_service()
+
+    assert result == 0
+    # End + Run
+    assert mock_run.call_count == 2
+
+
+def test_restart_windows_run_fails():
+    with (
+        patch("claudegate.service._detect_platform", return_value="windows"),
+        patch("claudegate.service.subprocess.run") as mock_run,
+    ):
+        # End succeeds, Run fails
+        mock_run.side_effect = [
+            MagicMock(returncode=0, stderr=""),
+            MagicMock(returncode=1, stderr="run failed"),
+        ]
+        result = restart_service()
+
+    assert result == 1
+
+
+# -- Restart (unsupported) --------------------------------------------------
+
+
+def test_restart_unsupported_platform():
+    with patch("claudegate.service._detect_platform", return_value="freebsd"):
+        result = restart_service()
+    assert result == 1

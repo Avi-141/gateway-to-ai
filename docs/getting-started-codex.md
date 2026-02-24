@@ -73,7 +73,7 @@ This registers claudegate to start automatically on login:
 | Linux | systemd user unit (`~/.config/systemd/user/`) |
 | Windows | Scheduled task |
 
-Manage the service with `claudegate status` and `claudegate uninstall`. You can also open [http://localhost:8080](http://localhost:8080) in your browser to see the dashboard with live status, available models, and logs.
+Manage the service with `claudegate status`, `claudegate stop`, `claudegate start`, `claudegate restart`, and `claudegate uninstall`. You can also open [http://localhost:8080](http://localhost:8080) in your browser to see the dashboard with live status, available models, and logs.
 
 **Logs:**
 
@@ -158,9 +158,9 @@ codex --model gpt-5.3-codex "add a function to utils.py that validates email add
 
 ## Troubleshooting
 
-**Connection refused** — Check `claudegate status`. If stopped, run `claudegate install`.
+**Connection refused** — Check `claudegate status`. If stopped, run `claudegate start`.
 
-**Authentication error (401)** — Your GitHub token was likely revoked (e.g., deauthorized in GitHub settings). Delete `~/.config/claudegate/github_token`, run `claudegate` to re-authenticate, then `claudegate install`.
+**Authentication error (401)** — Your GitHub token was likely revoked (e.g., deauthorized in GitHub settings). Delete `~/.config/claudegate/github_token`, run `claudegate` to re-authenticate, then `claudegate restart`.
 
 **Port conflict** — Set `CLAUDEGATE_PORT=9090` and update `OPENAI_BASE_URL` to `http://localhost:9090/v1`. Reinstall service with `claudegate uninstall && CLAUDEGATE_PORT=9090 claudegate install --env`.
 

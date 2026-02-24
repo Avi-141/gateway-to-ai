@@ -37,7 +37,7 @@ def main() -> None:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["install", "uninstall", "status", "logs"],
+        choices=["install", "uninstall", "start", "stop", "restart", "status", "logs"],
         default=None,
         help="service management command (omit to start the server)",
     )
@@ -79,12 +79,26 @@ def main() -> None:
         _start_server()
         return
 
-    from .service import install_service, service_logs, service_status, uninstall_service
+    from .service import (
+        install_service,
+        restart_service,
+        service_logs,
+        service_status,
+        start_service,
+        stop_service,
+        uninstall_service,
+    )
 
     if args.command == "install":
         sys.exit(install_service(capture_env=args.env))
     elif args.command == "uninstall":
         sys.exit(uninstall_service())
+    elif args.command == "start":
+        sys.exit(start_service())
+    elif args.command == "stop":
+        sys.exit(stop_service())
+    elif args.command == "restart":
+        sys.exit(restart_service())
     elif args.command == "status":
         sys.exit(service_status())
     elif args.command == "logs":

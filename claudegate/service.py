@@ -577,3 +577,259 @@ def _status_windows() -> int:
     print(f"Scheduled task: {_SCHTASKS_NAME}")
     print(result.stdout.strip())
     return 0
+
+
+# -- Start -------------------------------------------------------------------
+
+
+def start_service() -> int:
+    """Start the claudegate service."""
+    _header("Starting claudegate service...")
+
+    plat = _detect_platform()
+
+    if plat == "macos":
+        return _start_macos()
+    if plat == "linux":
+        return _start_linux()
+    if plat == "windows":
+        return _start_windows()
+
+    _err(f"Unsupported platform: {plat}")
+    return 1
+
+
+def _start_macos() -> int:
+    path = _plist_path()
+    if not path.exists():
+        _err(f"Service file not found: {path}")
+        _err("Install the service first with 'claudegate install'.")
+        return 1
+
+    _step("Loading service...")
+    result = subprocess.run(
+        ["launchctl", "load", str(path)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        _err(f"launchctl load failed: {result.stderr.strip()}")
+        return 1
+    _ok()
+
+    print("\nclaudegate service started.")
+    return 0
+
+
+def _start_linux() -> int:
+    path = _systemd_unit_path()
+    if not path.exists():
+        _err(f"Service file not found: {path}")
+        _err("Install the service first with 'claudegate install'.")
+        return 1
+
+    _step("Starting service...")
+    result = subprocess.run(
+        ["systemctl", "--user", "start", _SYSTEMD_UNIT],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        _err(f"systemctl start failed: {result.stderr.strip()}")
+        return 1
+    _ok()
+
+    print("\nclaudegate service started.")
+    return 0
+
+
+def _start_windows() -> int:
+    _step("Starting task...")
+    result = subprocess.run(
+        ["schtasks", "/Run", "/TN", _SCHTASKS_NAME],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        _err(f"schtasks run failed: {result.stderr.strip()}")
+        return 1
+    _ok()
+
+    print("\nclaudegate service started.")
+    return 0
+
+
+# -- Stop --------------------------------------------------------------------
+
+
+def stop_service() -> int:
+    """Stop the claudegate service."""
+    _header("Stopping claudegate service...")
+
+    plat = _detect_platform()
+
+    if plat == "macos":
+        return _stop_macos()
+    if plat == "linux":
+        return _stop_linux()
+    if plat == "windows":
+        return _stop_windows()
+
+    _err(f"Unsupported platform: {plat}")
+    return 1
+
+
+def _stop_macos() -> int:
+    path = _plist_path()
+    if not path.exists():
+        _err(f"Service file not found: {path}")
+        _err("Install the service first with 'claudegate install'.")
+        return 1
+
+    _step("Unloading service...")
+    result = subprocess.run(
+        ["launchctl", "unload", str(path)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        _err(f"launchctl unload failed: {result.stderr.strip()}")
+        return 1
+    _ok()
+
+    print("\nclaudegate service stopped.")
+    return 0
+
+
+def _stop_linux() -> int:
+    path = _systemd_unit_path()
+    if not path.exists():
+        _err(f"Service file not found: {path}")
+        _err("Install the service first with 'claudegate install'.")
+        return 1
+
+    _step("Stopping service...")
+    result = subprocess.run(
+        ["systemctl", "--user", "stop", _SYSTEMD_UNIT],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        _err(f"systemctl stop failed: {result.stderr.strip()}")
+        return 1
+    _ok()
+
+    print("\nclaudegate service stopped.")
+    return 0
+
+
+def _stop_windows() -> int:
+    _step("Stopping task...")
+    result = subprocess.run(
+        ["schtasks", "/End", "/TN", _SCHTASKS_NAME],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        _err(f"schtasks end failed: {result.stderr.strip()}")
+        return 1
+    _ok()
+
+    print("\nclaudegate service stopped.")
+    return 0
+
+
+# -- Restart -----------------------------------------------------------------
+
+
+def restart_service() -> int:
+    """Restart the claudegate service."""
+    _header("Restarting claudegate service...")
+
+    plat = _detect_platform()
+
+    if plat == "macos":
+        return _restart_macos()
+    if plat == "linux":
+        return _restart_linux()
+    if plat == "windows":
+        return _restart_windows()
+
+    _err(f"Unsupported platform: {plat}")
+    return 1
+
+
+def _restart_macos() -> int:
+    path = _plist_path()
+    if not path.exists():
+        _err(f"Service file not found: {path}")
+        _err("Install the service first with 'claudegate install'.")
+        return 1
+
+    _step("Unloading service...")
+    subprocess.run(
+        ["launchctl", "unload", str(path)],
+        capture_output=True,
+        text=True,
+    )
+    _ok()
+
+    _step("Loading service...")
+    result = subprocess.run(
+        ["launchctl", "load", str(path)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        _err(f"launchctl load failed: {result.stderr.strip()}")
+        return 1
+    _ok()
+
+    print("\nclaudegate service restarted.")
+    return 0
+
+
+def _restart_linux() -> int:
+    path = _systemd_unit_path()
+    if not path.exists():
+        _err(f"Service file not found: {path}")
+        _err("Install the service first with 'claudegate install'.")
+        return 1
+
+    _step("Restarting service...")
+    result = subprocess.run(
+        ["systemctl", "--user", "restart", _SYSTEMD_UNIT],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        _err(f"systemctl restart failed: {result.stderr.strip()}")
+        return 1
+    _ok()
+
+    print("\nclaudegate service restarted.")
+    return 0
+
+
+def _restart_windows() -> int:
+    _step("Stopping task...")
+    subprocess.run(
+        ["schtasks", "/End", "/TN", _SCHTASKS_NAME],
+        capture_output=True,
+        text=True,
+    )
+    _ok()
+
+    _step("Starting task...")
+    result = subprocess.run(
+        ["schtasks", "/Run", "/TN", _SCHTASKS_NAME],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        _err(f"schtasks run failed: {result.stderr.strip()}")
+        return 1
+    _ok()
+
+    print("\nclaudegate service restarted.")
+    return 0
