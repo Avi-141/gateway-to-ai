@@ -96,8 +96,8 @@ class TestCopilotUsageCache:
         cache = CopilotUsageCache("fake-token", ttl=60)
         result = await cache.get()
         assert result["premium"]["remaining"] == 0
-        assert result["premium"]["used"] == 1000
-        assert result["premium"]["percent_used"] == 100.0
+        assert result["premium"]["used"] == 1050
+        assert result["premium"]["percent_used"] == 105.0
         await cache.close()
 
     async def test_auth_error_returns_none(self, httpx_mock, mock_ssl):

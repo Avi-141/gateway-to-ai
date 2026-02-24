@@ -82,8 +82,9 @@ class CopilotUsageCache:
         snapshots = raw.get("quota_snapshots", {})
         premium = snapshots.get("premium_interactions", {})
         total = premium.get("entitlement", 0)
-        remaining = max(premium.get("remaining", 0), 0)
-        used = total - remaining if total > 0 else 0
+        raw_remaining = premium.get("remaining", 0)
+        remaining = max(raw_remaining, 0)
+        used = total - raw_remaining if total > 0 else 0
         pct_used = round((used / total) * 100, 1) if total > 0 else 0.0
 
         return {

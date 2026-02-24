@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Show Copilot premium overage in dashboard** — when premium usage exceeds the entitlement (negative remaining from GitHub API), the dashboard now shows the actual overage in the premium bar/value (e.g., "1050 / 1000 (105%)").
+
 ## [0.5.0] - 2026-02-24
 
 ### Added
