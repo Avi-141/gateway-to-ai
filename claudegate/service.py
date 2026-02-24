@@ -461,11 +461,11 @@ def service_status() -> int:
 
 
 def service_logs(*, lines: int = 100, follow: bool = True, since: str | None = None) -> int:
-    plat = _detect_platform()
-
     if lines <= 0:
         _err("--lines must be a positive integer")
         return 1
+
+    plat = _detect_platform()
 
     if plat == "macos":
         return _logs_macos(lines=lines, follow=follow, since=since)

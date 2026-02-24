@@ -532,8 +532,7 @@ def test_logs_macos_not_installed(tmp_path):
 
 
 def test_logs_invalid_lines():
-    with patch("claudegate.service._detect_platform", return_value="linux"):
-        result = service_logs(lines=0, follow=True, since=None)
+    result = service_logs(lines=0, follow=True, since=None)
 
     assert result == 1
 
