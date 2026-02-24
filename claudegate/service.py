@@ -131,7 +131,7 @@ def _generate_systemd_unit(binary: str, env_vars: dict[str, str] | None = None) 
 
     return textwrap.dedent(f"""\
         [Unit]
-        Description=Claudegate - Anthropic API proxy
+        Description=Claudegate - API proxy for AWS Bedrock and GitHub Copilot
         After=network.target
 
         [Service]

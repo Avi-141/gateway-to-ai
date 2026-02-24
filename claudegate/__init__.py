@@ -1,4 +1,4 @@
-"""Claudegate - Anthropic API to AWS Bedrock proxy."""
+"""Claudegate - API proxy supporting Anthropic, OpenAI, and Responses APIs via Bedrock and Copilot."""
 
 import os
 
@@ -11,7 +11,7 @@ __all__ = ["app", "main", "__version__"]
 
 cli = typer.Typer(
     name="claudegate",
-    help="Anthropic API proxy for AWS Bedrock and GitHub Copilot backends",
+    help="API proxy supporting Anthropic, OpenAI, and Responses APIs via AWS Bedrock and GitHub Copilot backends",
     add_completion=False,
     invoke_without_command=True,
 )
@@ -44,7 +44,7 @@ def _default(
         help="Show version and exit.",
     ),
 ) -> None:
-    """Anthropic API proxy for AWS Bedrock and GitHub Copilot backends."""
+    """API proxy supporting Anthropic, OpenAI, and Responses APIs via AWS Bedrock and GitHub Copilot backends."""
     if ctx.invoked_subcommand is None:
         _start_server()
 
