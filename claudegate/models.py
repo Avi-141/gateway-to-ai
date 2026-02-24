@@ -245,6 +245,11 @@ def get_copilot_openai_model(model: str) -> str:
     When no dynamic models are available, falls back to hardcoded maps.
     """
     model = _strip_model_prefix(model)
+
+    # Handle sentinel "default" model name (sent by Claude Code for internal requests)
+    if model == "default":
+        return DEFAULT_COPILOT_MODEL
+
     # Check dynamic registry (exact match on model id)
     if _copilot_model_ids:
         if model in _copilot_model_ids:
@@ -340,6 +345,10 @@ def get_copilot_model(model: str) -> tuple[str, str]:
     fallback to find the newest compatible Claude model version.
     """
     model = _strip_model_prefix(model)
+
+    # Handle sentinel "default" model name (sent by Claude Code for internal requests)
+    if model == "default":
+        return DEFAULT_COPILOT_MODEL, DEFAULT_COPILOT_MODEL
     if _copilot_model_ids:
         # --- Dynamic models available: validate all lookups against registry ---
 

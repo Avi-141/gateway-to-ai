@@ -213,6 +213,19 @@ class TestGetCopilotModel:
         assert model_id == ""
         assert returned_name == ""
 
+    def test_default_model_maps_to_default_copilot(self):
+        """The literal string 'default' (sent by Claude Code) maps to DEFAULT_COPILOT_MODEL."""
+        model_id, returned_name = get_copilot_model("default")
+        assert model_id == "claude-sonnet-4.5"
+        assert returned_name == "claude-sonnet-4.5"
+
+    def test_default_model_maps_to_default_copilot_with_dynamic(self):
+        """The 'default' sentinel works even when dynamic models are loaded."""
+        set_copilot_models([{"id": "claude-opus-4.6"}, {"id": "claude-sonnet-4.5"}])
+        model_id, returned_name = get_copilot_model("default")
+        assert model_id == "claude-sonnet-4.5"
+        assert returned_name == "claude-sonnet-4.5"
+
 
 # --- get_copilot_openai_model ---
 
@@ -247,6 +260,10 @@ class TestGetCopilotOpenAIModel:
 
     def test_empty_string_passthrough(self):
         assert get_copilot_openai_model("") == ""
+
+    def test_default_model_maps_to_default_copilot(self):
+        """The literal string 'default' maps to DEFAULT_COPILOT_MODEL."""
+        assert get_copilot_openai_model("default") == "claude-sonnet-4.5"
 
     def test_gpt5_codex_models(self):
         assert get_copilot_openai_model("gpt-5.1-codex") == "gpt-5.1-codex"
