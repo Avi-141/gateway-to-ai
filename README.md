@@ -4,7 +4,7 @@
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-UNLICENSED-green)
 
-A lightweight proxy that translates Anthropic API requests to GitHub Copilot or AWS Bedrock, enabling Claude Code, Open WebUI, and other Anthropic or OpenAI API clients to use either backend.
+A lightweight proxy that translates between Anthropic, OpenAI, and Responses API formats, routing requests to GitHub Copilot or AWS Bedrock backends. Enables Claude Code, Open WebUI, Codex CLI, and other API clients to use either backend.
 
 > [!IMPORTANT]
 > **New here?** Follow the **[Getting Started Guide](docs/getting-started.md)** for step-by-step setup instructions.
@@ -278,7 +278,7 @@ Point Open WebUI at claudegate as an OpenAI-compatible backend:
 1. In Open WebUI **Settings > Connections**, add a new OpenAI connection:
    - **API Base URL:** `http://localhost:8080/v1`
    - **API Key:** `sk-dummy` (any value; claudegate ignores it)
-2. Select a model from the list (e.g., `claude-sonnet-4-5-20250929`)
+2. Select a model from the list (e.g., `claude-sonnet-4-6`)
 3. Start chatting
 
 This works with any OpenAI-format client, not just Open WebUI.
@@ -326,7 +326,7 @@ codex --model gpt-5.3-codex
 curl -X POST http://localhost:8080/v1/messages \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "claude-sonnet-4-20250514",
+    "model": "claude-sonnet-4-6",
     "max_tokens": 100,
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
@@ -337,7 +337,7 @@ curl -X POST http://localhost:8080/v1/messages \
 curl -X POST http://localhost:8080/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "claude-sonnet-4-20250514",
+    "model": "claude-sonnet-4-6",
     "messages": [{"role": "user", "content": "Hello!"}]
   }'
 ```
@@ -347,7 +347,7 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 curl -X POST http://localhost:8080/v1/responses \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "claude-sonnet-4-20250514",
+    "model": "claude-sonnet-4-6",
     "input": "Hello!"
   }'
 ```

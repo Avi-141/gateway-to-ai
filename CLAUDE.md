@@ -69,7 +69,7 @@ Each path does the minimum necessary translations:
 
 - **`app.py`** — FastAPI routes, request validation, error mapping, streaming SSE, fallback orchestration
 - **`errors.py`** — `TransientBackendError` (fallback-eligible: 429, 5xx) and `CopilotHttpError` (non-transient)
-- **`models.py`** — Maps Anthropic model names to backend-specific IDs (Bedrock: 14 models, Copilot: 10 Claude + 21 OpenAI-native)
+- **`models.py`** — Maps Anthropic model names to backend-specific IDs (Bedrock: 15 models/25 aliases, Copilot: dynamic registry)
 - **`copilot_translate.py`** — Stateless Anthropic ↔ OpenAI translation functions + `StreamTranslator` state machine that accumulates tool call arguments across chunks
 - **`openai_translate.py`** — Reverse translation for `/v1/chat/completions`: OpenAI ↔ Anthropic conversion + `ReverseStreamTranslator` state machine
 - **`responses_translate.py`** — Bidirectional Responses API ↔ Anthropic/OpenAI translation functions + `AnthropicToResponsesStreamTranslator` and `OpenAIChatToResponsesStreamTranslator` state machines
@@ -78,6 +78,7 @@ Each path does the minimum necessary translations:
 - **`bedrock_client.py`** — Singleton boto3 client with `reset_bedrock_client()` for credential refresh
 - **`config.py`** — All env var loading and logging setup
 - **`service.py`** — Cross-platform autostart: macOS (launchd), Linux (systemd), Windows (schtasks)
+- **`cli_backend.py`** — `claudegate backend` CLI command for querying/switching the active backend at runtime
 
 ### Error Handling Pattern
 

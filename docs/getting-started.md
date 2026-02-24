@@ -77,10 +77,9 @@ Manage the service with `claudegate status`, `claudegate stop`, `claudegate star
 
 **Logs:**
 
-| Platform | Command |
-|----------|---------|
-| macOS | `tail -f /tmp/claudegate.log` |
-| Linux | `journalctl --user -u claudegate.service -f` |
+```bash
+claudegate logs
+```
 
 ## 7. Install Claude Code
 
