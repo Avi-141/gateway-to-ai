@@ -108,6 +108,12 @@ def test_is_running_as_sudo_false_root_no_sudo_user():
         assert _is_running_as_sudo() is False
 
 
+def test_is_running_as_sudo_windows():
+    """On Windows, geteuid doesn't exist — should return False without error."""
+    with patch.object(os, "geteuid", None, create=True):
+        assert _is_running_as_sudo() is False
+
+
 def test_install_refuses_under_sudo():
     with (
         patch("claudegate.service._is_running_as_sudo", return_value=True),
@@ -687,7 +693,7 @@ def test_start_macos_success(tmp_path):
     assert result == 0
     mock_run.assert_called_once()
     cmd = mock_run.call_args.args[0]
-    assert "load" in cmd
+    assert "bootstrap" in cmd
 
 
 def test_start_macos_not_installed(tmp_path):
@@ -817,7 +823,7 @@ def test_stop_macos_success(tmp_path):
 
     assert result == 0
     cmd = mock_run.call_args.args[0]
-    assert "unload" in cmd
+    assert "bootout" in cmd
 
 
 def test_stop_macos_not_installed(tmp_path):

@@ -44,8 +44,11 @@ def _err(msg: str) -> None:
 
 
 def _is_running_as_sudo() -> bool:
-    """Detect if the process is running via sudo."""
-    return os.geteuid() == 0 and os.environ.get("SUDO_USER") is not None
+    """Detect if the process is running via sudo (Unix only)."""
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None:
+        return False
+    return geteuid() == 0 and os.environ.get("SUDO_USER") is not None
 
 
 def _detect_platform() -> str:
@@ -69,6 +72,30 @@ def _capture_env_vars() -> dict[str, str]:
         if any(key.startswith(p) for p in _ENV_PREFIXES) or key in _ENV_EXACT:
             captured[key] = val
     return captured
+
+
+# -- launchctl helpers (macOS) -----------------------------------------------
+
+
+def _launchctl_domain() -> str:
+    """Return the launchctl domain target for the current user (e.g. 'gui/501')."""
+    return f"gui/{os.getuid()}"
+
+
+def _launchctl_bootstrap(plist_path: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["launchctl", "bootstrap", _launchctl_domain(), str(plist_path)],
+        capture_output=True,
+        text=True,
+    )
+
+
+def _launchctl_bootout(plist_path: Path) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["launchctl", "bootout", _launchctl_domain(), str(plist_path)],
+        capture_output=True,
+        text=True,
+    )
 
 
 # -- Plist generation (macOS) ------------------------------------------------
@@ -203,12 +230,8 @@ def _install_macos(binary: str, env_vars: dict[str, str] | None) -> int:
     if path.exists():
         _step("Existing service found, reinstalling...")
         print()
-        # Unload before overwriting
-        subprocess.run(
-            ["launchctl", "unload", str(path)],
-            capture_output=True,
-            text=True,
-        )
+        # Bootout before overwriting (ignore errors — service may not be loaded)
+        _launchctl_bootout(path)
 
     plist = _generate_plist(binary, env_vars)
 
@@ -218,13 +241,9 @@ def _install_macos(binary: str, env_vars: dict[str, str] | None) -> int:
     _ok()
 
     _step("Loading service...")
-    result = subprocess.run(
-        ["launchctl", "load", str(path)],
-        capture_output=True,
-        text=True,
-    )
+    result = _launchctl_bootstrap(path)
     if result.returncode != 0:
-        _err(f"launchctl load failed: {result.stderr.strip()}")
+        _err(f"launchctl bootstrap failed: {result.stderr.strip()}")
         return 1
     _ok()
 
@@ -351,11 +370,7 @@ def _uninstall_macos() -> int:
         return 1
 
     _step("Unloading service...")
-    subprocess.run(
-        ["launchctl", "unload", str(path)],
-        capture_output=True,
-        text=True,
-    )
+    _launchctl_bootout(path)
     _ok()
 
     _step(f"Removing {path}")
@@ -634,13 +649,9 @@ def _start_macos() -> int:
         return 1
 
     _step("Loading service...")
-    result = subprocess.run(
-        ["launchctl", "load", str(path)],
-        capture_output=True,
-        text=True,
-    )
+    result = _launchctl_bootstrap(path)
     if result.returncode != 0:
-        _err(f"launchctl load failed: {result.stderr.strip()}")
+        _err(f"launchctl bootstrap failed: {result.stderr.strip()}")
         return 1
     _ok()
 
@@ -714,13 +725,9 @@ def _stop_macos() -> int:
         return 1
 
     _step("Unloading service...")
-    result = subprocess.run(
-        ["launchctl", "unload", str(path)],
-        capture_output=True,
-        text=True,
-    )
+    result = _launchctl_bootout(path)
     if result.returncode != 0:
-        _err(f"launchctl unload failed: {result.stderr.strip()}")
+        _err(f"launchctl bootout failed: {result.stderr.strip()}")
         return 1
     _ok()
 
@@ -794,21 +801,13 @@ def _restart_macos() -> int:
         return 1
 
     _step("Unloading service...")
-    subprocess.run(
-        ["launchctl", "unload", str(path)],
-        capture_output=True,
-        text=True,
-    )
+    _launchctl_bootout(path)
     _ok()
 
     _step("Loading service...")
-    result = subprocess.run(
-        ["launchctl", "load", str(path)],
-        capture_output=True,
-        text=True,
-    )
+    result = _launchctl_bootstrap(path)
     if result.returncode != 0:
-        _err(f"launchctl load failed: {result.stderr.strip()}")
+        _err(f"launchctl bootstrap failed: {result.stderr.strip()}")
         return 1
     _ok()
 
