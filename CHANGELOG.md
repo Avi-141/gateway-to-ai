@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **truststore runtime crash on Linux** — replace blanket Linux platform skip with a try/except probe: truststore is attempted on all platforms and falls back to httpx's certifi CA bundle only if it raises at runtime. This preserves truststore functionality on Linux systems where it works (e.g. system Python) while still handling the CPython standalone crash (`SSLObject._sslobj is None` on `python-build-standalone` distributed by uv). Users on Linux behind corporate SSL inspection can set `SSL_CERT_FILE` or append their CA cert to certifi's `cacert.pem`.
 - **Show Copilot premium overage in dashboard** — when premium usage exceeds the entitlement (negative remaining from GitHub API), the dashboard now shows the actual overage in the premium bar/value (e.g., "1050 / 1000 (105%)").
 
 ## [0.5.0] - 2026-02-24

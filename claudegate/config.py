@@ -3,6 +3,7 @@
 import logging.config
 import os
 import ssl
+import sys
 
 # Server defaults
 DEFAULT_HOST = "127.0.0.1"
@@ -107,19 +108,17 @@ FALLBACK_ON_ERRORS = {429, 500, 502, 503, 504}
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 COPILOT_TIMEOUT = int(os.environ.get("COPILOT_TIMEOUT", "300"))
 
-# SSL context configuration
-# truststore.SSLContext() creates successfully but crashes at runtime on Linux
-# with uv standalone Python (cpython-3.13) because SSLObject._sslobj is None.
-# On Linux, fall back to httpx default (certifi CA bundle). Users behind
-# corporate SSL inspection need to append their CA certs to certifi's cacert.pem
-# or set SSL_CERT_FILE env var.
-import sys as _sys  # noqa: E402
-
-if _sys.platform == "linux":
-    SSL_CONTEXT = True  # httpx default: use certifi CA bundle
-    logger.debug("Linux detected, using certifi CA bundle (truststore incompatible)")
-else:
+# SSL context: prefer OS trust store (macOS Keychain, Windows CertStore) via truststore
+# so corporate SSL inspection certs are trusted automatically. Fall back to httpx default
+# (certifi CA bundle) if truststore is unavailable or crashes at runtime (e.g. CPython
+# standalone builds on Linux where SSLObject._sslobj is None).
+# Users on Linux behind corporate SSL inspection can set SSL_CERT_FILE or append their
+# CA certs to certifi's cacert.pem.
+try:
     import truststore  # noqa: E402
 
     SSL_CONTEXT = truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    logger.debug("Using OS trust store via truststore")
+    logger.debug("Using OS trust store via truststore (platform: %s)", sys.platform)
+except Exception:
+    SSL_CONTEXT = True  # httpx default: use certifi CA bundle
+    logger.debug("truststore unavailable or incompatible, using certifi CA bundle (platform: %s)", sys.platform)
