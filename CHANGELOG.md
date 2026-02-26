@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **Pre-flight context guard** — prevents unrecoverable HTTP 500s from Copilot when conversation context exceeds its actual limits. Before forwarding each request, the guard estimates input tokens locally (via tiktoken, zero API cost) and compares against the model's `max_prompt_tokens` from the Copilot registry. When usage exceeds 90% of the limit, `max_tokens` is clamped to fit rather than rejecting the request, so Claude Code gets a valid response, the session stays alive, and auto-compact handles the rest. Only rejects with a 400 when there is truly no room for useful output. Applies to all three API formats (`/v1/messages`, `/v1/chat/completions`, `/v1/responses`). Copilot-only — Bedrock returns proper 400s natively. Configurable via `CONTEXT_GUARD_THRESHOLD` env var (default `0.90`, set to `0` to disable).
+
 ### Fixed
 
 - **truststore runtime crash on Linux** — replace blanket Linux platform skip with a try/except probe: truststore is attempted on all platforms and falls back to httpx's certifi CA bundle only if it raises at runtime. This preserves truststore functionality on Linux systems where it works (e.g. system Python) while still handling the CPython standalone crash (`SSLObject._sslobj is None` on `python-build-standalone` distributed by uv). Users on Linux behind corporate SSL inspection can set `SSL_CERT_FILE` or append their CA cert to certifi's `cacert.pem`.

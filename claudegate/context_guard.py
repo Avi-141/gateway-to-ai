@@ -135,8 +135,7 @@ def check_context_guard_responses(body: dict[str, Any]) -> None:
     if available >= _MIN_OUTPUT_TOKENS:
         original_max = body.get("max_output_tokens") or 0
         clamped = min(original_max, available) if original_max else available
-        if original_max:
-            body["max_output_tokens"] = clamped
+        body["max_output_tokens"] = clamped
         logger.info(
             f"Context guard clamped max_tokens (Responses): {original_max} -> {clamped} "
             f"(estimated {estimated_tokens}/{context_limit} tokens for {copilot_model})"

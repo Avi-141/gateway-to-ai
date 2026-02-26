@@ -733,6 +733,7 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
     primary_call = _get_backend_caller(current_primary)
     request_stats.record_request(current_primary)
 
+    _original_max_tokens = body.get("max_tokens")
     if current_primary == "copilot":
         try:
             check_context_guard_anthropic(body)
@@ -750,6 +751,10 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
                 f"{log_prefix}Context window exceeded on {e.backend} "
                 f"({e.prompt_tokens} > {e.context_limit}), falling back to {current_fallback}"
             )
+            if _original_max_tokens is not None:
+                body["max_tokens"] = _original_max_tokens
+            elif "max_tokens" in body:
+                del body["max_tokens"]
             fallback_call = _get_backend_caller(current_fallback)
             try:
                 return await fallback_call()
@@ -787,6 +792,10 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
             f"{log_prefix}Primary ({current_primary}) failed with {e.status_code}, falling back to {current_fallback}"
         )
 
+        if _original_max_tokens is not None:
+            body["max_tokens"] = _original_max_tokens
+        elif "max_tokens" in body:
+            del body["max_tokens"]
         fallback_call = _get_backend_caller(current_fallback)
         try:
             return await fallback_call()
@@ -860,6 +869,8 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
     primary_call = _get_backend_caller(current_primary)
     request_stats.record_request(current_primary)
 
+    _original_max_tokens_openai = body.get("max_tokens")
+    _original_max_completion_tokens = body.get("max_completion_tokens")
     if current_primary == "copilot":
         try:
             check_context_guard_openai(body)
@@ -877,6 +888,14 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
                 f"{log_prefix}Context window exceeded on {e.backend} "
                 f"({e.prompt_tokens} > {e.context_limit}), falling back to {current_fallback}"
             )
+            if _original_max_tokens_openai is not None:
+                body["max_tokens"] = _original_max_tokens_openai
+            elif "max_tokens" in body:
+                del body["max_tokens"]
+            if _original_max_completion_tokens is not None:
+                body["max_completion_tokens"] = _original_max_completion_tokens
+            elif "max_completion_tokens" in body:
+                del body["max_completion_tokens"]
             fallback_call = _get_backend_caller(current_fallback)
             try:
                 return await fallback_call()
@@ -914,6 +933,14 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
             f"{log_prefix}Primary ({current_primary}) failed with {e.status_code}, falling back to {current_fallback}"
         )
 
+        if _original_max_tokens_openai is not None:
+            body["max_tokens"] = _original_max_tokens_openai
+        elif "max_tokens" in body:
+            del body["max_tokens"]
+        if _original_max_completion_tokens is not None:
+            body["max_completion_tokens"] = _original_max_completion_tokens
+        elif "max_completion_tokens" in body:
+            del body["max_completion_tokens"]
         fallback_call = _get_backend_caller(current_fallback)
         try:
             return await fallback_call()
@@ -981,6 +1008,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
     primary_call = _get_backend_caller(current_primary)
     request_stats.record_request(current_primary)
 
+    _original_max_output_tokens = body.get("max_output_tokens")
     if current_primary == "copilot":
         try:
             check_context_guard_responses(body)
@@ -998,6 +1026,10 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
                 f"{log_prefix}Context window exceeded on {e.backend} "
                 f"({e.prompt_tokens} > {e.context_limit}), falling back to {current_fallback}"
             )
+            if _original_max_output_tokens is not None:
+                body["max_output_tokens"] = _original_max_output_tokens
+            elif "max_output_tokens" in body:
+                del body["max_output_tokens"]
             fallback_call = _get_backend_caller(current_fallback)
             try:
                 return await fallback_call()
@@ -1035,6 +1067,10 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
             f"{log_prefix}Primary ({current_primary}) failed with {e.status_code}, falling back to {current_fallback}"
         )
 
+        if _original_max_output_tokens is not None:
+            body["max_output_tokens"] = _original_max_output_tokens
+        elif "max_output_tokens" in body:
+            del body["max_output_tokens"]
         fallback_call = _get_backend_caller(current_fallback)
         try:
             return await fallback_call()
