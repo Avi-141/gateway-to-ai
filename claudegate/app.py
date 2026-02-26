@@ -24,6 +24,7 @@ from .config import (
     LOG_LEVEL,
     logger,
 )
+from .context_guard import check_context_guard_anthropic, check_context_guard_openai, check_context_guard_responses
 from .copilot_translate import has_server_tools, strip_server_tools
 from .copilot_usage import CopilotUsageCache
 from .errors import ContextWindowExceededError, CopilotHttpError, TransientBackendError
@@ -678,6 +679,11 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
             )
         # Force route to Copilot for non-Claude models
         try:
+            check_context_guard_anthropic(body)
+        except ContextWindowExceededError as e:
+            request_stats.record_context_guard_rejection()
+            return _context_window_error_response(e, body.get("max_tokens", 0))
+        try:
             return await _call_copilot(body, request, request_id, stream)
         except ContextWindowExceededError as e:
             return _context_window_error_response(e, body.get("max_tokens", 0))
@@ -726,6 +732,13 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
     current_fallback = _backend_state.fallback
     primary_call = _get_backend_caller(current_primary)
     request_stats.record_request(current_primary)
+
+    if current_primary == "copilot":
+        try:
+            check_context_guard_anthropic(body)
+        except ContextWindowExceededError as e:
+            request_stats.record_context_guard_rejection()
+            return _context_window_error_response(e, body.get("max_tokens", 0))
 
     try:
         return await primary_call()
@@ -847,6 +860,13 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
     primary_call = _get_backend_caller(current_primary)
     request_stats.record_request(current_primary)
 
+    if current_primary == "copilot":
+        try:
+            check_context_guard_openai(body)
+        except ContextWindowExceededError as e:
+            request_stats.record_context_guard_rejection()
+            return _openai_error_response(400, _openai_context_window_message(e))
+
     try:
         return await primary_call()
     except ContextWindowExceededError as e:
@@ -960,6 +980,13 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
     current_fallback = _backend_state.fallback
     primary_call = _get_backend_caller(current_primary)
     request_stats.record_request(current_primary)
+
+    if current_primary == "copilot":
+        try:
+            check_context_guard_responses(body)
+        except ContextWindowExceededError as e:
+            request_stats.record_context_guard_rejection()
+            return _openai_error_response(400, _openai_context_window_message(e))
 
     try:
         return await primary_call()

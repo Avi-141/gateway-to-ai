@@ -13,6 +13,7 @@ class RequestStats:
         self.requests_by_backend: dict[str, int] = {}
         self.errors: int = 0
         self.fallbacks: int = 0
+        self.context_guard_rejections: int = 0
 
     def record_request(self, backend: str) -> None:
         """Record a request routed to the given backend."""
@@ -27,6 +28,10 @@ class RequestStats:
         """Record a fallback from primary to secondary backend."""
         self.fallbacks += 1
 
+    def record_context_guard_rejection(self) -> None:
+        """Record a request rejected by the pre-flight context guard."""
+        self.context_guard_rejections += 1
+
     def snapshot(self) -> dict:
         """Return a serializable dict of current stats."""
         return {
@@ -34,6 +39,7 @@ class RequestStats:
             "requests_by_backend": dict(self.requests_by_backend),
             "errors": self.errors,
             "fallbacks": self.fallbacks,
+            "context_guard_rejections": self.context_guard_rejections,
         }
 
     def reset(self) -> None:
@@ -42,6 +48,7 @@ class RequestStats:
         self.requests_by_backend.clear()
         self.errors = 0
         self.fallbacks = 0
+        self.context_guard_rejections = 0
 
 
 # Module-level singleton

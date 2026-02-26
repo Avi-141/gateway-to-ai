@@ -22,6 +22,7 @@ def clean_env(monkeypatch):
         "CLAUDEGATE_PORT",
         "CLAUDEGATE_LOG_LEVEL",
         "COPILOT_TIMEOUT",
+        "CONTEXT_GUARD_THRESHOLD",
     ):
         monkeypatch.delenv(var, raising=False)
 

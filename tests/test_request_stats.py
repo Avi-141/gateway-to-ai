@@ -12,6 +12,7 @@ class TestRequestStats:
             "requests_by_backend": {},
             "errors": 0,
             "fallbacks": 0,
+            "context_guard_rejections": 0,
         }
 
     def test_record_request(self):
@@ -49,6 +50,7 @@ class TestRequestStats:
             "requests_by_backend": {},
             "errors": 0,
             "fallbacks": 0,
+            "context_guard_rejections": 0,
         }
 
     def test_snapshot_returns_copy(self):

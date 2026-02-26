@@ -108,6 +108,11 @@ FALLBACK_ON_ERRORS = {429, 500, 502, 503, 504}
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 COPILOT_TIMEOUT = int(os.environ.get("COPILOT_TIMEOUT", "300"))
 
+# Pre-flight context guard: reject requests estimated to exceed this fraction
+# of the model's context limit. Set to 0 to disable. Default 0.90 leaves 10%
+# headroom for tiktoken estimation inaccuracy.
+CONTEXT_GUARD_THRESHOLD = float(os.environ.get("CONTEXT_GUARD_THRESHOLD", "0.90"))
+
 # SSL context: prefer OS trust store (macOS Keychain, Windows CertStore) via truststore
 # so corporate SSL inspection certs are trusted automatically. Fall back to httpx default
 # (certifi CA bundle) if truststore is unavailable or crashes at runtime (e.g. CPython
