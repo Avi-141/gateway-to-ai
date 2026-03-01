@@ -137,6 +137,16 @@ class TestTranslateTools:
     def test_empty_list(self):
         assert _translate_tools([]) == []
 
+    def test_empty_description_gets_placeholder(self):
+        tools = [{"name": "fn", "description": "", "input_schema": {"type": "object"}}]
+        result = _translate_tools(tools)
+        assert result[0]["function"]["description"] == "No description provided."
+
+    def test_missing_description_gets_placeholder(self):
+        tools = [{"name": "fn", "input_schema": {"type": "object"}}]
+        result = _translate_tools(tools)
+        assert result[0]["function"]["description"] == "No description provided."
+
 
 # --- anthropic_to_openai_request ---
 

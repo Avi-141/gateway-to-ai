@@ -216,7 +216,7 @@ def _translate_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "type": "function",
             "function": {
                 "name": tool.get("name", ""),
-                "description": tool.get("description", ""),
+                "description": tool.get("description", "") or "No description provided.",
                 "parameters": tool.get("input_schema", {}),
             },
         }
