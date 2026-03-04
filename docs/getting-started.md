@@ -138,7 +138,7 @@ ANTHROPIC_API_KEY: sk-ant-...sk-ant-dummy-key
 Do you want to use this API key?
 
 ❯ 1. Yes
-  2. No (recommended) ✔
+  2. No (recommended)
 ```
 
 Select **Yes**. Complete the remaining wizard steps, then exit Claude Code (`/exit` or `Ctrl+C`). You only need to do this once.
