@@ -298,8 +298,7 @@ Install the claudegate plugin to list models and switch backends directly in Cla
 
 ```
 /plugin marketplace add https://github.com/Avi-141/gateway-to-ai.git
-/plugin install models@claudegate
-/plugin install backend@claudegate
+/plugin install claudegate@claudegate
 ```
 
 Then type `/models` to see available models or `/backend copilot` to switch backends.
