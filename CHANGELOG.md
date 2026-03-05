@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **`/usage` Claude Code skill** — displays Copilot premium usage and quota status (plan, used/total with percentage, remaining, chat/completions status, reset date) directly in Claude Code. Shows a helpful message when the Copilot backend is not configured.
 - **Pre-flight context guard** — prevents unrecoverable HTTP 500s from Copilot when conversation context exceeds its actual limits. Before forwarding each request, the guard estimates input tokens locally (via tiktoken, zero API cost) and compares against the model's `max_prompt_tokens` from the Copilot registry. When usage exceeds 90% of the limit, `max_tokens` is clamped to fit rather than rejecting the request, so Claude Code gets a valid response, the session stays alive, and auto-compact handles the rest. Only rejects with a 400 when there is truly no room for useful output. Applies to all three API formats (`/v1/messages`, `/v1/chat/completions`, `/v1/responses`). Copilot-only — Bedrock returns proper 400s natively. Configurable via `CONTEXT_GUARD_THRESHOLD` env var (default `0.90`, set to `0` to disable).
 
 ### Fixed
