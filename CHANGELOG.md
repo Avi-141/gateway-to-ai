@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
+- **Bedrock rejecting Claude Code tool extensions** — Claude Code sends extra fields on tool definitions (e.g. `defer_loading`) and unsupported content block types in messages (e.g. `tool_reference`). Bedrock validates strictly and returned 400 `ValidationException` for these. The proxy now sanitizes both tools (stripping unknown top-level and `custom` object keys) and messages (filtering out unsupported content block types) before forwarding to Bedrock.
 - **Empty tool descriptions rejected by Copilot API** — when an MCP server registers a tool with an empty string description (`""`), the Copilot API returns a 400 Bad Request. The `_translate_tools()` function now replaces empty or missing descriptions with `"No description provided."` so that all tools pass Copilot's validation.
 - **`os.geteuid` crash on Windows when installing as a service** — `_is_running_as_sudo()` called `os.geteuid()` unconditionally, but that attribute does not exist on Windows, causing an `AttributeError` immediately on `claudegate install`. The check now uses `getattr(os, "geteuid", None)` and returns `False` on Windows.
 - **Deprecated `launchctl load/unload` on macOS Ventura and later** — replaced the deprecated `launchctl load`/`launchctl unload` calls (broken on macOS 13+) with the modern `launchctl bootstrap gui/<uid>`/`launchctl bootout gui/<uid>` API for all macOS service operations (install, uninstall, start, stop, restart).

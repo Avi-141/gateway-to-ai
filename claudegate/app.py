@@ -259,6 +259,61 @@ def _filter_beta_flags(flags: list[str]) -> list[str]:
     return [f for f in flags if any(f.startswith(p) for p in _BEDROCK_BETA_PREFIXES)]
 
 
+# Bedrock tool sanitization: allowed keys at each level
+_BEDROCK_TOOL_ALLOWED_KEYS = {"name", "description", "input_schema", "type", "custom", "cache_control"}
+_BEDROCK_CUSTOM_TOOL_KEYS = {"name", "description", "input_schema"}
+
+# Content block types that Bedrock does not support (Claude Code extensions)
+_BEDROCK_UNSUPPORTED_CONTENT_TYPES = {"tool_reference"}
+
+
+def _clean_tool_for_bedrock(tool: dict[str, Any]) -> dict[str, Any]:
+    """Strip client-side metadata from a tool definition that Bedrock rejects.
+
+    Claude Code adds extra fields like defer_loading on tools (either at the
+    top level or inside the 'custom' object). Bedrock validates strictly and
+    rejects unknown properties.
+    """
+    # Strip unknown top-level keys
+    cleaned = {k: v for k, v in tool.items() if k in _BEDROCK_TOOL_ALLOWED_KEYS}
+    # Strip unknown keys inside custom object
+    if "custom" in cleaned:
+        custom = {k: v for k, v in cleaned["custom"].items() if k in _BEDROCK_CUSTOM_TOOL_KEYS}
+        if custom:
+            cleaned["custom"] = custom
+        else:
+            del cleaned["custom"]
+    return cleaned
+
+
+def _clean_messages_for_bedrock(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Strip unsupported content block types from messages for Bedrock.
+
+    Claude Code sends content block types like 'tool_reference' that Bedrock
+    doesn't recognize. These are filtered out from all message content arrays,
+    including nested content inside tool_result blocks.
+    """
+    cleaned = []
+    for msg in messages:
+        content = msg.get("content")
+        if not isinstance(content, list):
+            cleaned.append(msg)
+            continue
+        new_content = []
+        for block in content:
+            block_type = block.get("type", "")
+            if block_type in _BEDROCK_UNSUPPORTED_CONTENT_TYPES:
+                continue
+            # Also clean nested content inside tool_result blocks
+            if block_type == "tool_result" and isinstance(block.get("content"), list):
+                nested = [b for b in block["content"] if b.get("type") not in _BEDROCK_UNSUPPORTED_CONTENT_TYPES]
+                if nested != block["content"]:
+                    block = {**block, "content": nested}
+            new_content.append(block)
+        cleaned.append({**msg, "content": new_content})
+    return cleaned
+
+
 def _build_bedrock_body(body: dict[str, Any], request: Request) -> dict[str, Any]:
     """Build Bedrock request body from Anthropic request.
 
@@ -269,7 +324,7 @@ def _build_bedrock_body(body: dict[str, Any], request: Request) -> dict[str, Any
     bedrock_body: dict[str, Any] = {
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": body["max_tokens"],
-        "messages": body["messages"],
+        "messages": _clean_messages_for_bedrock(body["messages"]),
     }
 
     # Merge beta flags from header and body, filter to Bedrock-supported prefixes
@@ -305,6 +360,10 @@ def _build_bedrock_body(body: dict[str, Any], request: Request) -> dict[str, Any
     for field in optional_fields:
         if field in body:
             bedrock_body[field] = body[field]
+
+    # Strip extra fields from tools that Bedrock doesn't accept (e.g. defer_loading)
+    if "tools" in bedrock_body:
+        bedrock_body["tools"] = [_clean_tool_for_bedrock(t) for t in bedrock_body["tools"]]
 
     return bedrock_body
 

@@ -8,7 +8,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from botocore.exceptions import ClientError, ReadTimeoutError
 
-from claudegate.app import _count_content_tokens, _detect_client_context_window, _error_response, _validate_request
+from claudegate.app import (
+    _clean_messages_for_bedrock,
+    _clean_tool_for_bedrock,
+    _count_content_tokens,
+    _detect_client_context_window,
+    _error_response,
+    _validate_request,
+)
 from claudegate.errors import CopilotHttpError, TransientBackendError
 from tests.conftest import make_client_error
 
@@ -68,6 +75,112 @@ class TestValidateRequest:
     def test_valid_request(self):
         resp = _validate_request({"model": "x", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]})
         assert resp is None
+
+
+# --- _clean_tool_for_bedrock ---
+
+
+class TestCleanToolForBedrock:
+    def test_standard_tool_unchanged(self):
+        tool = {"name": "test", "description": "desc", "input_schema": {}}
+        cleaned = _clean_tool_for_bedrock(tool)
+        assert cleaned == tool
+
+    def test_strips_top_level_defer_loading(self):
+        """Claude Code adds defer_loading at the top level of tools."""
+        tool = {"name": "test", "description": "desc", "input_schema": {}, "defer_loading": True}
+        cleaned = _clean_tool_for_bedrock(tool)
+        assert "defer_loading" not in cleaned
+        assert cleaned["name"] == "test"
+
+    def test_strips_defer_loading_from_custom(self):
+        tool = {
+            "type": "custom",
+            "custom": {"name": "test", "description": "desc", "input_schema": {}, "defer_loading": True},
+        }
+        cleaned = _clean_tool_for_bedrock(tool)
+        assert "defer_loading" not in cleaned["custom"]
+        assert cleaned["custom"]["name"] == "test"
+
+    def test_strips_unknown_top_level_keys(self):
+        tool = {"name": "test", "description": "desc", "input_schema": {}, "foo": "bar", "baz": 1}
+        cleaned = _clean_tool_for_bedrock(tool)
+        assert "foo" not in cleaned
+        assert "baz" not in cleaned
+        assert cleaned["name"] == "test"
+
+    def test_removes_custom_when_only_unknown_keys(self):
+        """When custom only has client-side keys like defer_loading, remove it entirely."""
+        tool = {"name": "test", "custom": {"defer_loading": True}}
+        cleaned = _clean_tool_for_bedrock(tool)
+        assert "custom" not in cleaned
+
+    def test_preserves_type_and_cache_control(self):
+        tool = {"type": "custom", "name": "test", "cache_control": {"type": "ephemeral"}, "defer_loading": True}
+        cleaned = _clean_tool_for_bedrock(tool)
+        assert cleaned["type"] == "custom"
+        assert cleaned["cache_control"] == {"type": "ephemeral"}
+        assert "defer_loading" not in cleaned
+
+    def test_does_not_mutate_original(self):
+        tool = {"name": "test", "defer_loading": True, "custom": {"name": "x", "defer_loading": True}}
+        _clean_tool_for_bedrock(tool)
+        assert "defer_loading" in tool
+        assert "defer_loading" in tool["custom"]
+
+
+# --- _clean_messages_for_bedrock ---
+
+
+class TestCleanMessagesForBedrock:
+    def test_plain_text_message_unchanged(self):
+        msgs = [{"role": "user", "content": "hello"}]
+        assert _clean_messages_for_bedrock(msgs) == msgs
+
+    def test_strips_tool_reference_from_content(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hi"},
+                    {"type": "tool_reference", "tool_name": "foo"},
+                ],
+            }
+        ]
+        cleaned = _clean_messages_for_bedrock(msgs)
+        assert len(cleaned[0]["content"]) == 1
+        assert cleaned[0]["content"][0]["type"] == "text"
+
+    def test_strips_tool_reference_from_tool_result_content(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "123",
+                        "content": [
+                            {"type": "text", "text": "result"},
+                            {"type": "tool_reference", "tool_name": "bar"},
+                        ],
+                    }
+                ],
+            }
+        ]
+        cleaned = _clean_messages_for_bedrock(msgs)
+        tool_result = cleaned[0]["content"][0]
+        assert len(tool_result["content"]) == 1
+        assert tool_result["content"][0]["type"] == "text"
+
+    def test_does_not_mutate_original(self):
+        msgs = [
+            {
+                "role": "user",
+                "content": [{"type": "tool_reference", "tool_name": "foo"}, {"type": "text", "text": "hi"}],
+            }
+        ]
+        _clean_messages_for_bedrock(msgs)
+        assert len(msgs[0]["content"]) == 2
 
 
 # --- _count_content_tokens ---
