@@ -36,7 +36,7 @@ Restart your terminal after installation.
 ## 4. Install claudegate
 
 ```bash
-uv tool install git+https://github.com/Avi-141/gateway-to-ai.git@v0.5.0
+uv tool install git+https://github.com/Avi-141/gateway-to-ai.git@v0.6.0
 ```
 
 ## 5. Authenticate with GitHub Copilot

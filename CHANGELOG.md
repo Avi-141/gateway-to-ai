@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-03-05
+
 ### Added
 
 - **`/usage` Claude Code skill** — displays Copilot premium usage and quota status (plan, used/total with percentage, remaining, chat/completions status, reset date) directly in Claude Code. Shows a helpful message when the Copilot backend is not configured.

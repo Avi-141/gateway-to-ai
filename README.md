@@ -1,6 +1,6 @@
 # claudegate
 
-![Version](https://img.shields.io/badge/version-0.5.0-blue)
+![Version](https://img.shields.io/badge/version-0.6.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-UNLICENSED-green)
 
@@ -62,7 +62,7 @@ The Copilot backend supports Claude models (translated to Anthropic format) and 
 
 ```bash
 # Install a specific version (recommended)
-uv tool install git+https://github.com/Avi-141/gateway-to-ai.git@v0.5.0
+uv tool install git+https://github.com/Avi-141/gateway-to-ai.git@v0.6.0
 
 # Install latest from master
 uv tool install git+https://github.com/Avi-141/gateway-to-ai.git
@@ -72,7 +72,7 @@ uv tool install git+https://github.com/Avi-141/gateway-to-ai.git
 
 ```bash
 # Specific version
-uvx --from git+https://github.com/Avi-141/gateway-to-ai.git@v0.5.0 claudegate
+uvx --from git+https://github.com/Avi-141/gateway-to-ai.git@v0.6.0 claudegate
 
 # Latest from master
 uvx --from git+https://github.com/Avi-141/gateway-to-ai.git claudegate
@@ -84,7 +84,7 @@ After installing, run `claudegate` once manually in your terminal to complete th
 
 ```bash
 # Upgrade to a specific version
-uv tool install --force git+https://github.com/Avi-141/gateway-to-ai.git@v0.5.0
+uv tool install --force git+https://github.com/Avi-141/gateway-to-ai.git@v0.6.0
 
 # Upgrade to latest
 uv tool install --force git+https://github.com/Avi-141/gateway-to-ai.git
@@ -157,6 +157,9 @@ export CLAUDEGATE_LOG_LEVEL="INFO"  # default: INFO
 
 # Optional: Disable colored log output (https://no-color.org)
 export NO_COLOR=1
+
+# Optional: Context guard threshold for Copilot (0.0 to disable, default: 0.90)
+export CONTEXT_GUARD_THRESHOLD="0.90"
 ```
 
 ## Usage
@@ -301,7 +304,7 @@ Install the claudegate plugin to list models and switch backends directly in Cla
 /plugin install claudegate@claudegate
 ```
 
-Then type `/models` to see available models or `/backend copilot` to switch backends.
+Then type `/models` to see available models, `/backend copilot` to switch backends, or `/usage` to check Copilot premium usage.
 
 ### Configure Codex CLI
 
