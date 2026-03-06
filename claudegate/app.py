@@ -25,6 +25,7 @@ from .config import (
     logger,
 )
 from .context_guard import check_context_guard_anthropic, check_context_guard_openai, check_context_guard_responses
+from .copilot_client import compute_initiator
 from .copilot_translate import has_server_tools, strip_server_tools
 from .copilot_usage import CopilotUsageCache
 from .errors import ContextWindowExceededError, CopilotHttpError, TransientBackendError
@@ -444,7 +445,10 @@ async def _call_bedrock(
     """
     log_prefix = f"[{request_id}] " if request_id else ""
     bedrock_model = get_bedrock_model(body["model"])
-    logger.info(f"{log_prefix}Request - model: {body['model']} -> {bedrock_model}, stream: {stream}")
+    initiator = compute_initiator(body)
+    logger.info(
+        f"{log_prefix}Request - model: {body['model']} -> {bedrock_model}, stream: {stream}, initiator: {initiator}"
+    )
     logger.debug(f"{log_prefix}Request body keys: {list(body.keys())}")
 
     bedrock_body = _build_bedrock_body(body, request)
@@ -542,7 +546,11 @@ async def _call_copilot(
         raise RuntimeError("Copilot backend not initialized")
     copilot_model, anthropic_model = get_copilot_model(body["model"])
     log_prefix = f"[{request_id}] " if request_id else ""
-    logger.info(f"{log_prefix}Request - model: {body['model']} -> {copilot_model} (copilot), stream: {stream}")
+    initiator = compute_initiator(body)
+    logger.info(
+        f"{log_prefix}Request - model: {body['model']} -> {copilot_model} (copilot), "
+        f"stream: {stream}, initiator: {initiator}"
+    )
     client_context_window = _detect_client_context_window(request, copilot_model)
     if model_requires_responses_api(copilot_model):
         logger.info(f"{log_prefix}Routing to Responses API for {copilot_model}")
@@ -911,8 +919,9 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
         return _openai_error_response(400, "messages must not be empty")
 
     stream = body.get("stream", False)
+    initiator = compute_initiator(body)
 
-    logger.info(f"{log_prefix}OpenAI-compat request - model: {body['model']}, stream: {stream}")
+    logger.info(f"{log_prefix}OpenAI-compat request - model: {body['model']}, stream: {stream}, initiator: {initiator}")
 
     # Map backend name to call function
     # Copilot: direct passthrough (0 translations)
@@ -1052,8 +1061,9 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
         return error
 
     stream = body.get("stream", False)
+    initiator = compute_initiator(body)
 
-    logger.info(f"{log_prefix}Responses API request - model: {body['model']}, stream: {stream}")
+    logger.info(f"{log_prefix}Responses API request - model: {body['model']}, stream: {stream}, initiator: {initiator}")
 
     # Map backend name to call function
     def _get_backend_caller(backend_name: str):

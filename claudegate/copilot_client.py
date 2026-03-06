@@ -88,14 +88,23 @@ def _strip_non_function_tools(body: dict[str, Any]) -> dict[str, Any]:
     return body
 
 
-def _compute_initiator(body: dict[str, Any]) -> str:
+def compute_initiator(body: dict[str, Any]) -> str:
     """Determine X-Initiator header value from request body."""
-    # Chat Completions format
+    # Chat Completions / Anthropic Messages format
     messages = body.get("messages")
     if messages and isinstance(messages, list):
-        role = messages[-1].get("role", "")
+        last = messages[-1]
+        role = last.get("role", "")
         if role in ("assistant", "tool"):
             return "agent"
+        # Anthropic format: tool results are sent as role "user" with
+        # content blocks containing type "tool_result"
+        if role == "user":
+            content = last.get("content")
+            if isinstance(content, list) and any(
+                isinstance(block, dict) and block.get("type") == "tool_result" for block in content
+            ):
+                return "agent"
         return "user"
 
     # Responses API format
@@ -132,7 +141,7 @@ class CopilotBackend:
             "Copilot-Integration-Id": "vscode-chat",
         }
         if body is not None:
-            headers["X-Initiator"] = _compute_initiator(body)
+            headers["X-Initiator"] = compute_initiator(body)
         return headers
 
     async def list_models(self) -> list[dict[str, Any]]:

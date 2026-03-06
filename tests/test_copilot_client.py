@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from claudegate.copilot_client import CopilotBackend, _compute_initiator, _parse_token_limit_error
+from claudegate.copilot_client import CopilotBackend, _parse_token_limit_error, compute_initiator
 from claudegate.errors import ContextWindowExceededError, CopilotHttpError, TransientBackendError
 
 # Copilot token limit error payload used across multiple tests
@@ -110,49 +110,67 @@ class TestParseTokenLimitError:
         assert _parse_token_limit_error(400, "") is None
 
 
-# --- _compute_initiator ---
+# --- compute_initiator ---
 
 
 class TestComputeInitiator:
     def test_chat_last_user(self):
         body = {"messages": [{"role": "system", "content": "x"}, {"role": "user", "content": "hi"}]}
-        assert _compute_initiator(body) == "user"
+        assert compute_initiator(body) == "user"
 
     def test_chat_last_assistant(self):
         body = {"messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]}
-        assert _compute_initiator(body) == "agent"
+        assert compute_initiator(body) == "agent"
 
     def test_chat_last_tool(self):
         body = {"messages": [{"role": "user", "content": "hi"}, {"role": "tool", "content": "result"}]}
-        assert _compute_initiator(body) == "agent"
+        assert compute_initiator(body) == "agent"
 
     def test_responses_string_input(self):
         body = {"input": "hello world"}
-        assert _compute_initiator(body) == "user"
+        assert compute_initiator(body) == "user"
 
     def test_responses_last_function_call_output(self):
         body = {"input": [{"type": "function_call_output", "call_id": "x", "output": "result"}]}
-        assert _compute_initiator(body) == "agent"
+        assert compute_initiator(body) == "agent"
 
     def test_responses_last_function_call(self):
         body = {"input": [{"type": "function_call", "name": "fn", "arguments": "{}"}]}
-        assert _compute_initiator(body) == "agent"
+        assert compute_initiator(body) == "agent"
 
     def test_responses_last_assistant_role(self):
         body = {"input": [{"role": "assistant", "content": "hi"}]}
-        assert _compute_initiator(body) == "agent"
+        assert compute_initiator(body) == "agent"
 
     def test_responses_last_user_message(self):
         body = {"input": [{"role": "user", "content": "hi"}]}
-        assert _compute_initiator(body) == "user"
+        assert compute_initiator(body) == "user"
 
     def test_empty_messages(self):
         body = {"messages": []}
-        assert _compute_initiator(body) == "user"
+        assert compute_initiator(body) == "user"
 
     def test_no_messages_key(self):
         body = {"model": "gpt-4o"}
-        assert _compute_initiator(body) == "user"
+        assert compute_initiator(body) == "user"
+
+    def test_anthropic_tool_result(self):
+        body = {
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "fn", "input": {}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]},
+            ]
+        }
+        assert compute_initiator(body) == "agent"
+
+    def test_anthropic_plain_user(self):
+        body = {"messages": [{"role": "user", "content": [{"type": "text", "text": "hello"}]}]}
+        assert compute_initiator(body) == "user"
+
+    def test_anthropic_user_string_content(self):
+        body = {"messages": [{"role": "user", "content": "hello"}]}
+        assert compute_initiator(body) == "user"
 
 
 # --- handle_messages token limit ---
