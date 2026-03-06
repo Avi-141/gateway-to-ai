@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from claudegate.copilot_client import CopilotBackend, _parse_token_limit_error, compute_initiator
+from claudegate.copilot_client import CopilotBackend, _normalize_openai_response, _parse_token_limit_error, compute_initiator
 from claudegate.errors import ContextWindowExceededError, CopilotHttpError, TransientBackendError
 
 # Copilot token limit error payload used across multiple tests
@@ -530,6 +530,51 @@ class TestStreamResponse:
 # --- handle_openai_messages ---
 
 
+# --- _normalize_openai_response ---
+
+
+class TestNormalizeOpenAIResponse:
+    def test_adds_missing_index_to_choices(self):
+        resp = {"choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}]}
+        _normalize_openai_response(resp)
+        assert resp["choices"][0]["index"] == 0
+
+    def test_preserves_existing_index(self):
+        resp = {"choices": [{"index": 2, "message": {"content": "hi"}, "finish_reason": "stop"}]}
+        _normalize_openai_response(resp)
+        assert resp["choices"][0]["index"] == 2
+
+    def test_adds_missing_object_field(self):
+        resp = {"choices": []}
+        _normalize_openai_response(resp)
+        assert resp["object"] == "chat.completion"
+
+    def test_streaming_object_type(self):
+        resp = {"choices": []}
+        _normalize_openai_response(resp, streaming=True)
+        assert resp["object"] == "chat.completion.chunk"
+
+    def test_adds_missing_created_and_id(self):
+        resp = {"choices": []}
+        _normalize_openai_response(resp)
+        assert "created" in resp
+        assert resp["id"].startswith("chatcmpl-")
+
+    def test_preserves_existing_fields(self):
+        resp = {
+            "id": "original-id",
+            "object": "chat.completion",
+            "created": 12345,
+            "choices": [{"index": 0, "message": {"content": "hi"}}],
+        }
+        _normalize_openai_response(resp)
+        assert resp["id"] == "original-id"
+        assert resp["created"] == 12345
+
+
+# --- handle_openai_messages ---
+
+
 class TestHandleOpenAIMessages:
     @pytest.mark.anyio
     async def test_non_streaming_success(self, backend):
@@ -623,6 +668,26 @@ class TestHandleOpenAIMessages:
         assert resp.media_type == "text/event-stream"
 
     @pytest.mark.anyio
+    async def test_non_streaming_normalizes_response(self, backend):
+        """Copilot responses missing OpenAI spec fields get normalized."""
+        openai_resp = {
+            "choices": [{"message": {"role": "assistant", "content": "Hello!"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 3, "total_tokens": 8},
+        }
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = openai_resp
+
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
+            body = {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}
+            resp = await backend.handle_openai_messages(body, "req1", False, "gpt-4o")
+
+        result = json.loads(resp.body)
+        assert result["choices"][0]["index"] == 0
+        assert result["object"] == "chat.completion"
+        assert "created" in result
+
+    @pytest.mark.anyio
     async def test_does_not_mutate_original_body(self, backend):
         """Original body dict should not be modified."""
         openai_resp = {
@@ -644,6 +709,29 @@ class TestHandleOpenAIMessages:
 
 
 class TestStreamOpenAIResponse:
+    @pytest.mark.anyio
+    async def test_normalizes_streaming_chunks(self, backend):
+        """Streaming chunks missing index/object fields get normalized."""
+
+        async def mock_aiter_lines():
+            yield 'data: {"id":"c1","choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}'
+            yield "data: [DONE]"
+
+        mock_resp = AsyncMock()
+        mock_resp.aiter_lines = mock_aiter_lines
+
+        mock_stream_ctx = AsyncMock()
+        mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
+
+        events = []
+        async for event in backend._stream_openai_response(mock_resp, mock_stream_ctx, ""):
+            events.append(event)
+
+        # First event should have the normalized chunk
+        chunk_data = json.loads(events[0].replace("data: ", "").strip())
+        assert chunk_data["choices"][0]["index"] == 0
+        assert chunk_data["object"] == "chat.completion.chunk"
+
     @pytest.mark.anyio
     async def test_forwards_lines_as_is(self, backend):
         """Lines are forwarded without Anthropic translation."""

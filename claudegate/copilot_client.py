@@ -3,6 +3,8 @@
 import asyncio
 import json
 import re
+import time
+import uuid
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -86,6 +88,25 @@ def _strip_non_function_tools(body: dict[str, Any]) -> dict[str, Any]:
         # Remove tool_choice if no tools remain
         body.pop("tool_choice", None)
     return body
+
+
+def _normalize_openai_response(resp: dict[str, Any], streaming: bool = False) -> dict[str, Any]:
+    """Ensure a Copilot chat completions response conforms to the OpenAI spec.
+
+    Copilot responses may be missing fields that the OpenAI spec requires,
+    such as 'object', 'created', and 'index' in choices. This ensures
+    downstream clients (e.g. BAML) can parse the response without errors.
+    """
+    if "object" not in resp:
+        resp["object"] = "chat.completion.chunk" if streaming else "chat.completion"
+    if "created" not in resp:
+        resp["created"] = int(time.time())
+    if "id" not in resp:
+        resp["id"] = f"chatcmpl-{uuid.uuid4().hex[:29]}"
+    for choice in resp.get("choices", []):
+        if "index" not in choice:
+            choice["index"] = 0
+    return resp
 
 
 def compute_initiator(body: dict[str, Any]) -> str:
@@ -371,6 +392,7 @@ class CopilotBackend:
                 raise CopilotHttpError(resp.status_code, detail)
 
             openai_resp = resp.json()
+            _normalize_openai_response(openai_resp)
             logger.debug(f"{log_prefix}Response: {json.dumps(openai_resp)[:500]}")
             return JSONResponse(content=openai_resp)
 
@@ -384,6 +406,14 @@ class CopilotBackend:
             async for line in resp.aiter_lines():
                 if not line:
                     continue
+                # Normalize streaming chunks to ensure OpenAI spec compliance
+                if line.startswith("data: ") and not line.endswith("[DONE]"):
+                    try:
+                        chunk = json.loads(line[6:])
+                        _normalize_openai_response(chunk, streaming=True)
+                        line = f"data: {json.dumps(chunk)}"
+                    except json.JSONDecodeError:
+                        pass
                 chunk_count += 1
                 if chunk_count <= 3:
                     logger.debug(f"{log_prefix}OpenAI chunk {chunk_count}: {line[:200]}")
