@@ -55,6 +55,7 @@ from .responses_translate import (
     anthropic_to_responses_response,
     responses_to_anthropic_request,
 )
+from .server_url import remove_server_url, write_server_url
 
 # Use cl100k_base encoding (similar to Claude's tokenizer)
 tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -105,6 +106,10 @@ async def lifespan(app: FastAPI):
         logger.info(f"Fallback: {fallback}")
     logger.info(f"Log Level: {LOG_LEVEL}")
 
+    host = os.environ.get("CLAUDEGATE_HOST", DEFAULT_HOST)
+    port = int(os.environ.get("CLAUDEGATE_PORT", str(DEFAULT_PORT)))
+    write_server_url(host, port)
+
     # Initialize copilot if it's primary or fallback
     needs_copilot = primary == "copilot" or fallback == "copilot"
     if needs_copilot:
@@ -136,6 +141,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    remove_server_url()
     await _backend_state.close()
     logger.info("Shutting down claudegate")
 

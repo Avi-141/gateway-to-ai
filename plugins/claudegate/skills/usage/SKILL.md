@@ -5,9 +5,22 @@ user-invocable: true
 
 # Copilot Usage Status
 
-!`python3 -c "import urllib.request,os,json;r=json.loads(urllib.request.urlopen(os.environ.get('ANTHROPIC_BASE_URL','http://localhost:8080')+'/api/status').read().decode());print(json.dumps(r.get('copilot'),indent=2) if r.get('copilot') else 'NO_COPILOT_DATA')"`
+!`python3 -c "
+import urllib.request,os,json,pathlib
+_f=pathlib.Path.home()/'.config'/'claudegate'/'server.json'
+try: base=json.loads(_f.read_text())['url']
+except Exception: base=os.environ.get('ANTHROPIC_BASE_URL','http://localhost:8080')
+url=base+'/api/status'
+try:
+ r=json.loads(urllib.request.urlopen(url,timeout=5).read().decode())
+ print(json.dumps(r.get('copilot'),indent=2) if r.get('copilot') else 'NO_COPILOT_DATA')
+except Exception as e:
+ print('CONNECTION_REFUSED')
+"`
 
-If the output is `NO_COPILOT_DATA`, tell the user that Copilot usage data is not available (the backend may be set to bedrock-only) and suggest `/backend` to check.
+If the output is `CONNECTION_REFUSED`, tell the user that the claudegate proxy server is not running or not reachable. Suggest starting it with `claudegate` (or `uv run claudegate`) and checking the `ANTHROPIC_BASE_URL` env var.
+
+If the output is `NO_COPILOT_DATA`, tell the user that Copilot usage data is not available (the backend may be set to bedrock-only) and suggest `/claudegate:backend` to check.
 
 Otherwise, display a clean summary:
 

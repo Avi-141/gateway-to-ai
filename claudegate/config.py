@@ -4,10 +4,15 @@ import logging.config
 import os
 import ssl
 import sys
+from pathlib import Path
 
 # Server defaults
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8080
+
+# Shared config directory
+CONFIG_DIR = Path.home() / ".config" / "claudegate"
+SERVER_URL_FILE = CONFIG_DIR / "server.json"
 DEFAULT_LOG_LEVEL = "INFO"
 
 # AWS defaults

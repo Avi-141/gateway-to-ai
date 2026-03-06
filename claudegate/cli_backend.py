@@ -6,9 +6,13 @@ import sys
 import urllib.request
 
 from .config import DEFAULT_HOST, DEFAULT_PORT
+from .server_url import read_server_url
 
 
 def _server_url() -> str:
+    discovered = read_server_url()
+    if discovered:
+        return discovered
     host = os.environ.get("CLAUDEGATE_HOST", DEFAULT_HOST)
     port = os.environ.get("CLAUDEGATE_PORT", str(DEFAULT_PORT))
     return f"http://{host}:{port}"

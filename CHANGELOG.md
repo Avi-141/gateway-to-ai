@@ -9,6 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Added
 
 - **`X-Initiator` header for Copilot premium request savings** — adds the `X-Initiator` HTTP header to all Copilot API requests, signaling whether each request is a new user prompt (`user`) or an agent/tool follow-up (`agent`). Agent-initiated requests do not count against the Copilot premium quota.
+- **Server URL discovery file** — the server now writes `~/.config/claudegate/server.json` (containing the URL and PID) on startup and removes it on shutdown. Skills and the `claudegate backend` CLI read this file first to discover the running server, falling back to `ANTHROPIC_BASE_URL` / env vars / defaults. This fixes `ConnectionRefusedError` when the proxy runs on a non-default port or `ANTHROPIC_BASE_URL` is not set in the shell.
+
+### Changed
+
+- **Skills auto-discover running server** — the `/claudegate:usage`, `/claudegate:models`, and `/claudegate:backend` skills now read `~/.config/claudegate/server.json` to find the server URL before falling back to `ANTHROPIC_BASE_URL` or `localhost:8080`. This eliminates the need to set environment variables when running on a non-default port.
 
 ### Fixed
 

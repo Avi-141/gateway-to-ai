@@ -3,19 +3,17 @@
 import asyncio
 import os
 import time
-from pathlib import Path
 
 import httpx
 
-from .config import SSL_CONTEXT, logger
+from .config import CONFIG_DIR, SSL_CONTEXT, logger
 
 # GitHub OAuth app client ID used by Copilot
 COPILOT_CLIENT_ID = "Iv1.b507a08c87ecfe98"
 COPILOT_SCOPE = "copilot"
 
 # Token persistence path
-TOKEN_DIR = Path.home() / ".config" / "claudegate"
-TOKEN_FILE = TOKEN_DIR / "github_token"
+TOKEN_FILE = CONFIG_DIR / "github_token"
 
 # Copilot API endpoints
 GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code"
@@ -47,7 +45,7 @@ def _load_persisted_token() -> str | None:
 def _persist_token(token: str) -> None:
     """Persist GitHub OAuth token to disk."""
     try:
-        TOKEN_DIR.mkdir(parents=True, exist_ok=True)
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         TOKEN_FILE.write_text(token)
         TOKEN_FILE.chmod(0o600)
         logger.info("Persisted GitHub token to %s", TOKEN_FILE)

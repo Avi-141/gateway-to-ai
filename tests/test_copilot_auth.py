@@ -42,7 +42,7 @@ class TestPersistToken:
     def test_creates_file(self, tmp_path, monkeypatch):
         token_dir = tmp_path / "subdir"
         token_file = token_dir / "github_token"
-        monkeypatch.setattr("claudegate.copilot_auth.TOKEN_DIR", token_dir)
+        monkeypatch.setattr("claudegate.copilot_auth.CONFIG_DIR", token_dir)
         monkeypatch.setattr("claudegate.copilot_auth.TOKEN_FILE", token_file)
 
         _persist_token("gho_abc")
@@ -51,7 +51,7 @@ class TestPersistToken:
     def test_creates_dir(self, tmp_path, monkeypatch):
         token_dir = tmp_path / "new" / "dir"
         token_file = token_dir / "github_token"
-        monkeypatch.setattr("claudegate.copilot_auth.TOKEN_DIR", token_dir)
+        monkeypatch.setattr("claudegate.copilot_auth.CONFIG_DIR", token_dir)
         monkeypatch.setattr("claudegate.copilot_auth.TOKEN_FILE", token_file)
 
         _persist_token("token")
@@ -60,7 +60,7 @@ class TestPersistToken:
     def test_sets_permissions(self, tmp_path, monkeypatch):
         token_dir = tmp_path
         token_file = token_dir / "github_token"
-        monkeypatch.setattr("claudegate.copilot_auth.TOKEN_DIR", token_dir)
+        monkeypatch.setattr("claudegate.copilot_auth.CONFIG_DIR", token_dir)
         monkeypatch.setattr("claudegate.copilot_auth.TOKEN_FILE", token_file)
 
         _persist_token("token")
@@ -99,7 +99,7 @@ class TestGetGithubToken:
 
 class TestDeviceFlowLogin:
     def test_success_flow(self, monkeypatch):
-        monkeypatch.setattr("claudegate.copilot_auth.TOKEN_DIR", MagicMock())
+        monkeypatch.setattr("claudegate.copilot_auth.CONFIG_DIR", MagicMock())
         monkeypatch.setattr("claudegate.copilot_auth.TOKEN_FILE", MagicMock())
 
         mock_client = MagicMock()
@@ -130,7 +130,7 @@ class TestDeviceFlowLogin:
         assert result == "gho_success"
 
     def test_slow_down(self, monkeypatch):
-        monkeypatch.setattr("claudegate.copilot_auth.TOKEN_DIR", MagicMock())
+        monkeypatch.setattr("claudegate.copilot_auth.CONFIG_DIR", MagicMock())
         monkeypatch.setattr("claudegate.copilot_auth.TOKEN_FILE", MagicMock())
 
         mock_client = MagicMock()
@@ -161,7 +161,7 @@ class TestDeviceFlowLogin:
         assert result == "gho_ok"
 
     def test_expired_token_error(self, monkeypatch):
-        monkeypatch.setattr("claudegate.copilot_auth.TOKEN_DIR", MagicMock())
+        monkeypatch.setattr("claudegate.copilot_auth.CONFIG_DIR", MagicMock())
         monkeypatch.setattr("claudegate.copilot_auth.TOKEN_FILE", MagicMock())
 
         mock_client = MagicMock()
@@ -188,7 +188,7 @@ class TestDeviceFlowLogin:
             device_flow_login()
 
     def test_access_denied_error(self, monkeypatch):
-        monkeypatch.setattr("claudegate.copilot_auth.TOKEN_DIR", MagicMock())
+        monkeypatch.setattr("claudegate.copilot_auth.CONFIG_DIR", MagicMock())
         monkeypatch.setattr("claudegate.copilot_auth.TOKEN_FILE", MagicMock())
 
         mock_client = MagicMock()
