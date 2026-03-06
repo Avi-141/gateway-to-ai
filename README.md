@@ -90,6 +90,12 @@ uv tool install --force git+https://github.com/Avi-141/gateway-to-ai.git@v0.6.0
 uv tool install --force git+https://github.com/Avi-141/gateway-to-ai.git
 ```
 
+If claudegate is installed as a service, restart it after upgrading to use the new version:
+
+```bash
+claudegate restart
+```
+
 ### Development
 
 ```bash
