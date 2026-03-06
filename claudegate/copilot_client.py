@@ -88,6 +88,33 @@ def _strip_non_function_tools(body: dict[str, Any]) -> dict[str, Any]:
     return body
 
 
+def _compute_initiator(body: dict[str, Any]) -> str:
+    """Determine X-Initiator header value from request body."""
+    # Chat Completions format
+    messages = body.get("messages")
+    if messages and isinstance(messages, list):
+        role = messages[-1].get("role", "")
+        if role in ("assistant", "tool"):
+            return "agent"
+        return "user"
+
+    # Responses API format
+    input_items = body.get("input")
+    if isinstance(input_items, str):
+        return "user"
+    if input_items and isinstance(input_items, list):
+        last = input_items[-1]
+        if isinstance(last, dict):
+            item_type = last.get("type", "")
+            if item_type in ("function_call_output", "function_call"):
+                return "agent"
+            if last.get("role") == "assistant":
+                return "agent"
+        return "user"
+
+    return "user"
+
+
 class CopilotBackend:
     """Handles routing requests through GitHub Copilot API."""
 
@@ -95,15 +122,18 @@ class CopilotBackend:
         self._auth = auth
         self._client = httpx.AsyncClient(verify=SSL_CONTEXT, timeout=httpx.Timeout(timeout, connect=30.0))
 
-    async def _get_headers(self) -> dict[str, str]:
+    async def _get_headers(self, body: dict[str, Any] | None = None) -> dict[str, str]:
         """Build request headers with fresh Copilot token."""
         token = await self._auth.get_token()
-        return {
+        headers = {
             **COPILOT_HEADERS,
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "Copilot-Integration-Id": "vscode-chat",
         }
+        if body is not None:
+            headers["X-Initiator"] = _compute_initiator(body)
+        return headers
 
     async def list_models(self) -> list[dict[str, Any]]:
         """Fetch available models from the Copilot API."""
@@ -182,7 +212,7 @@ class CopilotBackend:
                 media_type="text/event-stream",
             )
         else:
-            headers = await self._get_headers()
+            headers = await self._get_headers(openai_body)
             logger.info(f"{log_prefix}Copilot request to {openai_model}")
             logger.debug(f"{log_prefix}OpenAI body keys: {list(openai_body.keys())}")
 
@@ -211,7 +241,7 @@ class CopilotBackend:
         Raises TransientBackendError for fallback-eligible status codes.
         Raises CopilotHttpError for non-transient HTTP errors.
         """
-        headers = await self._get_headers()
+        headers = await self._get_headers(openai_body)
         logger.info(f"{log_prefix}Starting Copilot stream for {openai_body.get('model')}")
 
         stream_cm = self._client.stream("POST", COPILOT_CHAT_URL, headers=headers, json=openai_body)
@@ -314,7 +344,7 @@ class CopilotBackend:
                 media_type="text/event-stream",
             )
         else:
-            headers = await self._get_headers()
+            headers = await self._get_headers(openai_body)
             logger.info(f"{log_prefix}Copilot OpenAI passthrough to {copilot_model}")
             logger.debug(f"{log_prefix}OpenAI body keys: {list(openai_body.keys())}")
 
@@ -403,7 +433,7 @@ class CopilotBackend:
                 media_type="text/event-stream",
             )
         else:
-            headers = await self._get_headers()
+            headers = await self._get_headers(responses_body)
             logger.info(f"{log_prefix}Copilot Responses request to {responses_model}")
             logger.debug(f"{log_prefix}Responses body keys: {list(responses_body.keys())}")
 
@@ -447,7 +477,7 @@ class CopilotBackend:
                 media_type="text/event-stream",
             )
         else:
-            headers = await self._get_headers()
+            headers = await self._get_headers(responses_body)
             logger.info(f"{log_prefix}Copilot Responses OpenAI passthrough to {responses_model}")
             logger.debug(f"{log_prefix}Responses body keys: {list(responses_body.keys())}")
 
@@ -473,7 +503,7 @@ class CopilotBackend:
         self, responses_body: dict[str, Any], log_prefix: str
     ) -> tuple[httpx.Response, Any]:
         """Open streaming connection to Responses API and validate HTTP status."""
-        headers = await self._get_headers()
+        headers = await self._get_headers(responses_body)
         logger.info(f"{log_prefix}Starting Copilot Responses stream for {responses_body.get('model')}")
 
         stream_cm = self._client.stream("POST", COPILOT_RESPONSES_URL, headers=headers, json=responses_body)
@@ -640,7 +670,7 @@ class CopilotBackend:
                 media_type="text/event-stream",
             )
         else:
-            headers = await self._get_headers()
+            headers = await self._get_headers(body)
             logger.info(f"{log_prefix}Copilot Responses passthrough to {body.get('model')}")
 
             resp = await self._client.post(COPILOT_RESPONSES_URL, headers=headers, json=body)
@@ -728,7 +758,7 @@ class CopilotBackend:
                 media_type="text/event-stream",
             )
         else:
-            headers = await self._get_headers()
+            headers = await self._get_headers(openai_body)
             logger.info(f"{log_prefix}Copilot Responses via chat to {copilot_model}")
 
             resp = await self._client.post(COPILOT_CHAT_URL, headers=headers, json=openai_body)

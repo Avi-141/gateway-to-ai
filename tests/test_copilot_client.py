@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from claudegate.copilot_client import CopilotBackend, _parse_token_limit_error
+from claudegate.copilot_client import CopilotBackend, _compute_initiator, _parse_token_limit_error
 from claudegate.errors import ContextWindowExceededError, CopilotHttpError, TransientBackendError
 
 # Copilot token limit error payload used across multiple tests
@@ -108,6 +108,51 @@ class TestParseTokenLimitError:
 
     def test_returns_none_for_empty_detail(self):
         assert _parse_token_limit_error(400, "") is None
+
+
+# --- _compute_initiator ---
+
+
+class TestComputeInitiator:
+    def test_chat_last_user(self):
+        body = {"messages": [{"role": "system", "content": "x"}, {"role": "user", "content": "hi"}]}
+        assert _compute_initiator(body) == "user"
+
+    def test_chat_last_assistant(self):
+        body = {"messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]}
+        assert _compute_initiator(body) == "agent"
+
+    def test_chat_last_tool(self):
+        body = {"messages": [{"role": "user", "content": "hi"}, {"role": "tool", "content": "result"}]}
+        assert _compute_initiator(body) == "agent"
+
+    def test_responses_string_input(self):
+        body = {"input": "hello world"}
+        assert _compute_initiator(body) == "user"
+
+    def test_responses_last_function_call_output(self):
+        body = {"input": [{"type": "function_call_output", "call_id": "x", "output": "result"}]}
+        assert _compute_initiator(body) == "agent"
+
+    def test_responses_last_function_call(self):
+        body = {"input": [{"type": "function_call", "name": "fn", "arguments": "{}"}]}
+        assert _compute_initiator(body) == "agent"
+
+    def test_responses_last_assistant_role(self):
+        body = {"input": [{"role": "assistant", "content": "hi"}]}
+        assert _compute_initiator(body) == "agent"
+
+    def test_responses_last_user_message(self):
+        body = {"input": [{"role": "user", "content": "hi"}]}
+        assert _compute_initiator(body) == "user"
+
+    def test_empty_messages(self):
+        body = {"messages": []}
+        assert _compute_initiator(body) == "user"
+
+    def test_no_messages_key(self):
+        body = {"model": "gpt-4o"}
+        assert _compute_initiator(body) == "user"
 
 
 # --- handle_messages token limit ---
@@ -229,7 +274,7 @@ class TestHandleMessages:
         mock_response.status_code = 200
         mock_response.json.return_value = openai_resp
 
-        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
             body = {
                 "model": "claude-sonnet-4-5-20250929",
                 "max_tokens": 100,
@@ -241,6 +286,9 @@ class TestHandleMessages:
         result = json.loads(resp.body)
         assert result["content"][0]["text"] == "Hello!"
         assert result["type"] == "message"
+        # Verify X-Initiator header is set
+        posted_headers = mock_post.call_args.kwargs["headers"]
+        assert posted_headers["X-Initiator"] == "user"
 
     @pytest.mark.anyio
     async def test_non_streaming_transient_error_raises(self, backend):
@@ -487,6 +535,9 @@ class TestHandleOpenAIMessages:
         # Verify model was overridden in the posted body
         posted_body = mock_post.call_args.kwargs["json"]
         assert posted_body["model"] == "gpt-4o"
+        # Verify X-Initiator header is set
+        posted_headers = mock_post.call_args.kwargs["headers"]
+        assert posted_headers["X-Initiator"] == "user"
 
     @pytest.mark.anyio
     async def test_model_override(self, backend):

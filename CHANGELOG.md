@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **`X-Initiator` header for Copilot premium request savings** — adds the `X-Initiator` HTTP header to all Copilot API requests, signaling whether each request is a new user prompt (`user`) or an agent/tool follow-up (`agent`). Agent-initiated requests do not count against the Copilot premium quota.
+
 ## [0.6.0] - 2026-03-05
 
 ### Added
