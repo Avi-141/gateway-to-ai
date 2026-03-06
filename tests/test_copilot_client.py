@@ -6,7 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from claudegate.copilot_client import CopilotBackend, _normalize_openai_response, _parse_token_limit_error, compute_initiator
+from claudegate.copilot_client import (
+    CopilotBackend,
+    _normalize_openai_response,
+    _parse_token_limit_error,
+    compute_initiator,
+)
 from claudegate.errors import ContextWindowExceededError, CopilotHttpError, TransientBackendError
 
 # Copilot token limit error payload used across multiple tests
