@@ -437,7 +437,7 @@ async def _stream_bedrock_chunks(response: dict[str, Any], request_id: str = "")
             logger.error(f"{log_prefix}Stream error: {e}")
             yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': {'message': str(e)}})}\n\n"
     except Exception as e:
-        logger.error(f"{log_prefix}Stream error: {e}")
+        logger.error(f"{log_prefix}Stream error: {e}", exc_info=True)
         yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': {'message': str(e)}})}\n\n"
 
 
@@ -518,7 +518,7 @@ async def _call_bedrock(
             504, "timeout_error", "Request timed out. Try a smaller request or use streaming.", "bedrock"
         ) from e
     except Exception as e:
-        logger.error(f"{log_prefix}Unexpected error: {e}")
+        logger.error(f"{log_prefix}Unexpected error: {e}", exc_info=True)
         return _error_response(500, "api_error", str(e))
 
 
@@ -768,7 +768,7 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
             logger.error(f"{log_prefix}Auth error: {e}")
             return _error_response(401, "authentication_error", str(e))
         except Exception as e:
-            logger.error(f"{log_prefix}Unexpected error: {e}")
+            logger.error(f"{log_prefix}Unexpected error: {e}", exc_info=True)
             return _error_response(500, "api_error", str(e))
 
     # Route requests with server-side tools (e.g. web_search) appropriately.
@@ -883,7 +883,7 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
             request_stats.record_error()
             return _error_response(401, "authentication_error", str(fallback_err))
         except Exception as fallback_err:
-            logger.error(f"{log_prefix}Fallback ({current_fallback}) unexpected error: {fallback_err}")
+            logger.error(f"{log_prefix}Fallback ({current_fallback}) unexpected error: {fallback_err}", exc_info=True)
             request_stats.record_error()
             return _error_response(500, "api_error", str(fallback_err))
     except CopilotHttpError as e:
@@ -894,7 +894,7 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
         request_stats.record_error()
         return _error_response(401, "authentication_error", str(e))
     except Exception as e:
-        logger.error(f"{log_prefix}Unexpected error: {e}")
+        logger.error(f"{log_prefix}Unexpected error: {e}", exc_info=True)
         request_stats.record_error()
         return _error_response(500, "api_error", str(e))
 
@@ -1029,7 +1029,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
             request_stats.record_error()
             return _openai_error_response(401, str(fallback_err), "authentication_error")
         except Exception as fallback_err:
-            logger.error(f"{log_prefix}Fallback ({current_fallback}) unexpected error: {fallback_err}")
+            logger.error(f"{log_prefix}Fallback ({current_fallback}) unexpected error: {fallback_err}", exc_info=True)
             request_stats.record_error()
             return _openai_error_response(500, str(fallback_err), "server_error")
     except CopilotHttpError as e:
@@ -1040,7 +1040,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
         request_stats.record_error()
         return _openai_error_response(401, str(e), "authentication_error")
     except Exception as e:
-        logger.error(f"{log_prefix}Unexpected error: {e}")
+        logger.error(f"{log_prefix}Unexpected error: {e}", exc_info=True)
         request_stats.record_error()
         return _openai_error_response(500, str(e), "server_error")
 
@@ -1160,7 +1160,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
             request_stats.record_error()
             return _openai_error_response(401, str(fallback_err), "authentication_error")
         except Exception as fallback_err:
-            logger.error(f"{log_prefix}Fallback ({current_fallback}) unexpected error: {fallback_err}")
+            logger.error(f"{log_prefix}Fallback ({current_fallback}) unexpected error: {fallback_err}", exc_info=True)
             request_stats.record_error()
             return _openai_error_response(500, str(fallback_err), "server_error")
     except CopilotHttpError as e:
@@ -1171,7 +1171,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
         request_stats.record_error()
         return _openai_error_response(401, str(e), "authentication_error")
     except Exception as e:
-        logger.error(f"{log_prefix}Unexpected error: {e}")
+        logger.error(f"{log_prefix}Unexpected error: {e}", exc_info=True)
         request_stats.record_error()
         return _openai_error_response(500, str(e), "server_error")
 

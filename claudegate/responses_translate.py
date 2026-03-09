@@ -1097,7 +1097,8 @@ def anthropic_to_responses_response(resp: dict[str, Any], model: str) -> dict[st
 
 def openai_chat_to_responses_response(resp: dict[str, Any], model: str) -> dict[str, Any]:
     """Translate an OpenAI Chat Completions response to Responses API format."""
-    choice = resp.get("choices", [{}])[0]
+    choices = resp.get("choices") or []
+    choice = choices[0] if choices else {}
     message = choice.get("message", {})
     output: list[dict[str, Any]] = []
 

@@ -376,7 +376,8 @@ def _translate_finish_reason(reason: str | None) -> str:
 
 def openai_to_anthropic_response(openai_resp: dict[str, Any], model: str) -> dict[str, Any]:
     """Translate an OpenAI Chat Completions response to Anthropic Messages format."""
-    choice = openai_resp.get("choices", [{}])[0]
+    choices = openai_resp.get("choices") or []
+    choice = choices[0] if choices else {}
     message = choice.get("message", {})
 
     content: list[dict[str, Any]] = []

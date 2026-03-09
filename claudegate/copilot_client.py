@@ -276,6 +276,8 @@ class CopilotBackend:
                 raise CopilotHttpError(resp.status_code, detail)
 
             openai_resp = resp.json()
+            if not openai_resp.get("choices"):
+                logger.warning(f"{log_prefix}Copilot returned empty choices: {json.dumps(openai_resp)[:500]}")
             result = openai_to_anthropic_response(openai_resp, anthropic_model)
             logger.debug(f"{log_prefix}Response: {json.dumps(result)[:500]}")
             return JSONResponse(content=result)

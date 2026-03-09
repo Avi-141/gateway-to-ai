@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Copilot empty choices crash on non-streaming responses** — when Copilot returned a 200 response with an empty `choices` array (`{"choices": []}`), the `openai_to_anthropic_response()` and `openai_chat_to_responses_response()` translation functions crashed with `IndexError: list index out of range`, resulting in a 500 error to the client. Both functions now handle empty choices gracefully, returning an empty text response instead of crashing.
+
 ## [0.7.0] - 2026-03-09
 
 ### Added
