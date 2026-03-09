@@ -177,6 +177,24 @@ class TestComputeInitiator:
         body = {"messages": [{"role": "user", "content": "hello"}]}
         assert compute_initiator(body) == "user"
 
+    def test_suggestion_mode_string_content(self):
+        msg = "[SUGGESTION MODE: Suggest what the user might naturally type next.]"
+        body = {"messages": [{"role": "user", "content": msg}]}
+        assert compute_initiator(body) == "agent"
+
+    def test_suggestion_mode_content_blocks(self):
+        msg = "[SUGGESTION MODE: Suggest what the user might naturally type next.]"
+        body = {
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": msg}]},
+            ]
+        }
+        assert compute_initiator(body) == "agent"
+
+    def test_normal_user_message_not_suggestion_mode(self):
+        body = {"messages": [{"role": "user", "content": "Tell me about suggestion mode"}]}
+        assert compute_initiator(body) == "user"
+
 
 # --- handle_messages token limit ---
 

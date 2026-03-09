@@ -109,6 +109,20 @@ def _normalize_openai_response(resp: dict[str, Any], streaming: bool = False) ->
     return resp
 
 
+def _is_suggestion_mode(content: Any) -> bool:
+    """Check if message content is a Claude Code suggestion mode prompt."""
+    marker = "[SUGGESTION MODE:"
+    if isinstance(content, str):
+        return content.lstrip().startswith(marker)
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                text = block.get("text", "")
+                if text.lstrip().startswith(marker):
+                    return True
+    return False
+
+
 def compute_initiator(body: dict[str, Any]) -> str:
     """Determine X-Initiator header value from request body."""
     # Chat Completions / Anthropic Messages format
@@ -125,6 +139,8 @@ def compute_initiator(body: dict[str, Any]) -> str:
             if isinstance(content, list) and any(
                 isinstance(block, dict) and block.get("type") == "tool_result" for block in content
             ):
+                return "agent"
+            if _is_suggestion_mode(content):
                 return "agent"
         return "user"
 
