@@ -1,6 +1,6 @@
 # claudegate
 
-![Version](https://img.shields.io/badge/version-0.6.0-blue)
+![Version](https://img.shields.io/badge/version-0.7.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
 ![License](https://img.shields.io/badge/license-UNLICENSED-green)
 
@@ -62,7 +62,7 @@ The Copilot backend supports Claude models (translated to Anthropic format) and 
 
 ```bash
 # Install a specific version (recommended)
-uv tool install git+https://github.com/Avi-141/gateway-to-ai.git@v0.6.0
+uv tool install git+https://github.com/Avi-141/gateway-to-ai.git@v0.7.0
 
 # Install latest from master
 uv tool install git+https://github.com/Avi-141/gateway-to-ai.git
@@ -72,7 +72,7 @@ uv tool install git+https://github.com/Avi-141/gateway-to-ai.git
 
 ```bash
 # Specific version
-uvx --from git+https://github.com/Avi-141/gateway-to-ai.git@v0.6.0 claudegate
+uvx --from git+https://github.com/Avi-141/gateway-to-ai.git@v0.7.0 claudegate
 
 # Latest from master
 uvx --from git+https://github.com/Avi-141/gateway-to-ai.git claudegate
@@ -84,7 +84,7 @@ After installing, run `claudegate` once manually in your terminal to complete th
 
 ```bash
 # Upgrade to a specific version
-uv tool install --force git+https://github.com/Avi-141/gateway-to-ai.git@v0.6.0
+uv tool install --force git+https://github.com/Avi-141/gateway-to-ai.git@v0.7.0
 
 # Upgrade to latest
 uv tool install --force git+https://github.com/Avi-141/gateway-to-ai.git
