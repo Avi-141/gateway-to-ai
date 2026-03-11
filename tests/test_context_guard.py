@@ -18,6 +18,8 @@ from claudegate.context_guard import (
 from claudegate.errors import ContextWindowExceededError
 from claudegate.request_stats import request_stats
 
+_CONTEXT_ACCOUNTING_MAXLEN = 200
+
 app_module = sys.modules["claudegate.app"]
 _bs = app_module._backend_state
 
@@ -548,7 +550,8 @@ class TestContextGuardIntegrationMessages:
             resp = await guard_client.post("/v1/messages", json=body)
 
         assert resp.status_code == 400
-        assert request_stats.snapshot()["context_guard_rejections"] >= 1
+        snapshot = request_stats.snapshot()
+        assert snapshot["context_guard_rejections"] >= 1
 
     @pytest.mark.anyio
     async def test_clamps_and_forwards_when_near_limit(self, guard_client, monkeypatch):

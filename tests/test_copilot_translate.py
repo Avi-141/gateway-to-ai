@@ -2,6 +2,8 @@
 
 import json
 
+import pytest
+
 from claudegate.copilot_translate import (
     StreamTranslator,
     _translate_content_to_openai,
@@ -1099,6 +1101,393 @@ class TestStreamTranslatorTokenScaling:
             client_context_window=200000,
         )
         assert t.input_tokens == 100000
+
+    def test_gpt_reference_window_scales_down_400k_backend_usage(self):
+        """100k of real usage on a 400k backend should appear 25% full to Claude Code."""
+        t = StreamTranslator(
+            "gpt-5.4",
+            estimated_input_tokens=100000,
+            copilot_context_limit=400000,
+            client_context_window=200000,
+        )
+        assert t.input_tokens == 50000
+
+    def test_gpt_reference_window_scales_usage_chunk_down(self):
+        """Usage updates should use the same down-scaling semantics for GPT-style larger backends."""
+        t = StreamTranslator(
+            "gpt-5.4",
+            estimated_input_tokens=0,
+            copilot_context_limit=400000,
+            client_context_window=200000,
+        )
+        t.translate_chunk({"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]})
+        t.translate_chunk({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        t.translate_chunk({"choices": [], "usage": {"prompt_tokens": 100000, "completion_tokens": 2000}})
+        assert t.input_tokens == 50000
+        assert t.output_tokens == 1000
+
+    def test_gpt_reference_window_with_272k_prompt_limit_avoids_half_full_reporting(self):
+        """A 100k prompt against a 400k backend should not be reported as 50% full."""
+        t = StreamTranslator(
+            "gpt-5.4",
+            estimated_input_tokens=100000,
+            copilot_context_limit=272000,
+            client_context_window=200000,
+        )
+        assert t.input_tokens == 73529
+        assert t.input_tokens / 200000 == pytest.approx(73529 / 200000)
+        assert t.input_tokens / 200000 != pytest.approx(0.5)
+
+    def test_round_number_proof_case_is_exact(self):
+        t = StreamTranslator(
+            "gpt-5.4",
+            estimated_input_tokens=100000,
+            copilot_context_limit=400000,
+            client_context_window=200000,
+        )
+        assert t.input_tokens == 50000
+        assert pytest.approx(0.25) == 100000 / 400000
+        assert t.input_tokens / 200000 == pytest.approx(0.25)
+
+    def test_claude_sized_backend_remains_identity(self):
+        t = StreamTranslator(
+            "claude-sonnet-4.6",
+            estimated_input_tokens=100000,
+            copilot_context_limit=200000,
+            client_context_window=200000,
+        )
+        assert t.input_tokens == 100000
+        assert t.input_tokens / 200000 == pytest.approx(0.5)
+
+    def test_1m_reference_window_still_scales_up(self):
+        t = StreamTranslator(
+            "gpt-5.4",
+            estimated_input_tokens=100000,
+            copilot_context_limit=400000,
+            client_context_window=1_000_000,
+        )
+        assert t.input_tokens == 250000
+        assert t.input_tokens / 1_000_000 == pytest.approx(0.25)
+
+    def test_zero_limit_or_window_still_passthrough(self):
+        t = StreamTranslator(
+            "gpt-5.4", estimated_input_tokens=100000, copilot_context_limit=0, client_context_window=200000
+        )
+        assert t.input_tokens == 100000
+        t = StreamTranslator(
+            "gpt-5.4", estimated_input_tokens=100000, copilot_context_limit=400000, client_context_window=0
+        )
+        assert t.input_tokens == 100000
+
+    def test_output_tokens_follow_same_reference_window_scaling(self):
+        t = StreamTranslator(
+            "gpt-5.4",
+            estimated_input_tokens=0,
+            copilot_context_limit=400000,
+            client_context_window=200000,
+        )
+        t.translate_chunk({"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]})
+        t.translate_chunk(
+            {
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 100000, "completion_tokens": 4000},
+            }
+        )
+        assert t.input_tokens == 50000
+        assert t.output_tokens == 2000
+
+    def test_stream_usage_first_chunk_scales_down_for_gpt_reference_window(self):
+        t = StreamTranslator("gpt-5.4", copilot_context_limit=400000, client_context_window=200000)
+        events = t.translate_chunk(
+            {
+                "choices": [{"delta": {"content": "hi"}, "finish_reason": None}],
+                "usage": {"prompt_tokens": 100000},
+            }
+        )
+        assert t.input_tokens == 50000
+        assert '"input_tokens": 50000' in events
+
+    def test_stream_usage_finish_chunk_scales_down_for_gpt_reference_window(self):
+        t = StreamTranslator("gpt-5.4", copilot_context_limit=400000, client_context_window=200000)
+        t.translate_chunk({"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]})
+        t.translate_chunk(
+            {
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 100000, "completion_tokens": 1000},
+            }
+        )
+        assert t.input_tokens == 50000
+        assert t.output_tokens == 500
+
+    def test_stream_identity_scaling_for_claude_sized_window(self):
+        t = StreamTranslator(
+            "claude-sonnet-4.6",
+            estimated_input_tokens=100000,
+            copilot_context_limit=200000,
+            client_context_window=200000,
+        )
+        assert t.input_tokens == 100000
+        assert t.input_tokens / 200000 == pytest.approx(0.5)
+
+    def test_stream_passthrough_when_limit_or_window_missing(self):
+        assert (
+            StreamTranslator(
+                "gpt-5.4", estimated_input_tokens=100000, copilot_context_limit=0, client_context_window=200000
+            ).input_tokens
+            == 100000
+        )
+        assert (
+            StreamTranslator(
+                "gpt-5.4", estimated_input_tokens=100000, copilot_context_limit=400000, client_context_window=0
+            ).input_tokens
+            == 100000
+        )
+
+    def test_stream_scales_up_for_1m_reference_window(self):
+        t = StreamTranslator(
+            "gpt-5.4",
+            estimated_input_tokens=100000,
+            copilot_context_limit=400000,
+            client_context_window=1_000_000,
+        )
+        assert t.input_tokens == 250000
+        assert t.input_tokens / 1_000_000 == pytest.approx(0.25)
+
+    def test_stream_rounds_down_for_272k_prompt_limit(self):
+        t = StreamTranslator(
+            "gpt-5.4",
+            estimated_input_tokens=100000,
+            copilot_context_limit=272000,
+            client_context_window=200000,
+        )
+        assert t.input_tokens == 73529
+
+    def test_stream_no_scaling_default_still_holds(self):
+        t = StreamTranslator("model", estimated_input_tokens=12345)
+        assert t.input_tokens == 12345
+
+    def test_reference_window_semantics_do_not_require_backend_window_in_translator(self):
+        t = StreamTranslator(
+            "gpt-5.4", estimated_input_tokens=100000, copilot_context_limit=400000, client_context_window=200000
+        )
+        assert t.input_tokens == 50000
+        assert t._copilot_context_limit == 400000
+        assert t._client_context_window == 200000
+
+    def test_272k_prompt_limit_rounding_is_stable(self):
+        t = StreamTranslator(
+            "gpt-5.4", estimated_input_tokens=272000, copilot_context_limit=272000, client_context_window=200000
+        )
+        assert t.input_tokens == 200000
+        t = StreamTranslator(
+            "gpt-5.4", estimated_input_tokens=136000, copilot_context_limit=272000, client_context_window=200000
+        )
+        assert t.input_tokens == 100000
+
+    def test_stream_usage_only_chunk_preserves_real_fullness_percentage(self):
+        t = StreamTranslator("gpt-5.4", copilot_context_limit=400000, client_context_window=200000)
+        t.translate_chunk({"choices": [{"delta": {"content": "hi"}, "finish_reason": None}]})
+        t.translate_chunk({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        t.translate_chunk({"choices": [], "usage": {"prompt_tokens": 200000, "completion_tokens": 0}})
+        assert t.input_tokens == 100000
+        assert t.input_tokens / 200000 == pytest.approx(0.5)
+
+    def test_gpt_backend_total_window_is_not_used_as_client_window(self):
+        t = StreamTranslator(
+            "gpt-5.4", estimated_input_tokens=100000, copilot_context_limit=400000, client_context_window=200000
+        )
+        assert t.input_tokens != 100000
+        assert t.input_tokens == 50000
+
+    def test_smaller_client_window_can_reduce_reported_usage(self):
+        t = StreamTranslator(
+            "gpt-5.4", estimated_input_tokens=300000, copilot_context_limit=400000, client_context_window=200000
+        )
+        assert t.input_tokens == 150000
+        assert t.input_tokens / 200000 == pytest.approx(0.75)
+        assert pytest.approx(0.75) == 300000 / 400000
+
+    def test_stream_round_number_example_matches_expected_math(self):
+        t = StreamTranslator(
+            "gpt-5.4", estimated_input_tokens=100000, copilot_context_limit=400000, client_context_window=200000
+        )
+        assert {
+            "raw": 100000,
+            "backend_fullness": 100000 / 400000,
+            "reported": t.input_tokens,
+            "client_fullness": t.input_tokens / 200000,
+        } == {
+            "raw": 100000,
+            "backend_fullness": 0.25,
+            "reported": 50000,
+            "client_fullness": 0.25,
+        }
+
+    def test_stream_round_number_example_for_1m_variant(self):
+        t = StreamTranslator(
+            "gpt-5.4", estimated_input_tokens=100000, copilot_context_limit=400000, client_context_window=1_000_000
+        )
+        assert t.input_tokens == 250000
+        assert t.input_tokens / 1_000_000 == pytest.approx(0.25)
+
+    def test_large_backend_smaller_prompt_limit_can_still_scale_down_below_raw(self):
+        t = StreamTranslator(
+            "gpt-5.4", estimated_input_tokens=100000, copilot_context_limit=300000, client_context_window=200000
+        )
+        assert t.input_tokens == 66666
+        assert t.input_tokens / 200000 == pytest.approx(66666 / 200000)
+        assert t.input_tokens / 200000 != pytest.approx(0.5)
+
+    def test_stream_usage_chunk_math_with_simple_numbers(self):
+        t = StreamTranslator("gpt-5.4", copilot_context_limit=400000, client_context_window=200000)
+        t.translate_chunk({"choices": [{"delta": {"content": "x"}, "finish_reason": None}]})
+        t.translate_chunk({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        t.translate_chunk({"choices": [], "usage": {"prompt_tokens": 40000, "completion_tokens": 400}})
+        assert t.input_tokens == 20000
+        assert t.output_tokens == 200
+        assert t.input_tokens / 200000 == pytest.approx(0.1)
+        assert pytest.approx(0.1) == 40000 / 400000
+
+    def test_reported_tokens_can_be_lower_than_raw_tokens(self):
+        t = StreamTranslator(
+            "gpt-5.4", estimated_input_tokens=100000, copilot_context_limit=400000, client_context_window=200000
+        )
+        assert t.input_tokens < 100000
+
+    def test_reported_tokens_match_half_of_raw_for_400k_to_200k(self):
+        t = StreamTranslator(
+            "gpt-5.4", estimated_input_tokens=100000, copilot_context_limit=400000, client_context_window=200000
+        )
+        assert t.input_tokens == 50000
+
+    def test_prompt_limit_reference_window_ratio_can_be_less_than_one(self):
+        t = StreamTranslator(
+            "gpt-5.4", estimated_input_tokens=100000, copilot_context_limit=400000, client_context_window=200000
+        )
+        assert t.input_tokens == int(100000 * 0.5)
+
+    def test_prompt_limit_reference_window_ratio_can_still_scale_up_for_1m(self):
+        t = StreamTranslator(
+            "gpt-5.4", estimated_input_tokens=100000, copilot_context_limit=400000, client_context_window=1_000_000
+        )
+        assert t.input_tokens == int(100000 * 2.5)
+
+    def test_identity_scaling_for_claude_family_copilot_window(self):
+        t = StreamTranslator(
+            "claude-sonnet-4.6",
+            estimated_input_tokens=50000,
+            copilot_context_limit=200000,
+            client_context_window=200000,
+        )
+        assert t.input_tokens == 50000
+
+    def test_stream_usage_only_chunk_exact_100k_example(self):
+        t = StreamTranslator("gpt-5.4", copilot_context_limit=400000, client_context_window=200000)
+        t.translate_chunk({"choices": [{"delta": {"content": "example"}, "finish_reason": None}]})
+        t.translate_chunk({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        t.translate_chunk({"choices": [], "usage": {"prompt_tokens": 100000, "completion_tokens": 0}})
+        assert t.input_tokens == 50000
+        assert t.input_tokens / 200000 == pytest.approx(100000 / 400000)
+
+    def test_finish_chunk_usage_exact_100k_example(self):
+        t = StreamTranslator("gpt-5.4", copilot_context_limit=400000, client_context_window=200000)
+        t.translate_chunk({"choices": [{"delta": {"content": "example"}, "finish_reason": None}]})
+        t.translate_chunk(
+            {
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 100000, "completion_tokens": 0},
+            }
+        )
+        assert t.input_tokens == 50000
+        assert t.input_tokens / 200000 == pytest.approx(0.25)
+
+    def test_estimate_exact_100k_example(self):
+        t = StreamTranslator(
+            "gpt-5.4", estimated_input_tokens=100000, copilot_context_limit=400000, client_context_window=200000
+        )
+        assert t.input_tokens == 50000
+        assert t.input_tokens / 200000 == pytest.approx(0.25)
+
+    def test_estimate_100k_on_200k_backend_is_50_percent(self):
+        t = StreamTranslator(
+            "claude-sonnet-4.6",
+            estimated_input_tokens=100000,
+            copilot_context_limit=200000,
+            client_context_window=200000,
+        )
+        assert t.input_tokens == 100000
+        assert t.input_tokens / 200000 == pytest.approx(0.5)
+
+    def test_stream_usage_chunk_100k_on_200k_backend_is_50_percent(self):
+        t = StreamTranslator("claude-sonnet-4.6", copilot_context_limit=200000, client_context_window=200000)
+        t.translate_chunk({"choices": [{"delta": {"content": "x"}, "finish_reason": None}]})
+        t.translate_chunk({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        t.translate_chunk({"choices": [], "usage": {"prompt_tokens": 100000, "completion_tokens": 0}})
+        assert t.input_tokens == 100000
+        assert t.input_tokens / 200000 == pytest.approx(0.5)
+
+    def test_stream_usage_chunk_100k_on_400k_backend_is_25_percent(self):
+        t = StreamTranslator("gpt-5.4", copilot_context_limit=400000, client_context_window=200000)
+        t.translate_chunk({"choices": [{"delta": {"content": "x"}, "finish_reason": None}]})
+        t.translate_chunk({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        t.translate_chunk({"choices": [], "usage": {"prompt_tokens": 100000, "completion_tokens": 0}})
+        assert t.input_tokens == 50000
+        assert t.input_tokens / 200000 == pytest.approx(0.25)
+
+    def test_stream_usage_chunk_never_uses_backend_total_as_reference_window(self):
+        t = StreamTranslator("gpt-5.4", copilot_context_limit=400000, client_context_window=200000)
+        t.translate_chunk({"choices": [{"delta": {"content": "x"}, "finish_reason": None}]})
+        t.translate_chunk({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        t.translate_chunk({"choices": [], "usage": {"prompt_tokens": 100000, "completion_tokens": 0}})
+        assert t.input_tokens != 100000
+        assert t.input_tokens == 50000
+
+    def test_272k_limit_100k_example_is_about_36_8_percent_not_50(self):
+        t = StreamTranslator(
+            "gpt-5.4", estimated_input_tokens=100000, copilot_context_limit=272000, client_context_window=200000
+        )
+        assert t.input_tokens == 73529
+        assert t.input_tokens / 200000 == pytest.approx(0.367645)
+        assert t.input_tokens / 200000 != pytest.approx(0.5)
+
+    def test_272k_limit_100k_example_matches_scale_factor(self):
+        t = StreamTranslator(
+            "gpt-5.4", estimated_input_tokens=100000, copilot_context_limit=272000, client_context_window=200000
+        )
+        assert t.input_tokens == int(100000 * (200000 / 272000))
+
+    def test_small_exact_number_example(self):
+        t = StreamTranslator(
+            "gpt-5.4", estimated_input_tokens=40000, copilot_context_limit=400000, client_context_window=200000
+        )
+        assert t.input_tokens == 20000
+        assert pytest.approx(0.1) == 40000 / 400000
+        assert t.input_tokens / 200000 == pytest.approx(0.1)
+
+    def test_stream_output_scaling_small_exact_number_example(self):
+        t = StreamTranslator("gpt-5.4", copilot_context_limit=400000, client_context_window=200000)
+        t.translate_chunk({"choices": [{"delta": {"content": "x"}, "finish_reason": None}]})
+        t.translate_chunk({"choices": [{"delta": {}, "finish_reason": "stop"}]})
+        t.translate_chunk({"choices": [], "usage": {"prompt_tokens": 40000, "completion_tokens": 400}})
+        assert t.output_tokens == 200
+
+    def test_stream_identity_scaling_for_claude_case(self):
+        t = StreamTranslator(
+            "claude-sonnet-4.6", estimated_input_tokens=1, copilot_context_limit=200000, client_context_window=200000
+        )
+        assert t.input_tokens == 1
+
+    def test_stream_half_scaling_for_400k_to_200k(self):
+        t = StreamTranslator(
+            "gpt-5.4", estimated_input_tokens=2, copilot_context_limit=400000, client_context_window=200000
+        )
+        assert t.input_tokens == 1
+
+    def test_stream_1m_scaling_for_400k_backend(self):
+        t = StreamTranslator(
+            "gpt-5.4", estimated_input_tokens=2, copilot_context_limit=400000, client_context_window=1_000_000
+        )
+        assert t.input_tokens == 5
 
     def test_no_scaling_by_default(self):
         """Default (no copilot_context_limit or client_context_window) should not scale."""

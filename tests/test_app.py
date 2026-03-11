@@ -15,6 +15,8 @@ from claudegate.app import (
     _detect_client_context_window,
     _error_response,
     _validate_request,
+    calculate_scaled_context_tokens,
+    get_claude_code_reference_window,
 )
 from claudegate.errors import CopilotHttpError, TransientBackendError
 from tests.conftest import make_client_error
@@ -206,6 +208,78 @@ class TestCountContentTokens:
     def test_empty(self):
         assert _count_content_tokens([]) == 0
         assert _count_content_tokens(123) == 0
+
+
+# --- Diagnostics and token counting ---
+
+
+class TestContextAccountingDiagnostics:
+    def test_detect_client_context_window_defaults_to_claude_code_reference_window(self, async_client):
+        request = async_client.build_request("POST", "/v1/messages")
+        assert get_claude_code_reference_window(request) == 200000
+        assert _detect_client_context_window(request, "gpt-5.4") == 200000
+
+    def test_detect_client_context_window_uses_1m_beta_header(self, async_client):
+        request = async_client.build_request("POST", "/v1/messages", headers={"anthropic-beta": "foo,context-1m,bar"})
+        assert get_claude_code_reference_window(request) == 1000000
+        assert _detect_client_context_window(request, "gpt-5.4") == 1000000
+
+    @pytest.mark.anyio
+    async def test_count_tokens_uses_reference_window_for_gpt54_default(self, async_client, monkeypatch):
+        from claudegate import models as models_mod
+
+        monkeypatch.setattr(_bs, "_primary", "copilot")
+        monkeypatch.setattr(models_mod, "_copilot_model_ids", {"gpt-5.4"})
+        monkeypatch.setattr(models_mod, "_copilot_model_limits", {"gpt-5.4": 400000})
+        monkeypatch.setattr(models_mod, "_copilot_model_context_windows", {"gpt-5.4": 400000})
+
+        body = {
+            "model": "gpt-5.4",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "hello world"}],
+        }
+
+        monkeypatch.setattr(app_module, "_count_content_tokens", lambda content: 2)
+
+        scaled_resp = await async_client.post("/v1/messages/count_tokens", json=body)
+        assert scaled_resp.status_code == 200
+        assert scaled_resp.json()["input_tokens"] == calculate_scaled_context_tokens(2, 400000, 200000)
+        assert scaled_resp.json()["input_tokens"] == 1
+
+        monkeypatch.setattr(app_module, "_count_content_tokens", lambda content: 100000)
+        large_resp = await async_client.post("/v1/messages/count_tokens", json=body)
+        assert large_resp.status_code == 200
+        assert large_resp.json()["input_tokens"] == 50000
+
+        assert large_resp.json()["input_tokens"] != 100000
+
+    @pytest.mark.anyio
+    async def test_count_tokens_uses_1m_reference_window_when_beta_present(self, async_client, monkeypatch):
+        from claudegate import models as models_mod
+
+        monkeypatch.setattr(_bs, "_primary", "copilot")
+        monkeypatch.setattr(models_mod, "_copilot_model_ids", {"gpt-5.4"})
+        monkeypatch.setattr(models_mod, "_copilot_model_limits", {"gpt-5.4": 400000})
+        monkeypatch.setattr(models_mod, "_copilot_model_context_windows", {"gpt-5.4": 400000})
+
+        body = {
+            "model": "gpt-5.4",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "hello world"}],
+        }
+
+        baseline_resp = await async_client.post("/v1/messages/count_tokens", json=body)
+        beta_resp = await async_client.post(
+            "/v1/messages/count_tokens",
+            json=body,
+            headers={"anthropic-beta": "context-1m"},
+        )
+
+        assert baseline_resp.status_code == 200
+        assert beta_resp.status_code == 200
+        assert beta_resp.json()["input_tokens"] == calculate_scaled_context_tokens(
+            baseline_resp.json()["input_tokens"], 200000, 1000000
+        )
 
 
 # --- POST /v1/messages ---
@@ -1312,21 +1386,352 @@ class TestDetectClientContextWindow:
         result = _detect_client_context_window(mock_request, "claude-opus-4.6")
         assert result == 1_000_000
 
-    def test_returns_copilot_context_window_without_header(self):
-        """Should return model's context window when no context-1m header."""
+    def test_returns_default_reference_window_without_header(self):
+        """Should use Claude Code's default reference window when no context-1m header."""
         mock_request = MagicMock()
         mock_request.headers = {}
-        with patch("claudegate.app.get_copilot_context_window", return_value=200000):
-            result = _detect_client_context_window(mock_request, "claude-opus-4.6")
+        result = _detect_client_context_window(mock_request, "claude-opus-4.6")
         assert result == 200000
 
-    def test_returns_zero_when_no_header_and_unknown_model(self):
-        """Should return 0 when no header and model not in registry."""
+    def test_returns_default_reference_window_for_unknown_model(self):
+        """Unknown models still use the default Claude Code reference window."""
         mock_request = MagicMock()
         mock_request.headers = {}
-        with patch("claudegate.app.get_copilot_context_window", return_value=0):
-            result = _detect_client_context_window(mock_request, "unknown-model")
-        assert result == 0
+        result = _detect_client_context_window(mock_request, "unknown-model")
+        assert result == 200000
+
+    def test_scaling_formula_handles_equal_scaled_and_zero_limits(self):
+        assert calculate_scaled_context_tokens(100000, 200000, 200000) == 100000
+        assert calculate_scaled_context_tokens(100000, 400000, 200000) == 50000
+        assert calculate_scaled_context_tokens(100000, 200000, 1000000) == 500000
+        assert calculate_scaled_context_tokens(100000, 0, 200000) == 100000
+        assert calculate_scaled_context_tokens(100000, 200000, 0) == 100000
+
+    def test_reference_window_ignores_backend_context_window_lookup(self):
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        assert _detect_client_context_window(mock_request, "gpt-5.4") == 200000
+
+    def test_context_1m_still_overrides_default_reference_window(self):
+        mock_request = MagicMock()
+        mock_request.headers = {"anthropic-beta": "context-1m-2025-08-07"}
+        assert _detect_client_context_window(mock_request, "gpt-5.4") == 1_000_000
+
+    @pytest.mark.anyio
+    async def test_count_tokens_gpt54_uses_reference_window_not_backend_total(self, async_client, monkeypatch):
+        from claudegate import models as models_mod
+
+        monkeypatch.setattr(_bs, "_primary", "copilot")
+        monkeypatch.setattr(models_mod, "_copilot_model_ids", {"gpt-5.4"})
+        monkeypatch.setattr(models_mod, "_copilot_model_limits", {"gpt-5.4": 400000})
+        monkeypatch.setattr(models_mod, "_copilot_model_context_windows", {"gpt-5.4": 400000})
+        monkeypatch.setattr(app_module, "_count_content_tokens", lambda content: 100000)
+
+        body = {
+            "model": "gpt-5.4",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "ignored by monkeypatch"}],
+        }
+
+        resp = await async_client.post("/v1/messages/count_tokens", json=body)
+        assert resp.status_code == 200
+        assert resp.json()["input_tokens"] == 50000
+
+    @pytest.mark.anyio
+    async def test_count_tokens_gpt54_uses_1m_reference_window_with_beta(self, async_client, monkeypatch):
+        from claudegate import models as models_mod
+
+        monkeypatch.setattr(_bs, "_primary", "copilot")
+        monkeypatch.setattr(models_mod, "_copilot_model_ids", {"gpt-5.4"})
+        monkeypatch.setattr(models_mod, "_copilot_model_limits", {"gpt-5.4": 400000})
+        monkeypatch.setattr(models_mod, "_copilot_model_context_windows", {"gpt-5.4": 400000})
+        monkeypatch.setattr(app_module, "_count_content_tokens", lambda content: 100000)
+
+        body = {
+            "model": "gpt-5.4",
+            "max_tokens": 100,
+            "messages": [{"role": "user", "content": "ignored by monkeypatch"}],
+        }
+
+        resp = await async_client.post(
+            "/v1/messages/count_tokens",
+            json=body,
+            headers={"anthropic-beta": "context-1m"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["input_tokens"] == 250000
+
+
+class TestClientContextWindowDetection:
+    def test_returns_default_reference_window_without_beta(self):
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        assert get_claude_code_reference_window(mock_request) == 200000
+
+    def test_returns_1m_reference_window_with_beta(self):
+        mock_request = MagicMock()
+        mock_request.headers = {"anthropic-beta": "foo,context-1m,bar"}
+        assert get_claude_code_reference_window(mock_request) == 1000000
+
+
+class TestContextScalingHelpers:
+    def test_calculate_scaled_context_tokens_scales_down(self):
+        assert calculate_scaled_context_tokens(100000, 400000, 200000) == 50000
+
+    def test_calculate_scaled_context_tokens_scales_up(self):
+        assert calculate_scaled_context_tokens(100000, 200000, 1000000) == 500000
+
+    def test_calculate_scaled_context_tokens_passthroughs_without_limits(self):
+        assert calculate_scaled_context_tokens(100000, 0, 200000) == 100000
+        assert calculate_scaled_context_tokens(100000, 200000, 0) == 100000
+
+
+class TestDetectClientContextWindowEdgeCases:
+    def test_returns_1m_when_context_1m_beta_present(self):
+        mock_request = MagicMock()
+        mock_request.headers = {"anthropic-beta": "context-1m-2025-08-07"}
+        assert _detect_client_context_window(mock_request, "gpt-5.4") == 1_000_000
+
+    def test_returns_200k_without_beta(self):
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        assert _detect_client_context_window(mock_request, "gpt-5.4") == 200000
+
+    def test_returns_default_reference_window_for_unknown_model(self):
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        result = _detect_client_context_window(mock_request, "unknown-model")
+        assert result == 200000
+
+    def test_ignores_backend_window_lookup(self):
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        assert _detect_client_context_window(mock_request, "gpt-5.4") == 200000
+
+    def test_detect_client_context_window_1m_beta(self):
+        mock_request = MagicMock()
+        mock_request.headers = {"anthropic-beta": "foo,context-1m,bar"}
+        result = _detect_client_context_window(mock_request, "claude-sonnet-4.6")
+        assert result == 1_000_000
+
+    def test_detect_client_context_window_default(self):
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        result = _detect_client_context_window(mock_request, "claude-sonnet-4.6")
+        assert result == 200000
+
+    def test_detect_client_context_window_model_arg_is_ignored(self):
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        assert _detect_client_context_window(mock_request, "gpt-5.4") == _detect_client_context_window(
+            mock_request, "claude-sonnet-4.6"
+        )
+
+    def test_detect_client_context_window_1m_ignores_model(self):
+        mock_request = MagicMock()
+        mock_request.headers = {"anthropic-beta": "context-1m-2025-08-07"}
+        assert _detect_client_context_window(mock_request, "gpt-5.4") == _detect_client_context_window(
+            mock_request, "claude-sonnet-4.6"
+        )
+
+    def test_reference_window_function_matches_detect_helper(self):
+        mock_request = MagicMock()
+        mock_request.headers = {"anthropic-beta": "context-1m-2025-08-07"}
+        assert get_claude_code_reference_window(mock_request) == _detect_client_context_window(mock_request, "gpt-5.4")
+
+    def test_reference_window_function_default_matches_detect_helper(self):
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        assert get_claude_code_reference_window(mock_request) == _detect_client_context_window(mock_request, "gpt-5.4")
+
+    def test_1m_beta_detects_among_multiple_beta_values(self):
+        mock_request = MagicMock()
+        mock_request.headers = {"anthropic-beta": "other-beta,context-1m-2025-08-07,something-else"}
+        assert _detect_client_context_window(mock_request, "gpt-5.4") == 1_000_000
+
+    def test_non_context_beta_does_not_enable_1m(self):
+        mock_request = MagicMock()
+        mock_request.headers = {"anthropic-beta": "tools-2025-01-01"}
+        assert _detect_client_context_window(mock_request, "gpt-5.4") == 200000
+
+    def test_beta_substring_context_1m_is_enough(self):
+        mock_request = MagicMock()
+        mock_request.headers = {"anthropic-beta": "prefix-context-1m-suffix"}
+        assert _detect_client_context_window(mock_request, "gpt-5.4") == 1_000_000
+
+    def test_empty_beta_header_uses_default(self):
+        mock_request = MagicMock()
+        mock_request.headers = {"anthropic-beta": ""}
+        assert _detect_client_context_window(mock_request, "gpt-5.4") == 200000
+
+    def test_missing_headers_attribute_like_mapping(self):
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        assert _detect_client_context_window(mock_request, "gpt-5.4") == 200000
+
+    def test_case_sensitive_beta_match_current_behavior(self):
+        mock_request = MagicMock()
+        mock_request.headers = {"anthropic-beta": "CONTEXT-1M"}
+        assert _detect_client_context_window(mock_request, "gpt-5.4") == 200000
+
+    def test_multiple_calls_are_stable(self):
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        assert _detect_client_context_window(mock_request, "gpt-5.4") == 200000
+        assert _detect_client_context_window(mock_request, "gpt-5.4") == 200000
+
+    def test_no_backend_dependency_for_default_case(self):
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        with patch("claudegate.app.get_copilot_context_limit", side_effect=AssertionError("should not be called")):
+            assert _detect_client_context_window(mock_request, "gpt-5.4") == 200000
+
+    def test_no_backend_dependency_for_1m_case(self):
+        mock_request = MagicMock()
+        mock_request.headers = {"anthropic-beta": "context-1m"}
+        with patch("claudegate.app.get_copilot_context_limit", side_effect=AssertionError("should not be called")):
+            assert _detect_client_context_window(mock_request, "gpt-5.4") == 1_000_000
+
+    def test_different_models_same_default_reference_window(self):
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        assert _detect_client_context_window(mock_request, "claude-sonnet-4.6") == 200000
+        assert _detect_client_context_window(mock_request, "gpt-5.4") == 200000
+        assert _detect_client_context_window(mock_request, "gemini-2.5-pro") == 200000
+
+    def test_different_models_same_1m_reference_window(self):
+        mock_request = MagicMock()
+        mock_request.headers = {"anthropic-beta": "context-1m"}
+        assert _detect_client_context_window(mock_request, "claude-sonnet-4.6") == 1_000_000
+        assert _detect_client_context_window(mock_request, "gpt-5.4") == 1_000_000
+        assert _detect_client_context_window(mock_request, "gemini-2.5-pro") == 1_000_000
+
+    def test_reference_window_not_derived_from_model_name(self):
+        mock_request = MagicMock()
+        mock_request.headers = {}
+        assert _detect_client_context_window(mock_request, "model-with-1m-in-name") == 200000
+
+    def test_reference_window_only_depends_on_header(self):
+        request_a = MagicMock()
+        request_a.headers = {}
+        request_b = MagicMock()
+        request_b.headers = {}
+        assert _detect_client_context_window(request_a, "gpt-5.4") == _detect_client_context_window(
+            request_b, "claude-sonnet-4.6"
+        )
+
+    def test_reference_window_changes_when_header_changes(self):
+        request_default = MagicMock()
+        request_default.headers = {}
+        request_beta = MagicMock()
+        request_beta.headers = {"anthropic-beta": "context-1m"}
+        assert _detect_client_context_window(request_default, "gpt-5.4") == 200000
+        assert _detect_client_context_window(request_beta, "gpt-5.4") == 1_000_000
+
+    def test_detect_client_context_window_with_non_string_header_value(self):
+        mock_request = MagicMock()
+        mock_request.headers = {"anthropic-beta": 123}
+        with pytest.raises(TypeError):
+            _detect_client_context_window(mock_request, "gpt-5.4")
+
+    def test_get_reference_window_with_non_string_header_value(self):
+        mock_request = MagicMock()
+        mock_request.headers = {"anthropic-beta": 123}
+        with pytest.raises(TypeError):
+            get_claude_code_reference_window(mock_request)
+
+    def test_scaling_formula_for_272k_limit_rounds_down(self):
+        assert calculate_scaled_context_tokens(100000, 272000, 200000) == 73529
+
+    def test_scaling_formula_for_small_values_rounds_down(self):
+        assert calculate_scaled_context_tokens(3, 4, 2) == 1
+
+    def test_scaling_formula_zero_raw_tokens_stays_zero(self):
+        assert calculate_scaled_context_tokens(0, 400000, 200000) == 0
+
+    def test_scaling_formula_zero_raw_tokens_with_zero_limit_stays_zero(self):
+        assert calculate_scaled_context_tokens(0, 0, 200000) == 0
+
+    def test_scaling_formula_zero_raw_tokens_with_zero_window_stays_zero(self):
+        assert calculate_scaled_context_tokens(0, 400000, 0) == 0
+
+    def test_scaling_formula_large_values(self):
+        assert calculate_scaled_context_tokens(999999, 400000, 1000000) == 2499997
+
+    def test_scaling_formula_exact_half(self):
+        assert calculate_scaled_context_tokens(100, 400, 200) == 50
+
+    def test_scaling_formula_exact_double(self):
+        assert calculate_scaled_context_tokens(100, 200, 400) == 200
+
+    def test_scaling_formula_exact_identity(self):
+        assert calculate_scaled_context_tokens(12345, 200000, 200000) == 12345
+
+    def test_scaling_formula_with_one_token(self):
+        assert calculate_scaled_context_tokens(1, 400000, 200000) == 0
+
+    def test_scaling_formula_with_one_token_scale_up(self):
+        assert calculate_scaled_context_tokens(1, 200000, 1000000) == 5
+
+    def test_scaling_formula_nonzero_without_backend_limit(self):
+        assert calculate_scaled_context_tokens(12345, 0, 1000000) == 12345
+
+    def test_scaling_formula_nonzero_without_client_window(self):
+        assert calculate_scaled_context_tokens(12345, 400000, 0) == 12345
+
+    def test_scaling_formula_both_zero_limits_passthrough(self):
+        assert calculate_scaled_context_tokens(12345, 0, 0) == 12345
+
+    def test_scaling_formula_preserves_sign_of_negative_values(self):
+        assert calculate_scaled_context_tokens(-100, 400000, 200000) == -50
+
+    def test_scaling_formula_negative_limit_passthrough(self):
+        assert calculate_scaled_context_tokens(100, -1, 200000) == 100
+
+    def test_scaling_formula_negative_window_passthrough(self):
+        assert calculate_scaled_context_tokens(100, 400000, -1) == 100
+
+    def test_scaling_formula_negative_both_passthrough(self):
+        assert calculate_scaled_context_tokens(100, -1, -1) == 100
+
+    def test_scaling_formula_with_very_small_ratio(self):
+        assert calculate_scaled_context_tokens(1000, 1000000, 1) == 0
+
+    def test_scaling_formula_with_very_large_ratio(self):
+        assert calculate_scaled_context_tokens(1, 1, 1000000) == 1000000
+
+    def test_scaling_formula_with_equal_nonstandard_values(self):
+        assert calculate_scaled_context_tokens(777, 123, 123) == 777
+
+    def test_scaling_formula_with_prime_values(self):
+        assert calculate_scaled_context_tokens(101, 307, 503) == int(101 * 503 / 307)
+
+    def test_scaling_formula_with_float_like_ratio_behavior(self):
+        assert calculate_scaled_context_tokens(10, 3, 2) == int(10 * 2 / 3)
+
+    def test_scaling_formula_with_another_rounding_case(self):
+        assert calculate_scaled_context_tokens(7, 9, 5) == int(7 * 5 / 9)
+
+    def test_scaling_formula_for_gpt54_default_window_math(self):
+        assert calculate_scaled_context_tokens(400000, 400000, 200000) == 200000
+
+    def test_scaling_formula_for_gpt54_1m_window_math(self):
+        assert calculate_scaled_context_tokens(400000, 400000, 1000000) == 1000000
+
+    def test_scaling_formula_for_half_full_backend_matches_half_full_client(self):
+        assert calculate_scaled_context_tokens(200000, 400000, 200000) == 100000
+
+    def test_scaling_formula_for_quarter_full_backend_matches_quarter_full_client(self):
+        assert calculate_scaled_context_tokens(100000, 400000, 200000) == 50000
+
+    def test_scaling_formula_for_quarter_full_backend_matches_quarter_full_client_1m(self):
+        assert calculate_scaled_context_tokens(100000, 400000, 1000000) == 250000
+
+    def test_scaling_formula_for_three_quarters_backend_matches_three_quarters_client(self):
+        assert calculate_scaled_context_tokens(300000, 400000, 200000) == 150000
+
+    def test_scaling_formula_for_full_backend_matches_full_client(self):
+        assert calculate_scaled_context_tokens(400000, 400000, 200000) == 200000
 
 
 # --- POST /api/event_logging/batch ---

@@ -472,6 +472,44 @@ class TestResponsesToOpenAIChatResponse:
 
 
 class TestResponsesStreamTranslator:
+    def test_scale_down_for_smaller_reference_window(self):
+        translator = ResponsesStreamTranslator(
+            "gpt-5.4",
+            estimated_input_tokens=100000,
+            copilot_context_limit=400000,
+            client_context_window=200000,
+        )
+        assert translator.input_tokens == 50000
+
+    def test_scale_up_for_1m_reference_window(self):
+        translator = ResponsesStreamTranslator(
+            "gpt-5.4",
+            estimated_input_tokens=100000,
+            copilot_context_limit=200000,
+            client_context_window=1000000,
+        )
+        assert translator.input_tokens == 500000
+
+    def test_passthrough_when_limit_or_window_missing(self):
+        assert (
+            ResponsesStreamTranslator(
+                "gpt-5.4",
+                estimated_input_tokens=100000,
+                copilot_context_limit=0,
+                client_context_window=200000,
+            ).input_tokens
+            == 100000
+        )
+        assert (
+            ResponsesStreamTranslator(
+                "gpt-5.4",
+                estimated_input_tokens=100000,
+                copilot_context_limit=400000,
+                client_context_window=0,
+            ).input_tokens
+            == 100000
+        )
+
     def test_text_stream_sequence(self):
         translator = ResponsesStreamTranslator("claude-sonnet-4-5")
 

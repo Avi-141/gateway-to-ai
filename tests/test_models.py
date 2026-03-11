@@ -266,6 +266,7 @@ class TestGetCopilotOpenAIModel:
         assert get_copilot_openai_model("default") == "claude-sonnet-4.6"
 
     def test_gpt5_codex_models(self):
+        assert get_copilot_openai_model("gpt-5.4") == "gpt-5.4"
         assert get_copilot_openai_model("gpt-5.1-codex") == "gpt-5.1-codex"
         assert get_copilot_openai_model("gpt-5.1-codex-max") == "gpt-5.1-codex-max"
         assert get_copilot_openai_model("gpt-5.2-codex") == "gpt-5.2-codex"
@@ -683,3 +684,22 @@ class TestGetCopilotContextWindow:
         )
         assert get_copilot_context_limit("claude-opus-4.6") == 128000
         assert get_copilot_context_window("claude-opus-4.6") == 200000
+
+    def test_gpt54_live_limits_expose_expected_scale_factor_inputs(self):
+        set_copilot_models(
+            [
+                {
+                    "id": "gpt-5.4",
+                    "supported_endpoints": ["/chat/completions"],
+                    "capabilities": {
+                        "limits": {
+                            "max_prompt_tokens": 200000,
+                            "max_context_window_tokens": 400000,
+                        }
+                    },
+                },
+            ]
+        )
+        assert get_copilot_context_limit("gpt-5.4") == 200000
+        assert get_copilot_context_window("gpt-5.4") == 400000
+        assert get_copilot_openai_model("gpt-5.4") == "gpt-5.4"

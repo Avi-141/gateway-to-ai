@@ -36,7 +36,7 @@ from .models import (
     add_region_prefix,
     get_available_copilot_models,
     get_bedrock_model,
-    get_copilot_context_window,
+    get_copilot_context_limit,
     get_copilot_model,
     get_copilot_openai_model,
     is_claude_model,
@@ -72,6 +72,17 @@ except PackageNotFoundError:
 CREDENTIALS_EXPIRED_MSG = (
     "AWS credentials have expired. Please re-authenticate in your terminal to refresh your credentials, then retry."
 )
+
+# NOTE: Context window scaling is Claude Code-specific. These reference windows
+# represent what Claude Code believes its context window to be (200k default, 1M
+# with the context-1m beta header). When the Copilot backend serves a non-Claude
+# model (e.g. GPT-5.4), raw token counts are scaled relative to these values so
+# that Claude Code's fullness bar reflects actual backend utilization. This means
+# other Anthropic API clients consuming /v1/messages with the Copilot backend will
+# also see scaled (potentially deflated) token counts. This is an accepted trade-off
+# since claudegate's primary consumers are Claude Code and Codex CLI.
+CLAUDE_CODE_DEFAULT_CONTEXT_WINDOW = 200_000
+CLAUDE_CODE_1M_CONTEXT_WINDOW = 1_000_000
 
 # Backend state (initialized in lifespan)
 _backend_state = BackendState(BACKEND_TYPE, FALLBACK_BACKEND)
@@ -196,7 +207,10 @@ def _validate_request(body: dict[str, Any]) -> JSONResponse | None:
     return None
 
 
-def _context_window_error_response(err: ContextWindowExceededError, max_tokens: int = 0) -> JSONResponse:
+def _context_window_error_response(
+    err: ContextWindowExceededError,
+    max_tokens: int = 0,
+) -> JSONResponse:
     """Return an Anthropic-format error that triggers Claude Code's auto-compaction.
 
     Claude Code recognises errors matching the pattern:
@@ -246,6 +260,45 @@ def _count_content_tokens(content: Any) -> int:
                     total += _count_content_tokens(block.get("content", ""))
         return total
     return 0
+
+
+# --- Context Scaling Helpers ---
+
+
+def _get_claude_code_reference_window(request: Request) -> int:
+    """Return the Claude Code reference window used for fullness tracking."""
+    beta_header = request.headers.get("anthropic-beta", "")
+    if "context-1m" in beta_header:
+        return CLAUDE_CODE_1M_CONTEXT_WINDOW
+    return CLAUDE_CODE_DEFAULT_CONTEXT_WINDOW
+
+
+def _detect_client_context_window(request: Request, copilot_model: str) -> int:
+    """Return the Claude Code reference window for this request.
+
+    Currently assumes all /v1/messages callers are Claude Code. If non-Claude-Code
+    Anthropic API clients need unscaled token counts in the future, this function
+    is the place to add client detection (e.g. via User-Agent or a custom header).
+    """
+    _ = copilot_model
+    return _get_claude_code_reference_window(request)
+
+
+def _scale_context_tokens(raw_tokens: int, copilot_limit: int, client_context_window: int) -> int:
+    """Scale Copilot token counts to the client-visible context window."""
+    if copilot_limit > 0 and client_context_window > 0:
+        return int(raw_tokens * client_context_window / copilot_limit)
+    return raw_tokens
+
+
+def get_claude_code_reference_window(request: Request) -> int:
+    """Public wrapper for tests."""
+    return _get_claude_code_reference_window(request)
+
+
+def calculate_scaled_context_tokens(raw_tokens: int, copilot_limit: int, client_context_window: int) -> int:
+    """Public wrapper for tests to call _scale_context_tokens."""
+    return _scale_context_tokens(raw_tokens, copilot_limit, client_context_window)
 
 
 # --- Bedrock Helpers ---
@@ -520,20 +573,6 @@ async def _call_bedrock(
     except Exception as e:
         logger.error(f"{log_prefix}Unexpected error: {e}", exc_info=True)
         return _error_response(500, "api_error", str(e))
-
-
-def _detect_client_context_window(request: Request, copilot_model: str) -> int:
-    """Detect the client's expected context window size.
-
-    Claude Code uses the anthropic-beta header 'context-1m-...' when the user
-    selects the 1M token variant (e.g. opus-4-6[1m]). When present, the client
-    expects a 1,000,000-token context window. Otherwise, we use the model's
-    max_context_window_tokens from the Copilot API (typically 200k).
-    """
-    beta_header = request.headers.get("anthropic-beta", "")
-    if "context-1m" in beta_header:
-        return 1_000_000
-    return get_copilot_context_window(copilot_model)
 
 
 async def _call_copilot(
@@ -1328,8 +1367,6 @@ async def count_tokens(request: Request) -> dict[str, int]:
     When using the Copilot backend, scales the token count to match the client's
     expected context window (e.g. 200k or 1M) relative to Copilot's prompt limit.
     """
-    from .models import get_copilot_context_limit
-
     body = await request.json()
 
     total_tokens = 0
@@ -1351,8 +1388,7 @@ async def count_tokens(request: Request) -> dict[str, int]:
         copilot_model, _ = get_copilot_model(body["model"])
         client_context_window = _detect_client_context_window(request, copilot_model)
         copilot_limit = get_copilot_context_limit(copilot_model)
-        if copilot_limit > 0 and client_context_window > 0:
-            total_tokens = int(total_tokens * client_context_window / copilot_limit)
+        total_tokens = _scale_context_tokens(total_tokens, copilot_limit, client_context_window)
 
     return {"input_tokens": total_tokens}
 
