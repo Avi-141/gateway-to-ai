@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+
+- **GPT-5.4 model alias** — added `gpt-5.4` to the Copilot model map.
+
+### Changed
+
+- **Context fullness tracking uses Claude Code reference window** — token count scaling for Copilot now uses Claude Code's own reference context window (200k default, 1M with `context-1m` beta header) instead of the model's `max_context_window_tokens` from the Copilot API. This means Claude Code's fullness bar accurately reflects backend utilization regardless of the Copilot model's actual context limit. Non-Claude models (e.g. GPT-5.4) are now scaled correctly against the 200k reference window rather than producing wildly inaccurate percentages when their context windows differ.
+
 ### Fixed
 
 - **Copilot empty choices crash on non-streaming responses** — when Copilot returned a 200 response with an empty `choices` array (`{"choices": []}`), the `openai_to_anthropic_response()` and `openai_chat_to_responses_response()` translation functions crashed with `IndexError: list index out of range`, resulting in a 500 error to the client. Both functions now handle empty choices gracefully, returning an empty text response instead of crashing.
