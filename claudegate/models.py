@@ -1,8 +1,12 @@
 """Model mappings from Anthropic model names to Bedrock/Copilot model IDs."""
 
-from typing import Any
+import time
+from typing import TYPE_CHECKING, Any
 
-from .config import BEDROCK_REGION_PREFIX
+from .config import BEDROCK_REGION_PREFIX, COPILOT_MODELS_TTL, logger
+
+if TYPE_CHECKING:
+    from .copilot_client import CopilotBackend
 
 
 def is_claude_model(model: str) -> bool:
@@ -183,12 +187,13 @@ _copilot_model_ids: set[str] = set()
 _copilot_model_endpoints: dict[str, list[str]] = {}
 _copilot_model_limits: dict[str, int] = {}
 _copilot_model_context_windows: dict[str, int] = {}
+_copilot_models_fetched_at: float = 0.0
 
 
 def set_copilot_models(models: list[dict[str, Any]]) -> None:
     """Store models fetched from the Copilot API."""
     global _copilot_models, _copilot_model_ids, _copilot_model_endpoints, _copilot_model_limits
-    global _copilot_model_context_windows
+    global _copilot_model_context_windows, _copilot_models_fetched_at
     _copilot_models = models
     _copilot_model_ids = {m["id"] for m in models if "id" in m}
     _copilot_model_endpoints = {
@@ -212,6 +217,30 @@ def set_copilot_models(models: list[dict[str, Any]]) -> None:
         context_window = limits.get("max_context_window_tokens")
         if isinstance(context_window, int) and context_window > 0:
             _copilot_model_context_windows[model_id] = context_window
+    _copilot_models_fetched_at = time.monotonic()
+
+
+async def refresh_copilot_models_if_stale(copilot_backend: "CopilotBackend") -> None:
+    """Refresh the Copilot model registry if the TTL has expired.
+
+    On failure, logs a warning and keeps the existing cached models.
+    """
+    global _copilot_models_fetched_at
+    if time.monotonic() - _copilot_models_fetched_at < COPILOT_MODELS_TTL:
+        return
+    try:
+        models = await copilot_backend.list_models()
+        if models:
+            set_copilot_models(models)
+            logger.info(f"Refreshed {len(models)} models from Copilot API")
+        else:
+            logger.warning("Copilot API returned no models during refresh, keeping cached models")
+            # Update timestamp so we don't retry immediately
+            _copilot_models_fetched_at = time.monotonic()
+    except Exception:
+        logger.warning("Failed to refresh Copilot models, keeping cached models", exc_info=True)
+        # Update timestamp so we don't retry on every request
+        _copilot_models_fetched_at = time.monotonic()
 
 
 def model_requires_responses_api(model_id: str) -> bool:

@@ -112,6 +112,7 @@ FALLBACK_BACKEND = _backends[1] if len(_backends) > 1 else ""  # optional fallba
 FALLBACK_ON_ERRORS = {429, 500, 502, 503, 504}
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 COPILOT_TIMEOUT = int(os.environ.get("COPILOT_TIMEOUT", "300"))
+COPILOT_MODELS_TTL = int(os.environ.get("COPILOT_MODELS_TTL", "300"))
 
 # Pre-flight context guard: reject requests estimated to exceed this fraction
 # of the model's context limit. Set to 0 to disable. Default 0.90 leaves 10%

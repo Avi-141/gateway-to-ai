@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Auto-refresh Copilot models** — the Copilot models list is now refreshed from the API on `/v1/models` and `/api/status` requests with a 5-minute TTL cache (configurable via `COPILOT_MODELS_TTL`). Previously, models were only fetched once at startup.
 - **GPT-5.4 model alias** — added `gpt-5.4` to the Copilot model map.
 
 ### Changed

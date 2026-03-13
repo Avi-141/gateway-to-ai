@@ -42,6 +42,7 @@ from .models import (
     is_claude_model,
     model_requires_responses_api,
     model_supports_responses_api,
+    refresh_copilot_models_if_stale,
     set_copilot_models,
 )
 from .openai_translate import (
@@ -1280,6 +1281,10 @@ async def list_models() -> dict[str, Any]:
     When Copilot is the backend, uses dynamically fetched models if available,
     otherwise falls back to hardcoded maps.
     """
+    # Refresh Copilot models if the TTL has expired
+    if _backend_state.copilot_backend is not None:
+        await refresh_copilot_models_if_stale(_backend_state.copilot_backend)
+
     if _backend_state.primary == "copilot":
         dynamic_models = get_available_copilot_models()
         if dynamic_models:

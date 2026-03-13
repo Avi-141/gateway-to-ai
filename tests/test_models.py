@@ -1,5 +1,8 @@
 """Tests for claudegate/models.py."""
 
+import time
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from claudegate.models import (
@@ -16,6 +19,7 @@ from claudegate.models import (
     get_copilot_openai_model,
     is_claude_model,
     model_requires_responses_api,
+    refresh_copilot_models_if_stale,
     set_copilot_models,
 )
 
@@ -703,3 +707,95 @@ class TestGetCopilotContextWindow:
         assert get_copilot_context_limit("gpt-5.4") == 200000
         assert get_copilot_context_window("gpt-5.4") == 400000
         assert get_copilot_openai_model("gpt-5.4") == "gpt-5.4"
+
+
+# --- refresh_copilot_models_if_stale ---
+
+
+class TestRefreshCopilotModelsIfStale:
+    @pytest.fixture(autouse=True)
+    def reset_registry(self):
+        """Reset the dynamic model registry before and after each test."""
+        set_copilot_models([])
+        yield
+        set_copilot_models([])
+
+    async def test_skips_fetch_when_cache_fresh(self):
+        """Should not call list_models when TTL has not expired."""
+        set_copilot_models([{"id": "model-a"}])
+        backend = AsyncMock()
+        backend.list_models = AsyncMock()
+
+        await refresh_copilot_models_if_stale(backend)
+
+        backend.list_models.assert_not_called()
+        assert get_available_copilot_models() == [{"id": "model-a"}]
+
+    async def test_fetches_when_cache_stale(self):
+        """Should call list_models when TTL has expired."""
+        set_copilot_models([{"id": "old-model"}])
+        new_models = [{"id": "new-model-a"}, {"id": "new-model-b"}]
+        backend = AsyncMock()
+        backend.list_models = AsyncMock(return_value=new_models)
+
+        # Force the timestamp to be old enough
+        with patch("claudegate.models.time") as mock_time:
+            # First call (inside set_copilot_models) already happened with real time.
+            # We need _copilot_models_fetched_at to be old, so patch monotonic to
+            # return a value that makes the TTL check fail.
+            import claudegate.models as models_mod
+
+            models_mod._copilot_models_fetched_at = 0.0
+            mock_time.monotonic.return_value = 500.0
+            await refresh_copilot_models_if_stale(backend)
+
+        backend.list_models.assert_called_once()
+        assert get_available_copilot_models() == new_models
+
+    async def test_keeps_existing_models_on_fetch_failure(self):
+        """Should keep cached models when list_models raises an exception."""
+        original_models = [{"id": "keep-me"}]
+        set_copilot_models(original_models)
+        backend = AsyncMock()
+        backend.list_models = AsyncMock(side_effect=RuntimeError("API error"))
+
+        import claudegate.models as models_mod
+
+        models_mod._copilot_models_fetched_at = 0.0
+
+        with patch("claudegate.models.time") as mock_time:
+            mock_time.monotonic.return_value = 500.0
+            await refresh_copilot_models_if_stale(backend)
+
+        backend.list_models.assert_called_once()
+        assert get_available_copilot_models() == original_models
+
+    async def test_keeps_existing_models_on_empty_response(self):
+        """Should keep cached models when list_models returns empty list."""
+        original_models = [{"id": "keep-me"}]
+        set_copilot_models(original_models)
+        backend = AsyncMock()
+        backend.list_models = AsyncMock(return_value=[])
+
+        import claudegate.models as models_mod
+
+        models_mod._copilot_models_fetched_at = 0.0
+
+        with patch("claudegate.models.time") as mock_time:
+            mock_time.monotonic.return_value = 500.0
+            await refresh_copilot_models_if_stale(backend)
+
+        backend.list_models.assert_called_once()
+        # Original models should be preserved
+        assert get_available_copilot_models() == original_models
+
+    async def test_set_copilot_models_updates_timestamp(self):
+        """set_copilot_models should update _copilot_models_fetched_at."""
+        import claudegate.models as models_mod
+
+        before = time.monotonic()
+        set_copilot_models([{"id": "model-a"}])
+        after = time.monotonic()
+
+        assert models_mod._copilot_models_fetched_at >= before
+        assert models_mod._copilot_models_fetched_at <= after
