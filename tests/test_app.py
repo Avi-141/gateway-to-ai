@@ -1,11 +1,13 @@
 """Tests for claudegate/app.py."""
 
+import gzip
 import json
 import sys
 from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import zstandard as zstd
 from botocore.exceptions import ClientError, ReadTimeoutError
 
 from claudegate.app import (
@@ -1946,6 +1948,23 @@ class TestServerToolRouting:
 
 
 class TestResponsesRoute:
+    @staticmethod
+    def _bedrock_message_response(text: str) -> dict:
+        return {
+            "body": BytesIO(
+                json.dumps(
+                    {
+                        "id": "msg_123",
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": text}],
+                        "stop_reason": "end_turn",
+                        "usage": {"input_tokens": 5, "output_tokens": 2},
+                    }
+                ).encode()
+            )
+        }
+
     @pytest.mark.anyio
     async def test_invalid_json(self, async_client):
         resp = await async_client.post(
@@ -1955,6 +1974,108 @@ class TestResponsesRoute:
         )
         assert resp.status_code == 400
         assert "Invalid JSON" in resp.json()["error"]["message"]
+
+    @pytest.mark.anyio
+    async def test_gzip_encoded_body(self, async_client, mock_bedrock_client, minimal_responses_request, monkeypatch):
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        mock_bedrock_client.invoke_model.return_value = self._bedrock_message_response("gzip ok")
+
+        raw = json.dumps(minimal_responses_request).encode()
+        compressed = gzip.compress(raw)
+
+        resp = await async_client.post(
+            "/v1/responses",
+            content=compressed,
+            headers={"content-type": "application/json", "content-encoding": "gzip"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["output"][0]["content"][0]["text"] == "gzip ok"
+
+    @pytest.mark.anyio
+    async def test_gzip_comma_separated_encoding_header(
+        self, async_client, mock_bedrock_client, minimal_responses_request, monkeypatch
+    ):
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        mock_bedrock_client.invoke_model.return_value = self._bedrock_message_response("gzip list ok")
+
+        raw = json.dumps(minimal_responses_request).encode()
+        compressed = gzip.compress(raw)
+
+        resp = await async_client.post(
+            "/v1/responses",
+            content=compressed,
+            headers={"content-type": "application/json", "content-encoding": "gzip, br"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["output"][0]["content"][0]["text"] == "gzip list ok"
+
+    @pytest.mark.anyio
+    async def test_invalid_gzip_encoded_body(self, async_client):
+        resp = await async_client.post(
+            "/v1/responses",
+            content=b"not-gzip",
+            headers={"content-type": "application/json", "content-encoding": "gzip"},
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["error"]["message"] == "Invalid gzip-compressed request body"
+
+    @pytest.mark.anyio
+    async def test_zstd_encoded_body(self, async_client, mock_bedrock_client, minimal_responses_request, monkeypatch):
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        mock_bedrock_client.invoke_model.return_value = self._bedrock_message_response("zstd ok")
+
+        raw = json.dumps(minimal_responses_request).encode()
+        compressed = zstd.ZstdCompressor().compress(raw)
+
+        resp = await async_client.post(
+            "/v1/responses",
+            content=compressed,
+            headers={"content-type": "application/json", "content-encoding": "zstd"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["output"][0]["content"][0]["text"] == "zstd ok"
+
+    @pytest.mark.anyio
+    async def test_invalid_zstd_encoded_body(self, async_client):
+        resp = await async_client.post(
+            "/v1/responses",
+            content=b"not-zstd",
+            headers={"content-type": "application/json", "content-encoding": "zstd"},
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["error"]["message"] == "Invalid zstd-compressed request body"
+
+    @pytest.mark.anyio
+    async def test_identity_encoding_is_treated_as_uncompressed(
+        self, async_client, mock_bedrock_client, minimal_responses_request, monkeypatch
+    ):
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        mock_bedrock_client.invoke_model.return_value = self._bedrock_message_response("identity ok")
+
+        resp = await async_client.post(
+            "/v1/responses",
+            content=json.dumps(minimal_responses_request).encode(),
+            headers={"content-type": "application/json", "content-encoding": "identity"},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["output"][0]["content"][0]["text"] == "identity ok"
+
+    @pytest.mark.anyio
+    async def test_unsupported_content_encoding(self, async_client):
+        resp = await async_client.post(
+            "/v1/responses",
+            content=json.dumps({"input": "hello"}).encode(),
+            headers={"content-type": "application/json", "content-encoding": "br"},
+        )
+
+        assert resp.status_code == 415
+        assert resp.json()["error"]["message"] == "Unsupported Content-Encoding: br"
 
     @pytest.mark.anyio
     async def test_missing_model(self, async_client):

@@ -26,6 +26,7 @@ dependencies = [
     "truststore>=0.10.0",
     "typer>=0.22.0",
     "uvicorn>=0.34.0",
+    "zstandard>=0.25.0"
 ]
 
 [project.urls]
