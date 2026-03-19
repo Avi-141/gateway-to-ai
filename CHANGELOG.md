@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 - **Copilot empty choices crash on non-streaming responses** — when Copilot returned a 200 response with an empty `choices` array (`{"choices": []}`), the `openai_to_anthropic_response()` and `openai_chat_to_responses_response()` translation functions crashed with `IndexError: list index out of range`, resulting in a 500 error to the client. Both functions now handle empty choices gracefully, returning an empty text response instead of crashing.
 - **Stacktrace when Bedrock credentials not found or endpoint unreachable** — when AWS credentials were missing (`NoCredentialsError`, `PartialCredentialsError`) or the Bedrock endpoint was unreachable (`EndpointConnectionError`), the proxy returned a raw Python stacktrace in the 500 response. These exceptions are now caught explicitly and return clean error responses: 401 with an actionable message for credential errors, 503 for connection errors.
+- **Agent-initiated requests misclassified as user after stripping server-side tools** — when a request containing server-side tools (e.g. `web_search`) was forwarded to a Copilot-only backend, `strip_server_tools()` removed `server_tool_use` and `web_search_tool_result` content blocks from the conversation history. This altered the message structure so that `compute_initiator()` returned `"user"` instead of `"agent"`, causing the request to consume premium quota unnecessarily. The initiator is now computed before stripping and threaded through the call chain.
 
 ## [0.7.0] - 2026-03-09
 

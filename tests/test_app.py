@@ -1893,6 +1893,104 @@ class TestServerToolRouting:
         assert "tools" not in call_body
 
     @pytest.mark.anyio
+    async def test_copilot_only_strips_server_tools_preserves_agent_initiator(self, async_client, monkeypatch):
+        """Stripping server tools must not change initiator from agent to user.
+
+        When the last user message contains both tool_result and
+        web_search_tool_result blocks, stripping the web_search_tool_result
+        should not cause the request to be re-classified as user-initiated.
+        """
+        monkeypatch.setattr(_bs, "_primary", "copilot")
+        monkeypatch.setattr(_bs, "_fallback", "")
+
+        mock_backend = AsyncMock()
+        from fastapi.responses import JSONResponse
+
+        anthropic_resp = {
+            "id": "msg_123",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Response"}],
+            "model": "claude-sonnet-4-5-20250929",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 3},
+        }
+        mock_backend.handle_messages.return_value = JSONResponse(content=anthropic_resp)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
+
+        # Simulate an agent-initiated request: last user message has tool_result
+        # AND web_search_tool_result blocks.  After stripping the latter the
+        # initiator must still be "agent".
+        resp = await async_client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-sonnet-4-5-20250929",
+                "max_tokens": 100,
+                "messages": [
+                    {"role": "user", "content": "search the web"},
+                    {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "Let me search."},
+                            {"type": "server_tool_use", "id": "st_1", "name": "web_search"},
+                            {"type": "tool_use", "id": "tu_1", "name": "get_weather", "input": {"city": "SF"}},
+                        ],
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "web_search_tool_result", "tool_use_id": "st_1", "content": []},
+                            {"type": "tool_result", "tool_use_id": "tu_1", "content": "72°F"},
+                        ],
+                    },
+                ],
+                "tools": [
+                    {"type": "web_search_20250305", "name": "web_search"},
+                    {"name": "get_weather", "description": "d", "input_schema": {}},
+                ],
+            },
+        )
+        assert resp.status_code == 200
+        mock_backend.handle_messages.assert_called_once()
+        # The initiator kwarg must be "agent", not "user"
+        assert mock_backend.handle_messages.call_args.kwargs["initiator"] == "agent"
+
+    @pytest.mark.anyio
+    async def test_copilot_only_strips_server_tools_preserves_user_initiator(self, async_client, monkeypatch):
+        """User-initiated requests stay user-initiated after stripping."""
+        monkeypatch.setattr(_bs, "_primary", "copilot")
+        monkeypatch.setattr(_bs, "_fallback", "")
+
+        mock_backend = AsyncMock()
+        from fastapi.responses import JSONResponse
+
+        anthropic_resp = {
+            "id": "msg_123",
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Response"}],
+            "model": "claude-sonnet-4-5-20250929",
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 5, "output_tokens": 3},
+        }
+        mock_backend.handle_messages.return_value = JSONResponse(content=anthropic_resp)
+        monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
+
+        resp = await async_client.post(
+            "/v1/messages",
+            json={
+                "model": "claude-sonnet-4-5-20250929",
+                "max_tokens": 100,
+                "messages": [{"role": "user", "content": "search the web"}],
+                "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+            },
+        )
+        assert resp.status_code == 200
+        mock_backend.handle_messages.assert_called_once()
+        # User-initiated should remain "user"
+        assert mock_backend.handle_messages.call_args.kwargs["initiator"] == "user"
+
+    @pytest.mark.anyio
     async def test_copilot_with_bedrock_fallback_falls_back_on_bedrock_error(self, async_client, monkeypatch):
         """Copilot primary + Bedrock fallback: if Bedrock fails, strips tools and uses Copilot."""
         monkeypatch.setattr(_bs, "_primary", "copilot")

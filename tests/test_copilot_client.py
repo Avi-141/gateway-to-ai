@@ -198,7 +198,30 @@ class TestComputeInitiator:
         assert compute_initiator(body) == "user"
 
 
-# --- handle_messages token limit ---
+# --- _get_headers initiator override ---
+
+
+class TestGetHeadersInitiatorOverride:
+    @pytest.mark.anyio
+    async def test_initiator_override_takes_precedence(self, backend):
+        """When an explicit initiator is provided, _get_headers must use it."""
+        # Body alone would yield "user"
+        body = {"messages": [{"role": "user", "content": "hello"}]}
+        headers = await backend._get_headers(body, initiator="agent")
+        assert headers["X-Initiator"] == "agent"
+
+    @pytest.mark.anyio
+    async def test_initiator_override_none_falls_back_to_body(self, backend):
+        """When initiator is None, _get_headers computes from body."""
+        body = {"messages": [{"role": "user", "content": "hello"}]}
+        headers = await backend._get_headers(body, initiator=None)
+        assert headers["X-Initiator"] == "user"
+
+    @pytest.mark.anyio
+    async def test_no_body_no_initiator(self, backend):
+        """When neither body nor initiator is provided, no X-Initiator header."""
+        headers = await backend._get_headers()
+        assert "X-Initiator" not in headers
 
 
 class TestHandleMessagesTokenLimit:

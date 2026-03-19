@@ -235,8 +235,12 @@ class CopilotBackend:
         self._retry_base_delay = retry_base_delay
         self._rate_limiter = TokenBucket(max_rate) if max_rate > 0 else None
 
-    async def _get_headers(self, body: dict[str, Any] | None = None) -> dict[str, str]:
-        """Build request headers with fresh Copilot token."""
+    async def _get_headers(self, body: dict[str, Any] | None = None, initiator: str | None = None) -> dict[str, str]:
+        """Build request headers with fresh Copilot token.
+
+        If *initiator* is provided it is used directly as the X-Initiator
+        header value; otherwise it is computed from *body*.
+        """
         token = await self._auth.get_token()
         headers = {
             **COPILOT_HEADERS,
@@ -244,7 +248,9 @@ class CopilotBackend:
             "Content-Type": "application/json",
             "Copilot-Integration-Id": "vscode-chat",
         }
-        if body is not None:
+        if initiator is not None:
+            headers["X-Initiator"] = initiator
+        elif body is not None:
             headers["X-Initiator"] = compute_initiator(body)
         return headers
 
@@ -284,6 +290,7 @@ class CopilotBackend:
         url: str,
         body: dict[str, Any],
         log_prefix: str,
+        initiator: str | None = None,
     ) -> tuple[httpx.Response, Any]:
         """Open a streaming POST with rate limiting and retry-on-429.
 
@@ -296,7 +303,7 @@ class CopilotBackend:
                 if waited > 0:
                     logger.info(f"{log_prefix}Rate limited, waited {waited:.1f}s")
 
-            headers = await self._get_headers(body)
+            headers = await self._get_headers(body, initiator=initiator)
             stream_cm = self._client.stream("POST", url, headers=headers, json=body)
             resp = await stream_cm.__aenter__()
 
@@ -361,6 +368,7 @@ class CopilotBackend:
         openai_model: str,
         anthropic_model: str,
         client_context_window: int = 0,
+        initiator: str | None = None,
     ) -> JSONResponse | StreamingResponse:
         """Handle a messages request by proxying through Copilot.
 
@@ -377,7 +385,7 @@ class CopilotBackend:
             openai_body["stream_options"] = {"include_usage": True}
             estimated_tokens = estimate_input_tokens(body)
             copilot_context_limit = get_copilot_context_limit(openai_model)
-            resp, stream_cm = await self._open_stream(openai_body, log_prefix)
+            resp, stream_cm = await self._open_stream(openai_body, log_prefix, initiator=initiator)
             return StreamingResponse(
                 self._stream_response(
                     resp,
@@ -391,7 +399,7 @@ class CopilotBackend:
                 media_type="text/event-stream",
             )
         else:
-            headers = await self._get_headers(openai_body)
+            headers = await self._get_headers(openai_body, initiator=initiator)
             logger.info(f"{log_prefix}Copilot request to {openai_model}")
             logger.debug(f"{log_prefix}OpenAI body keys: {list(openai_body.keys())}")
 
@@ -415,7 +423,9 @@ class CopilotBackend:
             logger.debug(f"{log_prefix}Response: {json.dumps(result)[:500]}")
             return JSONResponse(content=result)
 
-    async def _open_stream(self, openai_body: dict[str, Any], log_prefix: str) -> tuple[httpx.Response, Any]:
+    async def _open_stream(
+        self, openai_body: dict[str, Any], log_prefix: str, initiator: str | None = None
+    ) -> tuple[httpx.Response, Any]:
         """Open streaming connection and validate HTTP status.
 
         Returns (response, context_manager) on success.
@@ -424,7 +434,9 @@ class CopilotBackend:
         """
         logger.info(f"{log_prefix}Starting Copilot stream for {openai_body.get('model')}")
 
-        resp, stream_cm = await self._open_stream_with_retry(COPILOT_CHAT_URL, openai_body, log_prefix)
+        resp, stream_cm = await self._open_stream_with_retry(
+            COPILOT_CHAT_URL, openai_body, log_prefix, initiator=initiator
+        )
 
         if resp.status_code != 200:
             body = await resp.aread()
@@ -594,6 +606,7 @@ class CopilotBackend:
         responses_model: str,
         anthropic_model: str,
         client_context_window: int = 0,
+        initiator: str | None = None,
     ) -> JSONResponse | StreamingResponse:
         """Handle a messages request by proxying through Copilot Responses API.
 
@@ -607,7 +620,7 @@ class CopilotBackend:
             responses_body["stream"] = True
             estimated_tokens = estimate_input_tokens(body)
             copilot_context_limit = get_copilot_context_limit(responses_model)
-            resp, stream_cm = await self._open_responses_stream(responses_body, log_prefix)
+            resp, stream_cm = await self._open_responses_stream(responses_body, log_prefix, initiator=initiator)
             return StreamingResponse(
                 self._stream_responses_response(
                     resp,
@@ -621,7 +634,7 @@ class CopilotBackend:
                 media_type="text/event-stream",
             )
         else:
-            headers = await self._get_headers(responses_body)
+            headers = await self._get_headers(responses_body, initiator=initiator)
             logger.info(f"{log_prefix}Copilot Responses request to {responses_model}")
             logger.debug(f"{log_prefix}Responses body keys: {list(responses_body.keys())}")
 
@@ -688,12 +701,14 @@ class CopilotBackend:
             return JSONResponse(content=result)
 
     async def _open_responses_stream(
-        self, responses_body: dict[str, Any], log_prefix: str
+        self, responses_body: dict[str, Any], log_prefix: str, initiator: str | None = None
     ) -> tuple[httpx.Response, Any]:
         """Open streaming connection to Responses API and validate HTTP status."""
         logger.info(f"{log_prefix}Starting Copilot Responses stream for {responses_body.get('model')}")
 
-        resp, stream_cm = await self._open_stream_with_retry(COPILOT_RESPONSES_URL, responses_body, log_prefix)
+        resp, stream_cm = await self._open_stream_with_retry(
+            COPILOT_RESPONSES_URL, responses_body, log_prefix, initiator=initiator
+        )
 
         if resp.status_code != 200:
             body = await resp.aread()

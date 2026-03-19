@@ -619,8 +619,13 @@ async def _call_copilot(
     request: Request,
     request_id: str,
     stream: bool,
+    initiator: str | None = None,
 ) -> JSONResponse | StreamingResponse:
     """Execute request against Copilot backend.
+
+    If *initiator* is supplied it overrides the value that would normally be
+    computed from *body*.  This is needed when server-side tools have been
+    stripped from the body, which can alter what ``compute_initiator`` returns.
 
     Raises TransientBackendError for fallback-eligible errors.
     Raises CopilotHttpError, RuntimeError, httpx.TimeoutException for non-fallback errors.
@@ -630,19 +635,31 @@ async def _call_copilot(
         raise RuntimeError("Copilot backend not initialized")
     copilot_model, anthropic_model = get_copilot_model(body["model"])
     log_prefix = f"[{request_id}] " if request_id else ""
-    initiator = compute_initiator(body)
+    effective_initiator = initiator or compute_initiator(body)
     logger.info(
         f"{log_prefix}Request - model: {body['model']} -> {copilot_model} (copilot), "
-        f"stream: {stream}, initiator: {initiator}"
+        f"stream: {stream}, initiator: {effective_initiator}"
     )
     client_context_window = _detect_client_context_window(request, copilot_model)
     if model_requires_responses_api(copilot_model):
         logger.info(f"{log_prefix}Routing to Responses API for {copilot_model}")
         return await copilot.handle_responses_messages(
-            body, request_id, stream, copilot_model, anthropic_model, client_context_window
+            body,
+            request_id,
+            stream,
+            copilot_model,
+            anthropic_model,
+            client_context_window,
+            initiator=effective_initiator,
         )
     return await copilot.handle_messages(
-        body, request_id, stream, copilot_model, anthropic_model, client_context_window
+        body,
+        request_id,
+        stream,
+        copilot_model,
+        anthropic_model,
+        client_context_window,
+        initiator=effective_initiator,
     )
 
 
@@ -852,7 +869,11 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
     # Route requests with server-side tools (e.g. web_search) appropriately.
     # Copilot doesn't support server-side tools, so route to Bedrock if available,
     # or strip them from the request if Copilot-only.
+    # Compute the initiator *before* stripping so that removing server-tool
+    # content blocks from the conversation history does not change the result.
+    initiator_override: str | None = None
     if has_server_tools(body) and _backend_state.primary == "copilot":
+        initiator_override = compute_initiator(body)
         if _backend_state.fallback == "bedrock":
             logger.info(f"{log_prefix}Server-side tools detected, routing to Bedrock fallback")
             try:
@@ -875,7 +896,7 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
     # Map backend name to call function
     def _get_backend_caller(backend_name: str):
         if backend_name == "copilot":
-            return lambda: _call_copilot(body, request, request_id, stream)
+            return lambda: _call_copilot(body, request, request_id, stream, initiator=initiator_override)
         return lambda: _call_bedrock(body, request, request_id, stream)
 
     # Capture current backend config for this request
