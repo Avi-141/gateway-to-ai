@@ -8,6 +8,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- **Retry-with-backoff on Copilot 429s** — when the Copilot API returns a 429 (rate limit), the proxy now retries on the *same* backend with exponential backoff before falling back. This absorbs transient rate-limit bursts (common with parallel agent teams) without immediately switching backends. Configurable via `COPILOT_RETRY_MAX` (default: 3 retries) and `COPILOT_RETRY_BASE_DELAY` (default: 1.0s). Respects `retry-after` response headers when present. Only 429 is retried — other transient errors (500, 502, etc.) go straight to fallback as before.
+- **Token bucket rate limiter for Copilot** — limits outbound request rate to the Copilot API (default: 15 req/min). When the limit is reached, requests queue and wait for a token rather than being rejected locally. Configurable via `COPILOT_MAX_RATE` (set to 0 to disable). Both retry and rate limiting apply to all Copilot paths: `/v1/messages`, `/v1/chat/completions`, `/v1/responses`, and all streaming variants.
 - **Auto-refresh Copilot models** — the Copilot models list is now refreshed from the API on `/v1/models` and `/api/status` requests with a 5-minute TTL cache (configurable via `COPILOT_MODELS_TTL`). Previously, models were only fetched once at startup.
 - **GPT-5.4 model alias** — added `gpt-5.4` to the Copilot model map.
 

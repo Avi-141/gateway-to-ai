@@ -11,7 +11,14 @@ from typing import Any
 import httpx
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from .config import FALLBACK_ON_ERRORS, SSL_CONTEXT, logger
+from .config import (
+    COPILOT_MAX_RATE,
+    COPILOT_RETRY_BASE_DELAY,
+    COPILOT_RETRY_MAX,
+    FALLBACK_ON_ERRORS,
+    SSL_CONTEXT,
+    logger,
+)
 from .copilot_auth import COPILOT_HEADERS, CopilotAuth
 from .copilot_translate import (
     StreamTranslator,
@@ -44,6 +51,56 @@ _ERROR_TYPE_MAP: dict[int, str] = {
     503: "api_error",
     504: "timeout_error",
 }
+
+
+def _parse_retry_after(headers: httpx.Headers) -> float | None:
+    """Parse retry-after header value as seconds, or None if absent/invalid."""
+    val = headers.get("retry-after")
+    if val is None:
+        return None
+    try:
+        return float(val)
+    except ValueError:
+        return None
+
+
+class TokenBucket:
+    """Async token bucket rate limiter.
+
+    Allows ``rate`` requests per 60 seconds.  Requests that exceed the rate
+    wait until a token is available (queue-and-wait).
+    """
+
+    def __init__(self, rate: int):
+        self._rate = rate
+        self._tokens = float(rate)
+        self._max_tokens = float(rate)
+        self._interval = 60.0 / rate  # seconds per token
+        self._last_refill = time.monotonic()
+        self._lock = asyncio.Lock()
+
+    async def acquire(self) -> float:
+        """Acquire a token.  Returns the wait time in seconds (0.0 if immediate)."""
+        async with self._lock:
+            self._refill()
+            if self._tokens >= 1.0:
+                self._tokens -= 1.0
+                return 0.0
+            # Calculate wait time until next token
+            wait = self._interval * (1.0 - self._tokens)
+            self._tokens = 0.0
+        await asyncio.sleep(wait)
+        # After waiting, consume the newly refilled token
+        async with self._lock:
+            self._refill()
+            self._tokens = max(0.0, self._tokens - 1.0)
+        return wait
+
+    def _refill(self) -> None:
+        now = time.monotonic()
+        elapsed = now - self._last_refill
+        self._tokens = min(self._max_tokens, self._tokens + elapsed / self._interval)
+        self._last_refill = now
 
 
 # Pattern to extract token counts from Copilot's token limit error
@@ -164,9 +221,19 @@ def compute_initiator(body: dict[str, Any]) -> str:
 class CopilotBackend:
     """Handles routing requests through GitHub Copilot API."""
 
-    def __init__(self, auth: CopilotAuth, timeout: int = 300):
+    def __init__(
+        self,
+        auth: CopilotAuth,
+        timeout: int = 300,
+        retry_max: int = COPILOT_RETRY_MAX,
+        retry_base_delay: float = COPILOT_RETRY_BASE_DELAY,
+        max_rate: int = COPILOT_MAX_RATE,
+    ):
         self._auth = auth
         self._client = httpx.AsyncClient(verify=SSL_CONTEXT, timeout=httpx.Timeout(timeout, connect=30.0))
+        self._retry_max = retry_max
+        self._retry_base_delay = retry_base_delay
+        self._rate_limiter = TokenBucket(max_rate) if max_rate > 0 else None
 
     async def _get_headers(self, body: dict[str, Any] | None = None) -> dict[str, str]:
         """Build request headers with fresh Copilot token."""
@@ -180,6 +247,72 @@ class CopilotBackend:
         if body is not None:
             headers["X-Initiator"] = compute_initiator(body)
         return headers
+
+    async def _post_with_retry(
+        self,
+        url: str,
+        headers: dict[str, str],
+        json: dict[str, Any],
+        log_prefix: str,
+    ) -> httpx.Response:
+        """POST with rate limiting and retry-on-429.
+
+        Only 429 is retried; other errors are returned immediately so the
+        caller can raise TransientBackendError (for fallback) or CopilotHttpError.
+        """
+        resp: httpx.Response | None = None
+        for attempt in range(1 + self._retry_max):
+            if self._rate_limiter:
+                waited = await self._rate_limiter.acquire()
+                if waited > 0:
+                    logger.info(f"{log_prefix}Rate limited, waited {waited:.1f}s")
+
+            resp = await self._client.post(url, headers=headers, json=json)
+
+            if resp.status_code == 429 and attempt < self._retry_max:
+                retry_after = _parse_retry_after(resp.headers)
+                delay = retry_after or (self._retry_base_delay * (2**attempt))
+                delay = min(delay, 30.0)
+                logger.warning(f"{log_prefix}Copilot 429, retry {attempt + 1}/{self._retry_max} after {delay:.1f}s")
+                await asyncio.sleep(delay)
+                continue
+            return resp
+        return resp  # type: ignore[return-value]  # unreachable, satisfies type checker
+
+    async def _open_stream_with_retry(
+        self,
+        url: str,
+        body: dict[str, Any],
+        log_prefix: str,
+    ) -> tuple[httpx.Response, Any]:
+        """Open a streaming POST with rate limiting and retry-on-429.
+
+        Only the stream-open phase is retried (429 occurs before streaming starts).
+        Returns (response, context_manager) on success.
+        """
+        for attempt in range(1 + self._retry_max):
+            if self._rate_limiter:
+                waited = await self._rate_limiter.acquire()
+                if waited > 0:
+                    logger.info(f"{log_prefix}Rate limited, waited {waited:.1f}s")
+
+            headers = await self._get_headers(body)
+            stream_cm = self._client.stream("POST", url, headers=headers, json=body)
+            resp = await stream_cm.__aenter__()
+
+            if resp.status_code == 429 and attempt < self._retry_max:
+                await resp.aread()
+                await stream_cm.__aexit__(None, None, None)
+                retry_after = _parse_retry_after(resp.headers)
+                delay = retry_after or (self._retry_base_delay * (2**attempt))
+                delay = min(delay, 30.0)
+                logger.warning(
+                    f"{log_prefix}Copilot stream 429, retry {attempt + 1}/{self._retry_max} after {delay:.1f}s"
+                )
+                await asyncio.sleep(delay)
+                continue
+            return resp, stream_cm
+        return resp, stream_cm  # type: ignore[possibly-undefined]  # unreachable
 
     async def list_models(self) -> list[dict[str, Any]]:
         """Fetch available models from the Copilot API."""
@@ -262,7 +395,7 @@ class CopilotBackend:
             logger.info(f"{log_prefix}Copilot request to {openai_model}")
             logger.debug(f"{log_prefix}OpenAI body keys: {list(openai_body.keys())}")
 
-            resp = await self._client.post(COPILOT_CHAT_URL, headers=headers, json=openai_body)
+            resp = await self._post_with_retry(COPILOT_CHAT_URL, headers, openai_body, log_prefix)
 
             if resp.status_code != 200:
                 detail = resp.text[:500]
@@ -289,11 +422,9 @@ class CopilotBackend:
         Raises TransientBackendError for fallback-eligible status codes.
         Raises CopilotHttpError for non-transient HTTP errors.
         """
-        headers = await self._get_headers(openai_body)
         logger.info(f"{log_prefix}Starting Copilot stream for {openai_body.get('model')}")
 
-        stream_cm = self._client.stream("POST", COPILOT_CHAT_URL, headers=headers, json=openai_body)
-        resp = await stream_cm.__aenter__()
+        resp, stream_cm = await self._open_stream_with_retry(COPILOT_CHAT_URL, openai_body, log_prefix)
 
         if resp.status_code != 200:
             body = await resp.aread()
@@ -396,7 +527,7 @@ class CopilotBackend:
             logger.info(f"{log_prefix}Copilot OpenAI passthrough to {copilot_model}")
             logger.debug(f"{log_prefix}OpenAI body keys: {list(openai_body.keys())}")
 
-            resp = await self._client.post(COPILOT_CHAT_URL, headers=headers, json=openai_body)
+            resp = await self._post_with_retry(COPILOT_CHAT_URL, headers, openai_body, log_prefix)
 
             if resp.status_code != 200:
                 detail = resp.text[:500]
@@ -494,7 +625,7 @@ class CopilotBackend:
             logger.info(f"{log_prefix}Copilot Responses request to {responses_model}")
             logger.debug(f"{log_prefix}Responses body keys: {list(responses_body.keys())}")
 
-            resp = await self._client.post(COPILOT_RESPONSES_URL, headers=headers, json=responses_body)
+            resp = await self._post_with_retry(COPILOT_RESPONSES_URL, headers, responses_body, log_prefix)
 
             if resp.status_code != 200:
                 detail = resp.text[:500]
@@ -538,7 +669,7 @@ class CopilotBackend:
             logger.info(f"{log_prefix}Copilot Responses OpenAI passthrough to {responses_model}")
             logger.debug(f"{log_prefix}Responses body keys: {list(responses_body.keys())}")
 
-            resp = await self._client.post(COPILOT_RESPONSES_URL, headers=headers, json=responses_body)
+            resp = await self._post_with_retry(COPILOT_RESPONSES_URL, headers, responses_body, log_prefix)
 
             if resp.status_code != 200:
                 detail = resp.text[:500]
@@ -560,11 +691,9 @@ class CopilotBackend:
         self, responses_body: dict[str, Any], log_prefix: str
     ) -> tuple[httpx.Response, Any]:
         """Open streaming connection to Responses API and validate HTTP status."""
-        headers = await self._get_headers(responses_body)
         logger.info(f"{log_prefix}Starting Copilot Responses stream for {responses_body.get('model')}")
 
-        stream_cm = self._client.stream("POST", COPILOT_RESPONSES_URL, headers=headers, json=responses_body)
-        resp = await stream_cm.__aenter__()
+        resp, stream_cm = await self._open_stream_with_retry(COPILOT_RESPONSES_URL, responses_body, log_prefix)
 
         if resp.status_code != 200:
             body = await resp.aread()
@@ -730,7 +859,7 @@ class CopilotBackend:
             headers = await self._get_headers(body)
             logger.info(f"{log_prefix}Copilot Responses passthrough to {body.get('model')}")
 
-            resp = await self._client.post(COPILOT_RESPONSES_URL, headers=headers, json=body)
+            resp = await self._post_with_retry(COPILOT_RESPONSES_URL, headers, body, log_prefix)
 
             if resp.status_code != 200:
                 detail = resp.text[:500]
@@ -818,7 +947,7 @@ class CopilotBackend:
             headers = await self._get_headers(openai_body)
             logger.info(f"{log_prefix}Copilot Responses via chat to {copilot_model}")
 
-            resp = await self._client.post(COPILOT_CHAT_URL, headers=headers, json=openai_body)
+            resp = await self._post_with_retry(COPILOT_CHAT_URL, headers, openai_body, log_prefix)
 
             if resp.status_code != 200:
                 detail = resp.text[:500]

@@ -8,7 +8,9 @@ import pytest
 
 from claudegate.copilot_client import (
     CopilotBackend,
+    TokenBucket,
     _normalize_openai_response,
+    _parse_retry_after,
     _parse_token_limit_error,
     compute_initiator,
 )
@@ -23,8 +25,8 @@ _TOKEN_LIMIT_DETAIL = (
 
 @pytest.fixture
 def backend(mock_copilot_auth):
-    """CopilotBackend with mocked auth."""
-    return CopilotBackend(mock_copilot_auth, timeout=30)
+    """CopilotBackend with mocked auth, retry and rate limiting disabled."""
+    return CopilotBackend(mock_copilot_auth, timeout=30, retry_max=0, max_rate=0)
 
 
 # --- list_models ---
@@ -837,3 +839,267 @@ class TestClose:
             await backend.close()
             mock_close.assert_called_once()
             backend._auth.close.assert_called_once()
+
+
+# --- _parse_retry_after ---
+
+
+class TestParseRetryAfter:
+    def test_valid_integer(self):
+        headers = httpx.Headers({"retry-after": "5"})
+        assert _parse_retry_after(headers) == 5.0
+
+    def test_valid_float(self):
+        headers = httpx.Headers({"retry-after": "2.5"})
+        assert _parse_retry_after(headers) == 2.5
+
+    def test_missing_header(self):
+        headers = httpx.Headers({})
+        assert _parse_retry_after(headers) is None
+
+    def test_invalid_value(self):
+        headers = httpx.Headers({"retry-after": "not-a-number"})
+        assert _parse_retry_after(headers) is None
+
+
+# --- TokenBucket ---
+
+
+class TestTokenBucket:
+    @pytest.mark.anyio
+    async def test_immediate_acquires_up_to_rate(self):
+        """Acquiring up to `rate` tokens should return 0.0 wait time."""
+        bucket = TokenBucket(5)
+        for _ in range(5):
+            waited = await bucket.acquire()
+            assert waited == 0.0
+
+    @pytest.mark.anyio
+    async def test_exceeding_rate_causes_wait(self):
+        """Exceeding the rate should cause a non-zero wait."""
+        bucket = TokenBucket(2)
+        # Drain the bucket
+        await bucket.acquire()
+        await bucket.acquire()
+        # The third should wait
+        with patch("claudegate.copilot_client.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            waited = await bucket.acquire()
+            assert waited > 0.0
+            mock_sleep.assert_called()
+
+    @pytest.mark.anyio
+    async def test_refill_over_time(self):
+        """After time passes, tokens refill and acquires are immediate again."""
+        import time
+
+        bucket = TokenBucket(10)
+        # Drain all tokens
+        for _ in range(10):
+            await bucket.acquire()
+        # Simulate time passing (6 seconds = 1 token at 10/min rate)
+        bucket._last_refill = time.monotonic() - 6.0
+        waited = await bucket.acquire()
+        assert waited == 0.0
+
+    @pytest.mark.anyio
+    async def test_disabled_when_rate_zero(self, mock_copilot_auth):
+        """Rate limiter should be None when max_rate=0."""
+        b = CopilotBackend(mock_copilot_auth, timeout=30, retry_max=0, max_rate=0)
+        assert b._rate_limiter is None
+
+
+# --- _post_with_retry ---
+
+
+class TestPostWithRetry:
+    @pytest.fixture
+    def retry_backend(self, mock_copilot_auth):
+        """CopilotBackend with retry enabled, rate limiting disabled."""
+        return CopilotBackend(mock_copilot_auth, timeout=30, retry_max=2, retry_base_delay=0.01, max_rate=0)
+
+    @pytest.mark.anyio
+    async def test_retry_on_429_then_success(self, retry_backend):
+        """First POST returns 429, second returns 200 → success with 2 requests."""
+        resp_429 = MagicMock()
+        resp_429.status_code = 429
+        resp_429.headers = httpx.Headers({})
+
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+
+        with patch.object(
+            retry_backend._client, "post", new_callable=AsyncMock, side_effect=[resp_429, resp_200]
+        ) as mock_post:
+            result = await retry_backend._post_with_retry(
+                "https://example.com/api", {"Authorization": "Bearer tok"}, {"model": "test"}, "[test] "
+            )
+            assert result.status_code == 200
+            assert mock_post.call_count == 2
+
+    @pytest.mark.anyio
+    async def test_all_retries_exhausted_returns_429(self, retry_backend):
+        """All attempts return 429 → final 429 response returned (caller raises)."""
+        resp_429 = MagicMock()
+        resp_429.status_code = 429
+        resp_429.headers = httpx.Headers({})
+
+        with patch.object(retry_backend._client, "post", new_callable=AsyncMock, return_value=resp_429) as mock_post:
+            result = await retry_backend._post_with_retry(
+                "https://example.com/api", {"Authorization": "Bearer tok"}, {"model": "test"}, "[test] "
+            )
+            assert result.status_code == 429
+            # 1 initial + 2 retries = 3
+            assert mock_post.call_count == 3
+
+    @pytest.mark.anyio
+    async def test_retry_after_header_respected(self, retry_backend):
+        """retry-after header value is used as delay."""
+        resp_429 = MagicMock()
+        resp_429.status_code = 429
+        resp_429.headers = httpx.Headers({"retry-after": "1"})
+
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+
+        with (
+            patch.object(retry_backend._client, "post", new_callable=AsyncMock, side_effect=[resp_429, resp_200]),
+            patch("claudegate.copilot_client.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            result = await retry_backend._post_with_retry(
+                "https://example.com/api", {"Authorization": "Bearer tok"}, {"model": "test"}, "[test] "
+            )
+            assert result.status_code == 200
+            # Should have slept with the retry-after value (1.0), not the base delay
+            mock_sleep.assert_called_once_with(1.0)
+
+    @pytest.mark.anyio
+    async def test_500_not_retried(self, retry_backend):
+        """500 error is not retried — returned immediately for fallback."""
+        resp_500 = MagicMock()
+        resp_500.status_code = 500
+
+        with patch.object(retry_backend._client, "post", new_callable=AsyncMock, return_value=resp_500) as mock_post:
+            result = await retry_backend._post_with_retry(
+                "https://example.com/api", {"Authorization": "Bearer tok"}, {"model": "test"}, "[test] "
+            )
+            assert result.status_code == 500
+            assert mock_post.call_count == 1
+
+    @pytest.mark.anyio
+    async def test_no_retry_when_max_zero(self, mock_copilot_auth):
+        """With retry_max=0, 429 is returned immediately."""
+        b = CopilotBackend(mock_copilot_auth, timeout=30, retry_max=0, max_rate=0)
+        resp_429 = MagicMock()
+        resp_429.status_code = 429
+        resp_429.headers = httpx.Headers({})
+
+        with patch.object(b._client, "post", new_callable=AsyncMock, return_value=resp_429) as mock_post:
+            result = await b._post_with_retry(
+                "https://example.com/api", {"Authorization": "Bearer tok"}, {"model": "test"}, ""
+            )
+            assert result.status_code == 429
+            assert mock_post.call_count == 1
+
+    @pytest.mark.anyio
+    async def test_rate_limiter_called_before_request(self, mock_copilot_auth):
+        """When rate limiter is enabled, acquire() is called before each POST."""
+        b = CopilotBackend(mock_copilot_auth, timeout=30, retry_max=0, max_rate=10)
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+
+        with (
+            patch.object(b._client, "post", new_callable=AsyncMock, return_value=resp_200),
+            patch.object(b._rate_limiter, "acquire", new_callable=AsyncMock, return_value=0.0) as mock_acquire,
+        ):
+            await b._post_with_retry("https://example.com/api", {"Authorization": "Bearer tok"}, {"model": "test"}, "")
+            mock_acquire.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_delay_capped_at_30s(self, retry_backend):
+        """Exponential backoff delay is capped at 30 seconds."""
+        # With base_delay=0.01 and 2 retries, delay won't actually exceed 30s,
+        # but test with a large base_delay to confirm capping
+        b = CopilotBackend(retry_backend._auth, timeout=30, retry_max=1, retry_base_delay=50.0, max_rate=0)
+        resp_429 = MagicMock()
+        resp_429.status_code = 429
+        resp_429.headers = httpx.Headers({})
+
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+
+        with (
+            patch.object(b._client, "post", new_callable=AsyncMock, side_effect=[resp_429, resp_200]),
+            patch("claudegate.copilot_client.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            result = await b._post_with_retry(
+                "https://example.com/api", {"Authorization": "Bearer tok"}, {"model": "test"}, ""
+            )
+            assert result.status_code == 200
+            # 50.0 * 2^0 = 50.0, capped to 30.0
+            mock_sleep.assert_called_once_with(30.0)
+
+
+# --- _open_stream_with_retry ---
+
+
+class TestOpenStreamWithRetry:
+    @pytest.fixture
+    def retry_backend(self, mock_copilot_auth):
+        """CopilotBackend with retry enabled, rate limiting disabled."""
+        return CopilotBackend(mock_copilot_auth, timeout=30, retry_max=2, retry_base_delay=0.01, max_rate=0)
+
+    @pytest.mark.anyio
+    async def test_stream_retry_on_429_then_success(self, retry_backend):
+        """Stream open: first 429, second 200 → success."""
+        # First call: 429
+        resp_429 = MagicMock()
+        resp_429.status_code = 429
+        resp_429.headers = httpx.Headers({})
+        resp_429.aread = AsyncMock(return_value=b"rate limited")
+        stream_cm_429 = AsyncMock()
+        stream_cm_429.__aenter__ = AsyncMock(return_value=resp_429)
+        stream_cm_429.__aexit__ = AsyncMock(return_value=False)
+
+        # Second call: 200
+        resp_200 = MagicMock()
+        resp_200.status_code = 200
+        stream_cm_200 = AsyncMock()
+        stream_cm_200.__aenter__ = AsyncMock(return_value=resp_200)
+
+        call_count = 0
+
+        def fake_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                return stream_cm_429
+            return stream_cm_200
+
+        with patch.object(retry_backend._client, "stream", side_effect=fake_stream):
+            resp, cm = await retry_backend._open_stream_with_retry(
+                "https://example.com/api", {"model": "test"}, "[test] "
+            )
+            assert resp.status_code == 200
+            assert call_count == 2
+
+    @pytest.mark.anyio
+    async def test_stream_500_not_retried(self, retry_backend):
+        """Stream open: 500 is not retried, returned immediately."""
+        resp_500 = MagicMock()
+        resp_500.status_code = 500
+        stream_cm_500 = AsyncMock()
+        stream_cm_500.__aenter__ = AsyncMock(return_value=resp_500)
+
+        call_count = 0
+
+        def fake_stream(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return stream_cm_500
+
+        with patch.object(retry_backend._client, "stream", side_effect=fake_stream):
+            resp, cm = await retry_backend._open_stream_with_retry(
+                "https://example.com/api", {"model": "test"}, "[test] "
+            )
+            assert resp.status_code == 500
+            assert call_count == 1

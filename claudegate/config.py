@@ -114,6 +114,13 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 COPILOT_TIMEOUT = int(os.environ.get("COPILOT_TIMEOUT", "300"))
 COPILOT_MODELS_TTL = int(os.environ.get("COPILOT_MODELS_TTL", "300"))
 
+# Retry on 429 before falling back (0 = no retries, go straight to fallback)
+COPILOT_RETRY_MAX = int(os.environ.get("COPILOT_RETRY_MAX", "3"))
+COPILOT_RETRY_BASE_DELAY = float(os.environ.get("COPILOT_RETRY_BASE_DELAY", "1.0"))
+
+# Rate limiting: max requests per minute to Copilot (0 = unlimited)
+COPILOT_MAX_RATE = int(os.environ.get("COPILOT_MAX_RATE", "15"))
+
 # Pre-flight context guard: reject requests estimated to exceed this fraction
 # of the model's context limit. Set to 0 to disable. Default 0.90 leaves 10%
 # headroom for tiktoken estimation inaccuracy.
