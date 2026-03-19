@@ -11,7 +11,13 @@ from typing import Any
 
 import tiktoken
 import zstandard as zstd
-from botocore.exceptions import ClientError, ReadTimeoutError
+from botocore.exceptions import (
+    ClientError,
+    EndpointConnectionError,
+    NoCredentialsError,
+    PartialCredentialsError,
+    ReadTimeoutError,
+)
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
@@ -61,6 +67,10 @@ from .responses_translate import (
 )
 from .server_url import remove_server_url, write_server_url
 
+# Credential/connection errors that should return a clean 401/503 instead of a stacktrace
+_CREDENTIAL_ERRORS = (NoCredentialsError, PartialCredentialsError)
+_CONNECTION_ERRORS = (EndpointConnectionError,)
+
 # Use cl100k_base encoding (similar to Claude's tokenizer)
 tokenizer = tiktoken.get_encoding("cl100k_base")
 
@@ -75,6 +85,13 @@ except PackageNotFoundError:
 # Error message for expired credentials
 CREDENTIALS_EXPIRED_MSG = (
     "AWS credentials have expired. Please re-authenticate in your terminal to refresh your credentials, then retry."
+)
+CREDENTIALS_MISSING_MSG = (
+    "AWS credentials not found. Please configure your credentials "
+    "(e.g. aws configure, AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY env vars, or an IAM role) and retry."
+)
+BEDROCK_UNREACHABLE_MSG = (
+    "Cannot connect to AWS Bedrock. Check your network connection, AWS region configuration, and VPC/endpoint settings."
 )
 
 # NOTE: Context window scaling is Claude Code-specific. These reference windows
@@ -441,6 +458,12 @@ def _open_bedrock_stream(model: str, body: dict[str, Any]) -> dict[str, Any]:
     try:
         bedrock = get_bedrock_client()
         return bedrock.invoke_model_with_response_stream(modelId=model, body=json.dumps(body))
+    except _CREDENTIAL_ERRORS as e:
+        logger.error(f"AWS credentials not found: {e}")
+        raise  # Let _call_bedrock handle and return a clean response
+    except _CONNECTION_ERRORS as e:
+        logger.error(f"Cannot connect to AWS Bedrock: {e}")
+        raise  # Let _call_bedrock handle and return a clean response
     except ClientError as e:
         error_code = e.response.get("Error", {}).get("Code", "")
         error_message = e.response.get("Error", {}).get("Message", str(e))
@@ -520,6 +543,12 @@ async def _call_bedrock(
         # Two-phase: open (can raise TransientBackendError or ClientError), then iterate
         try:
             response = _open_bedrock_stream(bedrock_model, bedrock_body)
+        except _CREDENTIAL_ERRORS as e:
+            logger.error(f"{log_prefix}AWS credentials not found: {e}")
+            return _error_response(401, "authentication_error", CREDENTIALS_MISSING_MSG)
+        except _CONNECTION_ERRORS as e:
+            logger.error(f"{log_prefix}Cannot connect to AWS Bedrock: {e}")
+            return _error_response(503, "api_error", BEDROCK_UNREACHABLE_MSG)
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "")
             error_message = e.response.get("Error", {}).get("Message", str(e))
@@ -547,6 +576,12 @@ async def _call_bedrock(
         result = json.loads(response["body"].read())
         logger.debug(f"{log_prefix}Response: {json.dumps(result)[:500]}")
         return JSONResponse(content=result)
+    except _CREDENTIAL_ERRORS as e:
+        logger.error(f"{log_prefix}AWS credentials not found: {e}")
+        return _error_response(401, "authentication_error", CREDENTIALS_MISSING_MSG)
+    except _CONNECTION_ERRORS as e:
+        logger.error(f"{log_prefix}Cannot connect to AWS Bedrock: {e}")
+        return _error_response(503, "api_error", BEDROCK_UNREACHABLE_MSG)
     except ClientError as e:
         error_code = e.response.get("Error", {}).get("Code", "")
         error_message = e.response.get("Error", {}).get("Message", str(e))

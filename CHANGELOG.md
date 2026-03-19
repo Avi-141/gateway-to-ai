@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 ### Fixed
 
 - **Copilot empty choices crash on non-streaming responses** — when Copilot returned a 200 response with an empty `choices` array (`{"choices": []}`), the `openai_to_anthropic_response()` and `openai_chat_to_responses_response()` translation functions crashed with `IndexError: list index out of range`, resulting in a 500 error to the client. Both functions now handle empty choices gracefully, returning an empty text response instead of crashing.
+- **Stacktrace when Bedrock credentials not found or endpoint unreachable** — when AWS credentials were missing (`NoCredentialsError`, `PartialCredentialsError`) or the Bedrock endpoint was unreachable (`EndpointConnectionError`), the proxy returned a raw Python stacktrace in the 500 response. These exceptions are now caught explicitly and return clean error responses: 401 with an actionable message for credential errors, 503 for connection errors.
 
 ## [0.7.0] - 2026-03-09
 

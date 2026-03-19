@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import zstandard as zstd
-from botocore.exceptions import ClientError, ReadTimeoutError
+from botocore.exceptions import ClientError, EndpointConnectionError, NoCredentialsError, ReadTimeoutError
 
 from claudegate.app import (
     _clean_messages_for_bedrock,
@@ -414,6 +414,68 @@ class TestMessagesRoute:
 
         resp = await async_client.post("/v1/messages", json=minimal_anthropic_request)
         assert resp.status_code == 500
+
+    @pytest.mark.anyio
+    async def test_no_credentials_error(
+        self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch
+    ):
+        """NoCredentialsError returns 401 with a helpful message instead of a stacktrace."""
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        mock_bedrock_client.invoke_model.side_effect = NoCredentialsError()
+
+        resp = await async_client.post("/v1/messages", json=minimal_anthropic_request)
+        assert resp.status_code == 401
+        body = resp.json()
+        assert body["error"]["type"] == "authentication_error"
+        assert "credentials not found" in body["error"]["message"].lower()
+
+    @pytest.mark.anyio
+    async def test_no_credentials_error_streaming(
+        self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch
+    ):
+        """NoCredentialsError during streaming returns 401 with a helpful message."""
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        minimal_anthropic_request["stream"] = True
+        mock_bedrock_client.invoke_model_with_response_stream.side_effect = NoCredentialsError()
+
+        resp = await async_client.post("/v1/messages", json=minimal_anthropic_request)
+        assert resp.status_code == 401
+        body = resp.json()
+        assert body["error"]["type"] == "authentication_error"
+        assert "credentials not found" in body["error"]["message"].lower()
+
+    @pytest.mark.anyio
+    async def test_endpoint_connection_error(
+        self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch
+    ):
+        """EndpointConnectionError returns 503 with a helpful message instead of a stacktrace."""
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        mock_bedrock_client.invoke_model.side_effect = EndpointConnectionError(
+            endpoint_url="https://bedrock-runtime.us-east-1.amazonaws.com"
+        )
+
+        resp = await async_client.post("/v1/messages", json=minimal_anthropic_request)
+        assert resp.status_code == 503
+        body = resp.json()
+        assert body["error"]["type"] == "api_error"
+        assert "connect" in body["error"]["message"].lower()
+
+    @pytest.mark.anyio
+    async def test_endpoint_connection_error_streaming(
+        self, async_client, mock_bedrock_client, minimal_anthropic_request, monkeypatch
+    ):
+        """EndpointConnectionError during streaming returns 503 with a helpful message."""
+        monkeypatch.setattr(_bs, "_primary", "bedrock")
+        minimal_anthropic_request["stream"] = True
+        mock_bedrock_client.invoke_model_with_response_stream.side_effect = EndpointConnectionError(
+            endpoint_url="https://bedrock-runtime.us-east-1.amazonaws.com"
+        )
+
+        resp = await async_client.post("/v1/messages", json=minimal_anthropic_request)
+        assert resp.status_code == 503
+        body = resp.json()
+        assert body["error"]["type"] == "api_error"
+        assert "connect" in body["error"]["message"].lower()
 
     @pytest.mark.anyio
     async def test_non_claude_model_via_copilot(self, async_client, monkeypatch):
