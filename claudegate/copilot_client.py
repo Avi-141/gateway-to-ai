@@ -127,26 +127,6 @@ def _parse_token_limit_error(status_code: int, detail: str) -> ContextWindowExce
     return None
 
 
-def _strip_non_function_tools(body: dict[str, Any]) -> dict[str, Any]:
-    """Strip non-function tools from a Responses API request body.
-
-    Copilot only supports type: "function" tools. Built-in tools like
-    web_search, code_interpreter, etc. are not supported and must be removed.
-    """
-    tools = body.get("tools")
-    if not tools:
-        return body
-    function_tools = [t for t in tools if t.get("type") == "function"]
-    body = {**body}
-    if function_tools:
-        body["tools"] = function_tools
-    else:
-        del body["tools"]
-        # Remove tool_choice if no tools remain
-        body.pop("tool_choice", None)
-    return body
-
-
 def _normalize_openai_response(resp: dict[str, Any], streaming: bool = False) -> dict[str, Any]:
     """Ensure a Copilot chat completions response conforms to the OpenAI spec.
 
@@ -856,12 +836,10 @@ class CopilotBackend:
         """Handle a Responses API request by passing directly to Copilot /responses.
 
         Used when the model supports /responses natively (0 translations).
-        Strips non-function tools (e.g. web_search) that Copilot doesn't support.
+        All tools (function and built-in like web_search_preview, code_interpreter,
+        etc.) are passed through as-is since Copilot's /responses endpoint supports them.
         """
         log_prefix = f"[{request_id}] " if request_id else ""
-
-        # Strip non-function tools — Copilot only supports type: "function"
-        body = _strip_non_function_tools(body)
 
         if stream:
             body = {**body, "stream": True}

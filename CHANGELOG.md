@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **Token bucket rate limiter for Copilot** — limits outbound request rate to the Copilot API (default: 15 req/min). When the limit is reached, requests queue and wait for a token rather than being rejected locally. Configurable via `COPILOT_MAX_RATE` (set to 0 to disable). Both retry and rate limiting apply to all Copilot paths: `/v1/messages`, `/v1/chat/completions`, `/v1/responses`, and all streaming variants.
 - **Auto-refresh Copilot models** — the Copilot models list is now refreshed from the API on `/v1/models` and `/api/status` requests with a 5-minute TTL cache (configurable via `COPILOT_MODELS_TTL`). Previously, models were only fetched once at startup.
 - **GPT-5.4 model alias** — added `gpt-5.4` to the Copilot model map.
+- **Responses API passthrough preserves server-side tools** — the `/v1/responses` passthrough path to Copilot now passes through OpenAI-native built-in tools (`web_search_preview`, `code_interpreter`, `file_search`, `image_generation`, `local_shell`, etc.) instead of stripping them. Copilot's `/responses` endpoint supports these tools natively for models like GPT-5+.
 
 ### Changed
 

@@ -1126,3 +1126,81 @@ class TestOpenStreamWithRetry:
             )
             assert resp.status_code == 500
             assert call_count == 1
+
+
+# --- handle_responses_passthrough ---
+
+
+class TestHandleResponsesPassthrough:
+    """Tests for handle_responses_passthrough tool passthrough behavior."""
+
+    @pytest.mark.anyio
+    async def test_server_side_tools_preserved(self, backend):
+        """Built-in tools like web_search_preview are passed through to Copilot."""
+        body = {
+            "model": "gpt-4o",
+            "input": "Search for latest news",
+            "tools": [
+                {"type": "web_search_preview"},
+                {"type": "function", "name": "get_weather", "parameters": {"type": "object"}},
+            ],
+        }
+        responses_resp = {
+            "id": "resp_123",
+            "object": "response",
+            "status": "completed",
+            "output": [{"type": "message", "content": [{"type": "output_text", "text": "Here are results."}]}],
+        }
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = responses_resp
+
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
+            resp = await backend.handle_responses_passthrough(body, "req1", False)
+
+        assert resp.status_code == 200
+        # Verify tools were sent as-is (not stripped)
+        posted_body = mock_post.call_args.kwargs["json"]
+        assert len(posted_body["tools"]) == 2
+        assert posted_body["tools"][0] == {"type": "web_search_preview"}
+        assert posted_body["tools"][1]["type"] == "function"
+
+    @pytest.mark.anyio
+    async def test_function_only_tools_work(self, backend):
+        """Requests with only function tools still work as before."""
+        body = {
+            "model": "gpt-4o",
+            "input": "Hello",
+            "tools": [
+                {"type": "function", "name": "get_weather", "parameters": {"type": "object"}},
+            ],
+        }
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"id": "resp_123", "object": "response", "status": "completed", "output": []}
+
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
+            resp = await backend.handle_responses_passthrough(body, "req1", False)
+
+        assert resp.status_code == 200
+        posted_body = mock_post.call_args.kwargs["json"]
+        assert len(posted_body["tools"]) == 1
+        assert posted_body["tools"][0]["type"] == "function"
+
+    @pytest.mark.anyio
+    async def test_no_tools_passthrough(self, backend):
+        """Requests without tools pass through fine."""
+        body = {
+            "model": "gpt-4o",
+            "input": "Hello",
+        }
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"id": "resp_123", "object": "response", "status": "completed", "output": []}
+
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
+            resp = await backend.handle_responses_passthrough(body, "req1", False)
+
+        assert resp.status_code == 200
+        posted_body = mock_post.call_args.kwargs["json"]
+        assert "tools" not in posted_body
