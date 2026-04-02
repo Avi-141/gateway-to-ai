@@ -245,6 +245,7 @@ class CopilotBackend:
 
         Only 429 is retried; other errors are returned immediately so the
         caller can raise TransientBackendError (for fallback) or CopilotHttpError.
+        Timeouts are converted to TransientBackendError for fallback eligibility.
         """
         resp: httpx.Response | None = None
         for attempt in range(1 + self._retry_max):
@@ -253,7 +254,18 @@ class CopilotBackend:
                 if waited > 0:
                     logger.info(f"{log_prefix}Rate limited, waited {waited:.1f}s")
 
-            resp = await self._client.post(url, headers=headers, json=json)
+            try:
+                resp = await self._client.post(url, headers=headers, json=json)
+            except httpx.TimeoutException as exc:
+                logger.error(f"{log_prefix}Copilot request timed out: {exc}")
+                raise TransientBackendError(
+                    504, "timeout_error", f"Copilot request timed out: {exc}", "copilot"
+                ) from exc
+            except httpx.ConnectError as exc:
+                logger.error(f"{log_prefix}Copilot connection failed: {exc}")
+                raise TransientBackendError(
+                    502, "connection_error", f"Copilot connection failed: {exc}", "copilot"
+                ) from exc
 
             if resp.status_code == 429 and attempt < self._retry_max:
                 retry_after = _parse_retry_after(resp.headers)
@@ -276,6 +288,7 @@ class CopilotBackend:
 
         Only the stream-open phase is retried (429 occurs before streaming starts).
         Returns (response, context_manager) on success.
+        Timeouts are converted to TransientBackendError for fallback eligibility.
         """
         for attempt in range(1 + self._retry_max):
             if self._rate_limiter:
@@ -285,7 +298,18 @@ class CopilotBackend:
 
             headers = await self._get_headers(body, initiator=initiator)
             stream_cm = self._client.stream("POST", url, headers=headers, json=body)
-            resp = await stream_cm.__aenter__()
+            try:
+                resp = await stream_cm.__aenter__()
+            except httpx.TimeoutException as exc:
+                logger.error(f"{log_prefix}Copilot stream open timed out: {exc}")
+                raise TransientBackendError(
+                    504, "timeout_error", f"Copilot stream open timed out: {exc}", "copilot"
+                ) from exc
+            except httpx.ConnectError as exc:
+                logger.error(f"{log_prefix}Copilot stream connection failed: {exc}")
+                raise TransientBackendError(
+                    502, "connection_error", f"Copilot stream connection failed: {exc}", "copilot"
+                ) from exc
 
             if resp.status_code == 429 and attempt < self._retry_max:
                 await resp.aread()
@@ -388,6 +412,13 @@ class CopilotBackend:
             if resp.status_code != 200:
                 detail = resp.text[:500]
                 logger.error(f"{log_prefix}Copilot error {resp.status_code}: {detail}")
+                logger.error(
+                    f"{log_prefix}Copilot error request payload: "
+                    f"model={openai_body.get('model')}, "
+                    f"messages={len(openai_body.get('messages', []))}, "
+                    f"tools={len(openai_body.get('tools', []))}"
+                )
+                logger.debug(f"{log_prefix}Copilot error full request body: {json.dumps(openai_body)[:5000]}")
                 token_err = _parse_token_limit_error(resp.status_code, detail)
                 if token_err:
                     raise token_err
@@ -422,7 +453,18 @@ class CopilotBackend:
             body = await resp.aread()
             detail = body.decode()[:500]
             await stream_cm.__aexit__(None, None, None)
-            logger.error(f"{log_prefix}Copilot stream error {resp.status_code}: {detail}")
+            resp_headers = dict(resp.headers) if isinstance(resp.headers, httpx.Headers) else {}
+            logger.error(
+                f"{log_prefix}Copilot stream error {resp.status_code}: {detail} | response_headers={resp_headers}"
+            )
+            logger.error(
+                f"{log_prefix}Copilot stream error request payload: "
+                f"model={openai_body.get('model')}, "
+                f"messages={len(openai_body.get('messages', []))}, "
+                f"tools={len(openai_body.get('tools', []))}, "
+                f"stream={openai_body.get('stream')}"
+            )
+            logger.debug(f"{log_prefix}Copilot stream error full request body: {json.dumps(openai_body)[:5000]}")
             token_err = _parse_token_limit_error(resp.status_code, detail)
             if token_err:
                 raise token_err
@@ -524,6 +566,13 @@ class CopilotBackend:
             if resp.status_code != 200:
                 detail = resp.text[:500]
                 logger.error(f"{log_prefix}Copilot error {resp.status_code}: {detail}")
+                logger.error(
+                    f"{log_prefix}Copilot error request payload: "
+                    f"model={openai_body.get('model')}, "
+                    f"messages={len(openai_body.get('messages', []))}, "
+                    f"tools={len(openai_body.get('tools', []))}"
+                )
+                logger.debug(f"{log_prefix}Copilot error full request body: {json.dumps(openai_body)[:5000]}")
                 token_err = _parse_token_limit_error(resp.status_code, detail)
                 if token_err:
                     raise token_err
@@ -623,6 +672,15 @@ class CopilotBackend:
             if resp.status_code != 200:
                 detail = resp.text[:500]
                 logger.error(f"{log_prefix}Copilot Responses error {resp.status_code}: {detail}")
+                logger.error(
+                    f"{log_prefix}Copilot Responses error request payload: "
+                    f"model={responses_body.get('model')}, "
+                    f"input_items={len(responses_body.get('input', []))}, "
+                    f"tools={len(responses_body.get('tools', []))}"
+                )
+                logger.debug(
+                    f"{log_prefix}Copilot Responses error full request body: {json.dumps(responses_body)[:5000]}"
+                )
                 token_err = _parse_token_limit_error(resp.status_code, detail)
                 if token_err:
                     raise token_err
@@ -667,6 +725,15 @@ class CopilotBackend:
             if resp.status_code != 200:
                 detail = resp.text[:500]
                 logger.error(f"{log_prefix}Copilot Responses error {resp.status_code}: {detail}")
+                logger.error(
+                    f"{log_prefix}Copilot Responses error request payload: "
+                    f"model={responses_body.get('model')}, "
+                    f"input_items={len(responses_body.get('input', []))}, "
+                    f"tools={len(responses_body.get('tools', []))}"
+                )
+                logger.debug(
+                    f"{log_prefix}Copilot Responses error full request body: {json.dumps(responses_body)[:5000]}"
+                )
                 token_err = _parse_token_limit_error(resp.status_code, detail)
                 if token_err:
                     raise token_err
@@ -694,7 +761,20 @@ class CopilotBackend:
             body = await resp.aread()
             detail = body.decode()[:500]
             await stream_cm.__aexit__(None, None, None)
-            logger.error(f"{log_prefix}Copilot Responses stream error {resp.status_code}: {detail}")
+            resp_headers = dict(resp.headers) if isinstance(resp.headers, httpx.Headers) else {}
+            logger.error(
+                f"{log_prefix}Copilot Responses stream error {resp.status_code}: {detail}"
+                f" | response_headers={resp_headers}"
+            )
+            logger.error(
+                f"{log_prefix}Copilot Responses stream error request payload: "
+                f"model={responses_body.get('model')}, "
+                f"input_items={len(responses_body.get('input', []))}, "
+                f"tools={len(responses_body.get('tools', []))}"
+            )
+            logger.debug(
+                f"{log_prefix}Copilot Responses stream error full request body: {json.dumps(responses_body)[:5000]}"
+            )
             token_err = _parse_token_limit_error(resp.status_code, detail)
             if token_err:
                 raise token_err
@@ -857,6 +937,13 @@ class CopilotBackend:
             if resp.status_code != 200:
                 detail = resp.text[:500]
                 logger.error(f"{log_prefix}Copilot Responses error {resp.status_code}: {detail}")
+                logger.error(
+                    f"{log_prefix}Copilot Responses error request payload: "
+                    f"model={body.get('model')}, "
+                    f"input_items={len(body.get('input', []))}, "
+                    f"tools={len(body.get('tools', []))}"
+                )
+                logger.debug(f"{log_prefix}Copilot Responses error full request body: {json.dumps(body)[:5000]}")
                 token_err = _parse_token_limit_error(resp.status_code, detail)
                 if token_err:
                     raise token_err

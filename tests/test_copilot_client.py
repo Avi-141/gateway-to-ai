@@ -413,7 +413,7 @@ class TestHandleMessages:
 
     @pytest.mark.anyio
     async def test_non_streaming_timeout_raises(self, backend):
-        """Timeout is re-raised (not caught internally)."""
+        """Timeout is converted to TransientBackendError for fallback eligibility."""
         with patch.object(
             backend._client, "post", new_callable=AsyncMock, side_effect=httpx.TimeoutException("timeout")
         ):
@@ -422,8 +422,10 @@ class TestHandleMessages:
                 "max_tokens": 100,
                 "messages": [{"role": "user", "content": "hi"}],
             }
-            with pytest.raises(httpx.TimeoutException):
+            with pytest.raises(TransientBackendError) as exc_info:
                 await backend.handle_messages(body, "", False, "m", "x")
+            assert exc_info.value.status_code == 504
+            assert exc_info.value.backend == "copilot"
 
     @pytest.mark.anyio
     async def test_non_streaming_auth_error_raises(self, backend):

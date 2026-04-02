@@ -628,7 +628,7 @@ async def _call_copilot(
     stripped from the body, which can alter what ``compute_initiator`` returns.
 
     Raises TransientBackendError for fallback-eligible errors.
-    Raises CopilotHttpError, RuntimeError, httpx.TimeoutException for non-fallback errors.
+    Raises CopilotHttpError, RuntimeError for non-fallback errors.
     """
     copilot = _backend_state.copilot_backend
     if copilot is None:
@@ -638,7 +638,11 @@ async def _call_copilot(
     effective_initiator = initiator or compute_initiator(body)
     logger.info(
         f"{log_prefix}Request - model: {body['model']} -> {copilot_model} (copilot), "
-        f"stream: {stream}, initiator: {effective_initiator}"
+        f"stream: {stream}, initiator: {effective_initiator}, "
+        f"messages: {len(body.get('messages', []))}, "
+        f"tools: {len(body.get('tools', []))}, "
+        f"system: {len(json.dumps(body.get('system', '')))}, "
+        f"body: {len(json.dumps(body))}"
     )
     client_context_window = _detect_client_context_window(request, copilot_model)
     if model_requires_responses_api(copilot_model):
@@ -667,7 +671,7 @@ async def _call_copilot_openai(body: dict[str, Any], request_id: str, stream: bo
     """Execute OpenAI-format request directly against Copilot (no translation).
 
     Raises TransientBackendError for fallback-eligible errors.
-    Raises CopilotHttpError, RuntimeError, httpx.TimeoutException for non-fallback errors.
+    Raises CopilotHttpError, RuntimeError for non-fallback errors.
     """
     copilot = _backend_state.copilot_backend
     if copilot is None:
@@ -994,6 +998,13 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
         return _error_response(401, "authentication_error", str(e))
     except Exception as e:
         logger.error(f"{log_prefix}Unexpected error: {e}", exc_info=True)
+        logger.error(
+            f"{log_prefix}Unexpected error request context: "
+            f"model={body.get('model')}, stream={stream}, "
+            f"messages={len(body.get('messages', []))}, "
+            f"tools={len(body.get('tools', []))}, "
+            f"system_len={len(json.dumps(body.get('system', '')))}"
+        )
         request_stats.record_error()
         return _error_response(500, "api_error", str(e))
 

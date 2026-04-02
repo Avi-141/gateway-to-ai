@@ -111,7 +111,7 @@ BACKEND_TYPE = _backends[0]  # primary backend
 FALLBACK_BACKEND = _backends[1] if len(_backends) > 1 else ""  # optional fallback
 FALLBACK_ON_ERRORS = {429, 500, 502, 503, 504}
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
-COPILOT_TIMEOUT = int(os.environ.get("COPILOT_TIMEOUT", "300"))
+COPILOT_TIMEOUT = int(os.environ.get("COPILOT_TIMEOUT", "60"))
 COPILOT_MODELS_TTL = int(os.environ.get("COPILOT_MODELS_TTL", "300"))
 
 # Retry on 429 before falling back (0 = no retries, go straight to fallback)
