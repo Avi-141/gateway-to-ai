@@ -15,6 +15,7 @@ from .config import (
     COPILOT_MAX_RATE,
     COPILOT_RETRY_BASE_DELAY,
     COPILOT_RETRY_MAX,
+    COPILOT_RETRY_TIMEOUT,
     FALLBACK_ON_ERRORS,
     SSL_CONTEXT,
     logger,
@@ -211,6 +212,10 @@ class CopilotBackend:
     ):
         self._auth = auth
         self._client = httpx.AsyncClient(verify=SSL_CONTEXT, timeout=httpx.Timeout(timeout, connect=30.0))
+        self._retry_client = httpx.AsyncClient(
+            verify=SSL_CONTEXT,
+            timeout=httpx.Timeout(COPILOT_RETRY_TIMEOUT, connect=10.0),
+        )
         self._retry_max = retry_max
         self._retry_base_delay = retry_base_delay
         self._rate_limiter = TokenBucket(max_rate) if max_rate > 0 else None
@@ -241,11 +246,11 @@ class CopilotBackend:
         json: dict[str, Any],
         log_prefix: str,
     ) -> httpx.Response:
-        """POST with rate limiting and retry-on-429.
+        """POST with rate limiting and retry on transient errors.
 
-        Only 429 is retried; other errors are returned immediately so the
-        caller can raise TransientBackendError (for fallback) or CopilotHttpError.
-        Timeouts are converted to TransientBackendError for fallback eligibility.
+        Retries on 429 and 5xx (500-504); other errors are returned immediately
+        so the caller can raise TransientBackendError (for fallback) or CopilotHttpError.
+        Timeouts are retried; persistent timeouts become TransientBackendError.
         """
         resp: httpx.Response | None = None
         for attempt in range(1 + self._retry_max):
@@ -255,13 +260,31 @@ class CopilotBackend:
                     logger.info(f"{log_prefix}Rate limited, waited {waited:.1f}s")
 
             try:
-                resp = await self._client.post(url, headers=headers, json=json)
+                resp = await self._retry_client.post(url, headers=headers, json=json)
             except httpx.TimeoutException as exc:
+                if attempt < self._retry_max:
+                    delay = self._retry_base_delay * (2**attempt)
+                    delay = min(delay, 30.0)
+                    logger.warning(
+                        f"{log_prefix}Copilot request timed out, "
+                        f"retry {attempt + 1}/{self._retry_max} after {delay:.1f}s"
+                    )
+                    await asyncio.sleep(delay)
+                    continue
                 logger.error(f"{log_prefix}Copilot request timed out: {exc}")
                 raise TransientBackendError(
                     504, "timeout_error", f"Copilot request timed out: {exc}", "copilot"
                 ) from exc
             except httpx.ConnectError as exc:
+                if attempt < self._retry_max:
+                    delay = self._retry_base_delay * (2**attempt)
+                    delay = min(delay, 30.0)
+                    logger.warning(
+                        f"{log_prefix}Copilot connection failed, "
+                        f"retry {attempt + 1}/{self._retry_max} after {delay:.1f}s"
+                    )
+                    await asyncio.sleep(delay)
+                    continue
                 logger.error(f"{log_prefix}Copilot connection failed: {exc}")
                 raise TransientBackendError(
                     502, "connection_error", f"Copilot connection failed: {exc}", "copilot"
@@ -274,6 +297,15 @@ class CopilotBackend:
                 logger.warning(f"{log_prefix}Copilot 429, retry {attempt + 1}/{self._retry_max} after {delay:.1f}s")
                 await asyncio.sleep(delay)
                 continue
+            if resp.status_code >= 500 and attempt < self._retry_max:
+                retry_after = _parse_retry_after(resp.headers)
+                delay = retry_after or (self._retry_base_delay * (2**attempt))
+                delay = min(delay, 30.0)
+                logger.warning(
+                    f"{log_prefix}Copilot {resp.status_code}, retry {attempt + 1}/{self._retry_max} after {delay:.1f}s"
+                )
+                await asyncio.sleep(delay)
+                continue
             return resp
         return resp  # type: ignore[return-value]  # unreachable, satisfies type checker
 
@@ -284,11 +316,11 @@ class CopilotBackend:
         log_prefix: str,
         initiator: str | None = None,
     ) -> tuple[httpx.Response, Any]:
-        """Open a streaming POST with rate limiting and retry-on-429.
+        """Open a streaming POST with rate limiting and retry on transient errors.
 
-        Only the stream-open phase is retried (429 occurs before streaming starts).
+        Retries the stream-open phase on 429, 5xx, timeouts, and connection errors.
         Returns (response, context_manager) on success.
-        Timeouts are converted to TransientBackendError for fallback eligibility.
+        Persistent failures become TransientBackendError for fallback eligibility.
         """
         for attempt in range(1 + self._retry_max):
             if self._rate_limiter:
@@ -297,15 +329,33 @@ class CopilotBackend:
                     logger.info(f"{log_prefix}Rate limited, waited {waited:.1f}s")
 
             headers = await self._get_headers(body, initiator=initiator)
-            stream_cm = self._client.stream("POST", url, headers=headers, json=body)
+            stream_cm = self._retry_client.stream("POST", url, headers=headers, json=body)
             try:
                 resp = await stream_cm.__aenter__()
             except httpx.TimeoutException as exc:
+                if attempt < self._retry_max:
+                    delay = self._retry_base_delay * (2**attempt)
+                    delay = min(delay, 30.0)
+                    logger.warning(
+                        f"{log_prefix}Copilot stream open timed out, "
+                        f"retry {attempt + 1}/{self._retry_max} after {delay:.1f}s"
+                    )
+                    await asyncio.sleep(delay)
+                    continue
                 logger.error(f"{log_prefix}Copilot stream open timed out: {exc}")
                 raise TransientBackendError(
                     504, "timeout_error", f"Copilot stream open timed out: {exc}", "copilot"
                 ) from exc
             except httpx.ConnectError as exc:
+                if attempt < self._retry_max:
+                    delay = self._retry_base_delay * (2**attempt)
+                    delay = min(delay, 30.0)
+                    logger.warning(
+                        f"{log_prefix}Copilot stream connection failed, "
+                        f"retry {attempt + 1}/{self._retry_max} after {delay:.1f}s"
+                    )
+                    await asyncio.sleep(delay)
+                    continue
                 logger.error(f"{log_prefix}Copilot stream connection failed: {exc}")
                 raise TransientBackendError(
                     502, "connection_error", f"Copilot stream connection failed: {exc}", "copilot"
@@ -319,6 +369,18 @@ class CopilotBackend:
                 delay = min(delay, 30.0)
                 logger.warning(
                     f"{log_prefix}Copilot stream 429, retry {attempt + 1}/{self._retry_max} after {delay:.1f}s"
+                )
+                await asyncio.sleep(delay)
+                continue
+            if resp.status_code >= 500 and attempt < self._retry_max:
+                await resp.aread()
+                await stream_cm.__aexit__(None, None, None)
+                retry_after = _parse_retry_after(resp.headers)
+                delay = retry_after or (self._retry_base_delay * (2**attempt))
+                delay = min(delay, 30.0)
+                logger.warning(
+                    f"{log_prefix}Copilot stream {resp.status_code}, "
+                    f"retry {attempt + 1}/{self._retry_max} after {delay:.1f}s"
                 )
                 await asyncio.sleep(delay)
                 continue
@@ -1098,6 +1160,7 @@ class CopilotBackend:
             await stream_cm.__aexit__(None, None, None)
 
     async def close(self) -> None:
-        """Close HTTP client and auth."""
+        """Close HTTP clients and auth."""
         await self._client.aclose()
+        await self._retry_client.aclose()
         await self._auth.close()
