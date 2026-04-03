@@ -1,7 +1,7 @@
 """Shared test fixtures for claudegate tests."""
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -214,11 +214,8 @@ def openai_request_with_tools() -> dict[str, Any]:
 
 @pytest.fixture
 def mock_copilot_auth():
-    """Mock CopilotAuth with get_token returning a fake token."""
-    auth = AsyncMock()
-    auth.get_token.return_value = "fake-copilot-token"
-    auth.close = AsyncMock()
-    return auth
+    """Return a fake GitHub OAuth token string for CopilotBackend."""
+    return "fake-github-token"
 
 
 def make_client_error(code: str = "InternalError", message: str = "Something failed"):

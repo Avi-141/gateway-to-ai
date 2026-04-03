@@ -65,7 +65,7 @@ class CopilotUsageCache:
                     GITHUB_USER_URL,
                     headers={
                         **COPILOT_HEADERS,
-                        "Authorization": f"token {self._github_token}",
+                        "Authorization": f"Bearer {self._github_token}",
                     },
                 )
                 if resp.status_code == 200:

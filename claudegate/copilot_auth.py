@@ -1,45 +1,31 @@
-"""GitHub OAuth device flow and Copilot token management."""
+"""GitHub OAuth device flow and token management for Copilot API."""
 
-import asyncio
 import os
-import sys
 import time
-import uuid
 
 import httpx
 
 from .config import CONFIG_DIR, SSL_CONTEXT, logger
 
-# GitHub OAuth app client ID used by Copilot
-COPILOT_CLIENT_ID = "Iv1.b507a08c87ecfe98"
-COPILOT_SCOPE = "copilot"
+# OpenCode OAuth App client ID — impersonate OpenCode's flow
+COPILOT_CLIENT_ID = "Ov23li8tweQw6odWQebz"
+COPILOT_SCOPE = "read:user"
+
+# Impersonated OpenCode version for User-Agent header
+OPENCODE_VERSION = "1.3.13"
 
 # Token persistence path
 TOKEN_FILE = CONFIG_DIR / "github_token"
 
-# Copilot API endpoints
+# GitHub OAuth endpoints
 GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code"
 GITHUB_OAUTH_TOKEN_URL = "https://github.com/login/oauth/access_token"  # noqa: S105
-COPILOT_TOKEN_URL = "https://api.github.com/copilot_internal/v2/token"  # noqa: S105
 
-# Stable per-installation identifiers (generated once, reused across restarts via process lifetime)
-_SESSION_ID = str(uuid.uuid4())
-_MACHINE_ID = str(uuid.uuid4())
-
-# Shared editor identification headers required by all Copilot endpoints.
-# Matches the VS Code Copilot Chat extension fingerprint.
+# Headers matching OpenCode's Copilot plugin
 COPILOT_HEADERS = {
-    "Editor-Version": "vscode/1.100.0",
-    "Editor-Plugin-Version": "copilot-chat/0.27.2025040201",
-    "User-Agent": "GithubCopilot/1.155.0",
     "Accept": "application/json",
-    "X-GitHub-Api-Version": "2025-10-01",
-}
-
-# Token exchange uses an older API version per the VS Code extension
-COPILOT_TOKEN_HEADERS = {
-    **COPILOT_HEADERS,
-    "X-GitHub-Api-Version": "2025-04-01",
+    "Content-Type": "application/json",
+    "User-Agent": f"opencode/{OPENCODE_VERSION}",
 }
 
 
@@ -77,7 +63,7 @@ def device_flow_login() -> str:
         # Request device code
         resp = client.post(
             GITHUB_DEVICE_CODE_URL,
-            data={"client_id": COPILOT_CLIENT_ID, "scope": COPILOT_SCOPE},
+            json={"client_id": COPILOT_CLIENT_ID, "scope": COPILOT_SCOPE},
             headers=COPILOT_HEADERS,
         )
         resp.raise_for_status()
@@ -102,7 +88,7 @@ def device_flow_login() -> str:
             time.sleep(interval)
             token_resp = client.post(
                 GITHUB_OAUTH_TOKEN_URL,
-                data={
+                json={
                     "client_id": COPILOT_CLIENT_ID,
                     "device_code": device_code,
                     "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
@@ -145,89 +131,6 @@ def get_github_token() -> str:
     if persisted:
         return persisted
 
-    # 3. Run interactive device flow (requires a TTY)
-    if not sys.stdin.isatty():
-        raise RuntimeError(
-            "No GitHub token found and no interactive terminal available. "
-            "Either set the GITHUB_TOKEN environment variable, or run "
-            "'claudegate' interactively once to complete OAuth (the token "
-            f"is persisted to {TOKEN_FILE})."
-        )
+    # 3. Run interactive device flow
     logger.info("No GitHub token found, starting device flow authentication")
     return device_flow_login()
-
-
-class CopilotAuth:
-    """Manages Copilot API token lifecycle.
-
-    Exchanges a GitHub OAuth token for a short-lived Copilot token
-    and auto-refreshes before expiry.
-    """
-
-    def __init__(self, github_token: str):
-        self._github_token = github_token
-        self._copilot_token: str | None = None
-        self._expires_at: float = 0
-        self._lock = asyncio.Lock()
-        self._client = httpx.AsyncClient(verify=SSL_CONTEXT)
-
-    async def get_token(self) -> str:
-        """Get a valid Copilot token, refreshing if needed."""
-        # Check with 2-minute buffer before expiry
-        if self._copilot_token and time.time() < (self._expires_at - 120):
-            return self._copilot_token
-
-        async with self._lock:
-            # Double-check after acquiring lock
-            if self._copilot_token and time.time() < (self._expires_at - 120):
-                return self._copilot_token
-
-            try:
-                return await self._refresh_token()
-            except Exception as e:
-                # If refresh fails but we still have a token that hasn't hard-expired,
-                # fall back to it rather than crashing every request
-                if self._copilot_token and time.time() < self._expires_at:
-                    logger.warning(
-                        "Token refresh failed (%s), using existing token (expires at %s)",
-                        e,
-                        self._expires_at,
-                    )
-                    return self._copilot_token
-                raise
-
-    async def _refresh_token(self) -> str:
-        """Exchange GitHub token for a fresh Copilot token."""
-        logger.info("Refreshing Copilot API token")
-        resp = await self._client.get(
-            COPILOT_TOKEN_URL,
-            headers={
-                **COPILOT_TOKEN_HEADERS,
-                "Authorization": f"token {self._github_token}",
-            },
-        )
-
-        if resp.status_code != 200:
-            body = resp.text[:500]
-            logger.error("Copilot token endpoint returned %d: %s", resp.status_code, body)
-
-        if resp.status_code == 401:
-            raise RuntimeError(
-                "GitHub token is invalid or expired. "
-                "Please re-authenticate (delete ~/.config/claudegate/github_token and restart)."
-            )
-        if resp.status_code == 403:
-            raise RuntimeError(f"Copilot token request denied (403). Response: {resp.text[:200]}")
-
-        resp.raise_for_status()
-        data = resp.json()
-
-        self._copilot_token = data["token"]
-        self._expires_at = data.get("expires_at", time.time() + 1800)
-        logger.info("Copilot token refreshed, expires at %s", self._expires_at)
-
-        return self._copilot_token
-
-    async def close(self) -> None:
-        """Close the HTTP client."""
-        await self._client.aclose()

@@ -100,7 +100,7 @@ class BackendState:
 
         Raises ValueError if authentication fails.
         """
-        from .copilot_auth import CopilotAuth, get_github_token
+        from .copilot_auth import get_github_token
         from .copilot_client import CopilotBackend
         from .copilot_usage import CopilotUsageCache
         from .models import set_copilot_models
@@ -110,8 +110,7 @@ class BackendState:
         except Exception as e:
             raise ValueError(f"Failed to get GitHub token: {e}") from e
 
-        auth = CopilotAuth(github_token)
-        backend = CopilotBackend(auth, timeout=COPILOT_TIMEOUT)
+        backend = CopilotBackend(github_token, timeout=COPILOT_TIMEOUT)
         cache = CopilotUsageCache(github_token)
 
         models = await backend.list_models()

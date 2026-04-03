@@ -19,7 +19,7 @@ from .config import (
     SSL_CONTEXT,
     logger,
 )
-from .copilot_auth import _MACHINE_ID, _SESSION_ID, COPILOT_HEADERS, CopilotAuth
+from .copilot_auth import COPILOT_HEADERS
 from .copilot_translate import (
     StreamTranslator,
     anthropic_to_openai_request,
@@ -41,7 +41,6 @@ from .responses_translate import (
 
 COPILOT_CHAT_URL = "https://api.githubcopilot.com/chat/completions"
 COPILOT_RESPONSES_URL = "https://api.githubcopilot.com/responses"
-COPILOT_MESSAGES_URL = "https://api.githubcopilot.com/v1/messages"
 COPILOT_MODELS_URL = "https://api.githubcopilot.com/models"
 
 # Map HTTP status codes to Anthropic error types
@@ -199,111 +198,39 @@ def compute_initiator(body: dict[str, Any]) -> str:
     return "user"
 
 
-_UNSUPPORTED_COPILOT_BETAS = frozenset({"context-1m"})
-
-_USAGE_TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
-
-
-def _scale_usage_tokens(usage: dict[str, Any] | None, copilot_limit: int, client_context_window: int) -> None:
-    """Scale token counts in a usage dict from Copilot's limit to the client window.
-
-    Mutates *usage* in-place.  No-op when either limit is zero or usage is None.
-    """
-    if not usage or copilot_limit <= 0 or client_context_window <= 0:
-        return
-    for field in _USAGE_TOKEN_FIELDS:
-        raw = usage.get(field)
-        if raw is not None and raw > 0:
-            usage[field] = int(raw * client_context_window / copilot_limit)
-
-
-def filter_anthropic_beta_header(beta: str) -> str | None:
-    """Strip beta values unsupported by Copilot's /v1/messages endpoint.
-
-    The header is comma-separated.  Values whose prefix matches an entry in
-    ``_UNSUPPORTED_COPILOT_BETAS`` are removed.  Returns ``None`` when every
-    value was stripped so the caller can omit the header entirely.
-    """
-    parts = [p.strip() for p in beta.split(",")]
-    filtered = [p for p in parts if p and not any(p.startswith(prefix) for prefix in _UNSUPPORTED_COPILOT_BETAS)]
-    return ", ".join(filtered) if filtered else None
-
-
-def sanitize_cache_control(body: dict[str, Any]) -> dict[str, Any]:
-    """Strip extra fields from cache_control objects in the request body.
-
-    Copilot's /v1/messages endpoint only accepts ``{"type": "ephemeral"}``
-    but Cursor may send extended forms like ``{"type": "ephemeral", "scope": "turn"}``.
-    Walks ``system`` and ``messages`` content blocks and reduces each
-    ``cache_control`` to its ``type`` key only.
-    """
-
-    def _clean_block(block: Any) -> None:
-        if isinstance(block, dict) and "cache_control" in block:
-            cc = block["cache_control"]
-            if isinstance(cc, dict) and "type" in cc:
-                block["cache_control"] = {"type": cc["type"]}
-
-    def _clean_content(content: Any) -> None:
-        if isinstance(content, list):
-            for item in content:
-                _clean_block(item)
-        elif isinstance(content, dict):
-            _clean_block(content)
-
-    for sys_block in body.get("system", []):
-        _clean_block(sys_block)
-
-    for msg in body.get("messages", []):
-        _clean_content(msg.get("content"))
-
-    return body
-
-
 class CopilotBackend:
     """Handles routing requests through GitHub Copilot API."""
 
     def __init__(
         self,
-        auth: CopilotAuth,
+        github_token: str,
         timeout: int = 300,
         retry_max: int = COPILOT_RETRY_MAX,
         retry_base_delay: float = COPILOT_RETRY_BASE_DELAY,
         max_rate: int = COPILOT_MAX_RATE,
     ):
-        self._auth = auth
+        self._github_token = github_token
         self._client = httpx.AsyncClient(verify=SSL_CONTEXT, timeout=httpx.Timeout(timeout, connect=30.0))
         self._retry_max = retry_max
         self._retry_base_delay = retry_base_delay
         self._rate_limiter = TokenBucket(max_rate) if max_rate > 0 else None
 
-    async def _get_headers(
-        self,
-        body: dict[str, Any] | None = None,
-        initiator: str | None = None,
-        extra_headers: dict[str, str] | None = None,
-    ) -> dict[str, str]:
-        """Build request headers with fresh Copilot token.
+    def _get_headers(self, body: dict[str, Any] | None = None, initiator: str | None = None) -> dict[str, str]:
+        """Build request headers with GitHub OAuth token.
 
         If *initiator* is provided it is used directly as the X-Initiator
         header value; otherwise it is computed from *body*.
-        *extra_headers* are merged last (e.g. anthropic-beta for passthrough).
         """
-        token = await self._auth.get_token()
         headers = {
             **COPILOT_HEADERS,
-            "Authorization": f"Bearer {token}",
+            "Authorization": f"Bearer {self._github_token}",
             "Content-Type": "application/json",
-            "Copilot-Integration-Id": "vscode-chat",
-            "VScode-SessionId": _SESSION_ID,
-            "VScode-MachineId": _MACHINE_ID,
+            "Openai-Intent": "conversation-edits",
         }
         if initiator is not None:
             headers["X-Initiator"] = initiator
         elif body is not None:
             headers["X-Initiator"] = compute_initiator(body)
-        if extra_headers:
-            headers.update(extra_headers)
         return headers
 
     async def _post_with_retry(
@@ -363,13 +290,12 @@ class CopilotBackend:
         Timeouts are converted to TransientBackendError for fallback eligibility.
         """
         for attempt in range(1 + self._retry_max):
-            headers = await self._get_headers(body, initiator=initiator)
-
             if self._rate_limiter:
                 waited = await self._rate_limiter.acquire()
                 if waited > 0:
                     logger.info(f"{log_prefix}Rate limited, waited {waited:.1f}s")
 
+            headers = self._get_headers(body, initiator=initiator)
             stream_cm = self._client.stream("POST", url, headers=headers, json=body)
             try:
                 resp = await stream_cm.__aenter__()
@@ -400,7 +326,7 @@ class CopilotBackend:
 
     async def list_models(self) -> list[dict[str, Any]]:
         """Fetch available models from the Copilot API."""
-        headers = await self._get_headers()
+        headers = self._get_headers()
         try:
             resp = await self._client.get(COPILOT_MODELS_URL, headers=headers)
         except Exception as e:
@@ -476,7 +402,7 @@ class CopilotBackend:
                 media_type="text/event-stream",
             )
         else:
-            headers = await self._get_headers(openai_body, initiator=initiator)
+            headers = self._get_headers(openai_body, initiator=initiator)
             logger.info(f"{log_prefix}Copilot request to {openai_model}")
             logger.debug(f"{log_prefix}OpenAI body keys: {list(openai_body.keys())}")
 
@@ -630,7 +556,7 @@ class CopilotBackend:
                 media_type="text/event-stream",
             )
         else:
-            headers = await self._get_headers(openai_body)
+            headers = self._get_headers(openai_body)
             logger.info(f"{log_prefix}Copilot OpenAI passthrough to {copilot_model}")
             logger.debug(f"{log_prefix}OpenAI body keys: {list(openai_body.keys())}")
 
@@ -736,7 +662,7 @@ class CopilotBackend:
                 media_type="text/event-stream",
             )
         else:
-            headers = await self._get_headers(responses_body, initiator=initiator)
+            headers = self._get_headers(responses_body, initiator=initiator)
             logger.info(f"{log_prefix}Copilot Responses request to {responses_model}")
             logger.debug(f"{log_prefix}Responses body keys: {list(responses_body.keys())}")
 
@@ -789,7 +715,7 @@ class CopilotBackend:
                 media_type="text/event-stream",
             )
         else:
-            headers = await self._get_headers(responses_body)
+            headers = self._get_headers(responses_body)
             logger.info(f"{log_prefix}Copilot Responses OpenAI passthrough to {responses_model}")
             logger.debug(f"{log_prefix}Responses body keys: {list(responses_body.keys())}")
 
@@ -1002,7 +928,7 @@ class CopilotBackend:
                 media_type="text/event-stream",
             )
         else:
-            headers = await self._get_headers(body)
+            headers = self._get_headers(body)
             logger.info(f"{log_prefix}Copilot Responses passthrough to {body.get('model')}")
 
             resp = await self._post_with_retry(COPILOT_RESPONSES_URL, headers, body, log_prefix)
@@ -1097,7 +1023,7 @@ class CopilotBackend:
                 media_type="text/event-stream",
             )
         else:
-            headers = await self._get_headers(openai_body)
+            headers = self._get_headers(openai_body)
             logger.info(f"{log_prefix}Copilot Responses via chat to {copilot_model}")
 
             resp = await self._post_with_retry(COPILOT_CHAT_URL, headers, openai_body, log_prefix)
@@ -1170,225 +1096,6 @@ class CopilotBackend:
         finally:
             await stream_cm.__aexit__(None, None, None)
 
-    # --- Native Anthropic Messages passthrough ---
-
-    async def handle_messages_passthrough(
-        self,
-        body: dict[str, Any],
-        request_id: str,
-        stream: bool,
-        copilot_model: str,
-        client_context_window: int = 0,
-        anthropic_model: str | None = None,
-        extra_headers: dict[str, str] | None = None,
-        initiator: str | None = None,
-    ) -> JSONResponse | StreamingResponse:
-        """Handle a Messages request by passing directly to Copilot /v1/messages.
-
-        Zero translation: the Anthropic body is forwarded as-is (only the model
-        field is overridden to the Copilot display name). Used for Claude models
-        that the Copilot proxy serves via its native Anthropic Messages endpoint.
-
-        Token counts in the response usage are scaled from Copilot's context
-        limit to the client's expected context window so that Claude Code's
-        context-fullness percentage remains accurate.
-
-        When *anthropic_model* is provided, the ``model`` field in responses is
-        restored to this value so the client sees the canonical Anthropic model
-        name rather than Copilot's internal display name.
-
-        Raises TransientBackendError for fallback-eligible errors (429, 5xx).
-        Raises CopilotHttpError for non-transient HTTP errors.
-        """
-        log_prefix = f"[{request_id}] " if request_id else ""
-        body = {**body, "model": copilot_model}
-        sanitize_cache_control(body)
-
-        copilot_limit = get_copilot_context_limit(copilot_model)
-
-        if stream:
-            body["stream"] = True
-            headers = await self._get_headers(body, initiator=initiator, extra_headers=extra_headers)
-            resp, stream_cm = await self._open_messages_stream(body, headers, log_prefix)
-            return StreamingResponse(
-                self._stream_messages_passthrough(
-                    resp, stream_cm, log_prefix, copilot_limit, client_context_window, anthropic_model
-                ),
-                media_type="text/event-stream",
-            )
-        else:
-            headers = await self._get_headers(body, initiator=initiator, extra_headers=extra_headers)
-            logger.info(f"{log_prefix}Copilot Messages passthrough to {copilot_model}")
-
-            resp = await self._post_with_retry(COPILOT_MESSAGES_URL, headers, body, log_prefix)
-
-            if resp.status_code != 200:
-                detail = resp.text[:500]
-                logger.error(f"{log_prefix}Copilot Messages error {resp.status_code}: {detail}")
-                logger.error(
-                    f"{log_prefix}Copilot Messages error request payload: "
-                    f"model={body.get('model')}, "
-                    f"messages={len(body.get('messages', []))}, "
-                    f"tools={len(body.get('tools', []))}"
-                )
-                logger.debug(f"{log_prefix}Copilot Messages error full request body: {json.dumps(body)[:5000]}")
-                token_err = _parse_token_limit_error(resp.status_code, detail)
-                if token_err:
-                    raise token_err
-                if resp.status_code in FALLBACK_ON_ERRORS:
-                    error_type = _ERROR_TYPE_MAP.get(resp.status_code, "api_error")
-                    raise TransientBackendError(resp.status_code, error_type, detail, "copilot")
-                raise CopilotHttpError(resp.status_code, detail)
-
-            data = resp.json()
-            _scale_usage_tokens(data.get("usage"), copilot_limit, client_context_window)
-            if anthropic_model:
-                data["model"] = anthropic_model
-            return JSONResponse(content=data)
-
-    async def _open_messages_stream(
-        self,
-        body: dict[str, Any],
-        headers: dict[str, str],
-        log_prefix: str,
-    ) -> tuple[httpx.Response, Any]:
-        """Open a streaming POST to the Copilot Messages endpoint.
-
-        Only the stream-open phase is retried (429 occurs before streaming starts).
-        Timeouts and connection errors are converted to TransientBackendError for
-        fallback eligibility, matching the chat completions path.
-        """
-        logger.info(f"{log_prefix}Starting Copilot Messages stream for {body.get('model')}")
-
-        for attempt in range(1 + self._retry_max):
-            if self._rate_limiter:
-                waited = await self._rate_limiter.acquire()
-                if waited > 0:
-                    logger.info(f"{log_prefix}Rate limited, waited {waited:.1f}s")
-
-            stream_cm = self._client.stream("POST", COPILOT_MESSAGES_URL, headers=headers, json=body)
-            try:
-                resp = await stream_cm.__aenter__()
-            except httpx.TimeoutException as exc:
-                logger.error(f"{log_prefix}Copilot Messages stream timed out: {exc}")
-                raise TransientBackendError(
-                    504, "timeout_error", f"Copilot Messages stream timed out: {exc}", "copilot"
-                ) from exc
-            except httpx.ConnectError as exc:
-                logger.error(f"{log_prefix}Copilot Messages stream connection failed: {exc}")
-                raise TransientBackendError(
-                    502, "connection_error", f"Copilot Messages stream connection failed: {exc}", "copilot"
-                ) from exc
-
-            if resp.status_code == 429 and attempt < self._retry_max:
-                await resp.aread()
-                await stream_cm.__aexit__(None, None, None)
-                retry_after = _parse_retry_after(resp.headers)
-                delay = retry_after or (self._retry_base_delay * (2**attempt))
-                delay = min(delay, 30.0)
-                logger.warning(
-                    f"{log_prefix}Copilot Messages stream 429, retry {attempt + 1}/{self._retry_max} after {delay:.1f}s"
-                )
-                await asyncio.sleep(delay)
-                continue
-
-            if resp.status_code != 200:
-                raw = await resp.aread()
-                detail = raw.decode()[:500]
-                await stream_cm.__aexit__(None, None, None)
-                logger.error(f"{log_prefix}Copilot Messages stream error {resp.status_code}: {detail}")
-                token_err = _parse_token_limit_error(resp.status_code, detail)
-                if token_err:
-                    raise token_err
-                if resp.status_code in FALLBACK_ON_ERRORS:
-                    error_type = _ERROR_TYPE_MAP.get(resp.status_code, "api_error")
-                    raise TransientBackendError(resp.status_code, error_type, detail, "copilot")
-                raise CopilotHttpError(resp.status_code, detail)
-
-            return resp, stream_cm
-        return resp, stream_cm  # type: ignore[possibly-undefined]  # unreachable
-
-    async def _stream_messages_passthrough(
-        self,
-        resp: httpx.Response,
-        stream_cm: Any,
-        log_prefix: str,
-        copilot_limit: int = 0,
-        client_context_window: int = 0,
-        anthropic_model: str | None = None,
-    ) -> AsyncGenerator[str, None]:
-        """Stream Anthropic Messages SSE events from Copilot with token scaling.
-
-        Reassembles SSE events from aiter_lines() which strips blank-line
-        boundaries.  Each SSE event is ``event: <type>\\ndata: <json>\\n\\n``.
-
-        For ``message_start`` and ``message_delta`` events the usage token
-        counts are scaled from Copilot's context limit to the client's
-        expected context window so Claude Code's fullness bar stays accurate.
-
-        When *anthropic_model* is set, the ``model`` field inside
-        ``message_start`` is overwritten to the canonical Anthropic name.
-        """
-        chunk_count = 0
-        pending_event_line: str | None = None
-        need_scaling = copilot_limit > 0 and client_context_window > 0
-        need_patching = need_scaling or bool(anthropic_model)
-        scale_event_types = frozenset({"message_start", "message_delta"})
-
-        try:
-            async for line in resp.aiter_lines():
-                if not line:
-                    continue
-
-                if line.startswith("event: "):
-                    pending_event_line = line
-                    continue
-
-                chunk_count += 1
-                if chunk_count <= 3:
-                    logger.debug(f"{log_prefix}Messages passthrough chunk {chunk_count}: {line[:200]}")
-
-                # Patch message_start / message_delta events (token scaling + model name).
-                if need_patching and pending_event_line is not None:
-                    event_type = pending_event_line[7:]  # strip "event: "
-                    if event_type in scale_event_types and line.startswith("data: "):
-                        try:
-                            data = json.loads(line[6:])
-                            if need_scaling:
-                                usage = data.get("usage")
-                                if usage:
-                                    _scale_usage_tokens(usage, copilot_limit, client_context_window)
-                            # message_start wraps usage inside message.usage too
-                            msg = data.get("message")
-                            if isinstance(msg, dict):
-                                if need_scaling:
-                                    _scale_usage_tokens(msg.get("usage"), copilot_limit, client_context_window)
-                                if anthropic_model:
-                                    msg["model"] = anthropic_model
-                            line = f"data: {json.dumps(data)}"
-                        except (json.JSONDecodeError, TypeError):
-                            pass  # forward as-is on parse failure
-
-                if pending_event_line is not None:
-                    yield f"{pending_event_line}\n{line}\n\n"
-                    pending_event_line = None
-                else:
-                    yield f"{line}\n\n"
-                await asyncio.sleep(0)
-
-            logger.info(f"{log_prefix}Copilot Messages passthrough stream complete, {chunk_count} lines")
-
-        except httpx.TimeoutException:
-            logger.error(f"{log_prefix}Copilot Messages stream timed out")
-            error_data = json.dumps({"type": "error", "error": {"message": "Copilot Messages stream timed out"}})
-            yield f"event: error\ndata: {error_data}\n\n"
-        except Exception as e:
-            logger.error(f"{log_prefix}Copilot Messages stream error: {e}")
-            yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': {'message': str(e)}})}\n\n"
-        finally:
-            await stream_cm.__aexit__(None, None, None)
-
     async def close(self) -> None:
-        """Close HTTP client and auth."""
+        """Close HTTP client."""
         await self._client.aclose()
-        await self._auth.close()

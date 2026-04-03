@@ -1173,10 +1173,8 @@ class TestHealthRoute:
         """Deep copilot health check returns ok when token is valid."""
         monkeypatch.setattr(_bs, "_primary", "copilot")
 
-        mock_auth = AsyncMock()
-        mock_auth.get_token.return_value = "valid-token"
         mock_backend = AsyncMock()
-        mock_backend._auth = mock_auth
+        mock_backend._github_token = "valid-token"
         monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         resp = await async_client.get("/health?check_copilot=true")
@@ -1186,13 +1184,11 @@ class TestHealthRoute:
 
     @pytest.mark.anyio
     async def test_check_copilot_no_token(self, async_client, monkeypatch):
-        """Deep copilot health check returns 'no token' when token is None."""
+        """Deep copilot health check returns 'no token' when token is empty."""
         monkeypatch.setattr(_bs, "_primary", "copilot")
 
-        mock_auth = AsyncMock()
-        mock_auth.get_token.return_value = None
         mock_backend = AsyncMock()
-        mock_backend._auth = mock_auth
+        mock_backend._github_token = ""
         monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         resp = await async_client.get("/health?check_copilot=true")
@@ -1205,10 +1201,9 @@ class TestHealthRoute:
         """Deep copilot health check returns degraded on exception."""
         monkeypatch.setattr(_bs, "_primary", "copilot")
 
-        mock_auth = AsyncMock()
-        mock_auth.get_token.side_effect = RuntimeError("auth failed")
         mock_backend = AsyncMock()
-        mock_backend._auth = mock_auth
+        # Simulate an attribute access error
+        type(mock_backend)._github_token = property(lambda self: (_ for _ in ()).throw(RuntimeError("auth failed")))
         monkeypatch.setattr(_bs, "_copilot_backend", mock_backend)
 
         resp = await async_client.get("/health?check_copilot=true")

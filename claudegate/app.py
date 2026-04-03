@@ -146,12 +146,11 @@ async def lifespan(app: FastAPI):
     # Initialize copilot if it's primary or fallback
     needs_copilot = primary == "copilot" or fallback == "copilot"
     if needs_copilot:
-        from .copilot_auth import CopilotAuth, get_github_token
+        from .copilot_auth import get_github_token
         from .copilot_client import CopilotBackend
 
         github_token = get_github_token()
-        auth = CopilotAuth(github_token)
-        copilot_backend = CopilotBackend(auth, timeout=COPILOT_TIMEOUT)
+        copilot_backend = CopilotBackend(github_token, timeout=COPILOT_TIMEOUT)
         logger.info("Copilot backend initialized")
 
         copilot_usage_cache = CopilotUsageCache(github_token)
@@ -1394,7 +1393,7 @@ async def health(check_bedrock: bool = False, check_copilot: bool = False) -> di
 
     if check_copilot and _backend_state.primary == "copilot" and _backend_state.copilot_backend is not None:
         try:
-            token = await _backend_state.copilot_backend._auth.get_token()
+            token = _backend_state.copilot_backend._github_token
             result["copilot"] = "ok" if token else "no token"
         except Exception as e:
             result["status"] = "degraded"

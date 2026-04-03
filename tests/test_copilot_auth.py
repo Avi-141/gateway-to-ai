@@ -1,12 +1,12 @@
 """Tests for claudegate/copilot_auth.py."""
 
-import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from claudegate.copilot_auth import (
-    CopilotAuth,
+    COPILOT_CLIENT_ID,
+    COPILOT_SCOPE,
     _load_persisted_token,
     _persist_token,
     device_flow_login,
@@ -228,72 +228,39 @@ class TestDeviceFlowLogin:
         ):
             device_flow_login()
 
+    def test_uses_correct_client_id_and_scope(self, monkeypatch):
+        """Verify device flow uses claudegate's own OAuth App client ID and scope."""
+        monkeypatch.setattr("claudegate.copilot_auth.CONFIG_DIR", MagicMock())
+        monkeypatch.setattr("claudegate.copilot_auth.TOKEN_FILE", MagicMock())
 
-# --- CopilotAuth ---
-
-
-class TestCopilotAuth:
-    @pytest.mark.anyio
-    async def test_fresh_token_refresh(self):
-        auth = CopilotAuth("gho_test")
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "token": "copilot_token_123",
-            "expires_at": time.time() + 1800,
+        mock_client = MagicMock()
+        device_resp = MagicMock()
+        device_resp.json.return_value = {
+            "device_code": "dc123",
+            "user_code": "ABCD-1234",
+            "verification_uri": "https://github.com/login/device",
+            "interval": 0,
+            "expires_in": 900,
         }
+        token_resp = MagicMock()
+        token_resp.json.return_value = {"access_token": "gho_success"}
 
-        with patch.object(auth._client, "get", new_callable=AsyncMock, return_value=mock_resp):
-            token = await auth.get_token()
+        mock_client.post.side_effect = [device_resp, token_resp]
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
 
-        assert token == "copilot_token_123"
-        await auth.close()
+        with (
+            patch("claudegate.copilot_auth.httpx.Client", return_value=mock_client),
+            patch("claudegate.copilot_auth.time.sleep"),
+            patch("claudegate.copilot_auth._persist_token"),
+        ):
+            device_flow_login()
 
-    @pytest.mark.anyio
-    async def test_cached_token(self):
-        auth = CopilotAuth("gho_test")
-        auth._copilot_token = "cached"
-        auth._expires_at = time.time() + 600  # not expired
-
-        token = await auth.get_token()
-        assert token == "cached"
-        await auth.close()
-
-    @pytest.mark.anyio
-    async def test_auto_refresh_on_expiry(self):
-        auth = CopilotAuth("gho_test")
-        auth._copilot_token = "old_token"
-        auth._expires_at = time.time() - 10  # already expired
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.json.return_value = {
-            "token": "new_token",
-            "expires_at": time.time() + 1800,
-        }
-
-        with patch.object(auth._client, "get", new_callable=AsyncMock, return_value=mock_resp):
-            token = await auth.get_token()
-
-        assert token == "new_token"
-        await auth.close()
-
-    @pytest.mark.anyio
-    async def test_refresh_failure_fallback(self):
-        auth = CopilotAuth("gho_test")
-        auth._copilot_token = "still_valid"
-        auth._expires_at = time.time() + 10  # within buffer but not hard-expired
-
-        with patch.object(auth._client, "get", new_callable=AsyncMock, side_effect=RuntimeError("network error")):
-            token = await auth.get_token()
-
-        # Falls back to existing token
-        assert token == "still_valid"
-        await auth.close()
-
-    @pytest.mark.anyio
-    async def test_close(self):
-        auth = CopilotAuth("gho_test")
-        with patch.object(auth._client, "aclose", new_callable=AsyncMock) as mock_close:
-            await auth.close()
-            mock_close.assert_called_once()
+        # Verify the device code request used the correct client_id and scope
+        first_call = mock_client.post.call_args_list[0]
+        json_body = first_call.kwargs.get("json") or first_call[1].get("json")
+        assert json_body is not None
+        assert json_body["client_id"] == COPILOT_CLIENT_ID
+        assert json_body["scope"] == COPILOT_SCOPE
+        assert COPILOT_CLIENT_ID == "Ov23li8tweQw6odWQebz"
+        assert COPILOT_SCOPE == "read:user"

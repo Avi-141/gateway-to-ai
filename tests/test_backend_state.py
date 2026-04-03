@@ -176,14 +176,12 @@ class TestBackendStateInitCopilot:
     async def test_init_copilot_success(self):
         bs = BackendState("bedrock")
 
-        mock_auth = MagicMock()
         mock_backend = AsyncMock()
         mock_backend.list_models = AsyncMock(return_value=[{"id": "m1"}])
         mock_cache = MagicMock()
 
         with (
             patch("claudegate.copilot_auth.get_github_token", return_value="tok"),
-            patch("claudegate.copilot_auth.CopilotAuth", return_value=mock_auth),
             patch("claudegate.copilot_client.CopilotBackend", return_value=mock_backend),
             patch("claudegate.copilot_usage.CopilotUsageCache", return_value=mock_cache),
             patch("claudegate.models.set_copilot_models") as mock_set,

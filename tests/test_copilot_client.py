@@ -205,25 +205,22 @@ class TestComputeInitiator:
 
 
 class TestGetHeadersInitiatorOverride:
-    @pytest.mark.anyio
-    async def test_initiator_override_takes_precedence(self, backend):
+    def test_initiator_override_takes_precedence(self, backend):
         """When an explicit initiator is provided, _get_headers must use it."""
         # Body alone would yield "user"
         body = {"messages": [{"role": "user", "content": "hello"}]}
-        headers = await backend._get_headers(body, initiator="agent")
+        headers = backend._get_headers(body, initiator="agent")
         assert headers["X-Initiator"] == "agent"
 
-    @pytest.mark.anyio
-    async def test_initiator_override_none_falls_back_to_body(self, backend):
+    def test_initiator_override_none_falls_back_to_body(self, backend):
         """When initiator is None, _get_headers computes from body."""
         body = {"messages": [{"role": "user", "content": "hello"}]}
-        headers = await backend._get_headers(body, initiator=None)
+        headers = backend._get_headers(body, initiator=None)
         assert headers["X-Initiator"] == "user"
 
-    @pytest.mark.anyio
-    async def test_no_body_no_initiator(self, backend):
+    def test_no_body_no_initiator(self, backend):
         """When neither body nor initiator is provided, no X-Initiator header."""
-        headers = await backend._get_headers()
+        headers = backend._get_headers()
         assert "X-Initiator" not in headers
 
 
@@ -429,19 +426,6 @@ class TestHandleMessages:
                 await backend.handle_messages(body, "", False, "m", "x")
             assert exc_info.value.status_code == 504
             assert exc_info.value.backend == "copilot"
-
-    @pytest.mark.anyio
-    async def test_non_streaming_auth_error_raises(self, backend):
-        """Auth errors are re-raised."""
-        backend._auth.get_token.side_effect = RuntimeError("bad token")
-
-        body = {
-            "model": "x",
-            "max_tokens": 100,
-            "messages": [{"role": "user", "content": "hi"}],
-        }
-        with pytest.raises(RuntimeError, match="bad token"):
-            await backend.handle_messages(body, "", False, "m", "x")
 
     @pytest.mark.anyio
     async def test_streaming_returns_streaming_response(self, backend):
@@ -862,11 +846,10 @@ class TestStreamOpenAIResponse:
 
 class TestClose:
     @pytest.mark.anyio
-    async def test_closes_client_and_auth(self, backend):
+    async def test_closes_client(self, backend):
         with patch.object(backend._client, "aclose", new_callable=AsyncMock) as mock_close:
             await backend.close()
             mock_close.assert_called_once()
-            backend._auth.close.assert_called_once()
 
 
 # --- _parse_retry_after ---
@@ -1047,7 +1030,7 @@ class TestPostWithRetry:
         """Exponential backoff delay is capped at 30 seconds."""
         # With base_delay=0.01 and 2 retries, delay won't actually exceed 30s,
         # but test with a large base_delay to confirm capping
-        b = CopilotBackend(retry_backend._auth, timeout=30, retry_max=1, retry_base_delay=50.0, max_rate=0)
+        b = CopilotBackend(retry_backend._github_token, timeout=30, retry_max=1, retry_base_delay=50.0, max_rate=0)
         resp_429 = MagicMock()
         resp_429.status_code = 429
         resp_429.headers = httpx.Headers({})
