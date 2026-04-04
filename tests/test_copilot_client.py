@@ -1693,6 +1693,93 @@ class TestHandleMessagesPassthrough:
                 assert data["message"]["usage"]["input_tokens"] == 100
                 break
 
+    @pytest.mark.anyio
+    async def test_non_streaming_restores_model_name(self, backend):
+        """Non-streaming passthrough restores anthropic_model in response."""
+        body = {
+            "model": "claude-sonnet-4.5",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Hi"}],
+        }
+        anthropic_resp = {
+            "id": "msg_1",
+            "type": "message",
+            "content": [],
+            "model": "claude-sonnet-4.5",
+            "usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = anthropic_resp
+
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
+            resp = await backend.handle_messages_passthrough(
+                body, "req1", False, "claude-sonnet-4.5", anthropic_model="claude-sonnet-4-5-20250929"
+            )
+
+        resp_body = json.loads(resp.body)
+        assert resp_body["model"] == "claude-sonnet-4-5-20250929"
+
+    @pytest.mark.anyio
+    async def test_streaming_restores_model_name(self, backend):
+        """Streaming passthrough restores anthropic_model in message_start."""
+        body = {
+            "model": "claude-sonnet-4.5",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Hi"}],
+        }
+
+        msg_start = json.dumps(
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": "claude-sonnet-4.5",
+                    "usage": {"input_tokens": 10, "output_tokens": 0},
+                },
+            }
+        )
+        sse_lines = [
+            "event: message_start",
+            f"data: {msg_start}",
+            "",
+            "event: message_stop",
+            'data: {"type":"message_stop"}',
+        ]
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        async def mock_aiter_lines():
+            for line in sse_lines:
+                yield line
+
+        mock_response.aiter_lines = mock_aiter_lines
+        mock_response.aread = AsyncMock()
+
+        mock_stream_cm = AsyncMock()
+        mock_stream_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_stream_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(backend._client, "stream", return_value=mock_stream_cm):
+            resp = await backend.handle_messages_passthrough(
+                body, "req1", True, "claude-sonnet-4.5", anthropic_model="claude-sonnet-4-5-20250929"
+            )
+
+        collected = []
+        async for chunk in resp.body_iterator:
+            collected.append(chunk)
+
+        for chunk in collected:
+            if "message_start" in chunk:
+                data_line = [p for p in chunk.split("\n") if p.startswith("data: ")][0]
+                data = json.loads(data_line[6:])
+                assert data["message"]["model"] == "claude-sonnet-4-5-20250929"
+                break
+
 
 class TestFilterAnthropicBetaHeader:
     """Tests for filter_anthropic_beta_header."""

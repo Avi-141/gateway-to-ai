@@ -1179,6 +1179,7 @@ class CopilotBackend:
         stream: bool,
         copilot_model: str,
         client_context_window: int = 0,
+        anthropic_model: str | None = None,
         extra_headers: dict[str, str] | None = None,
         initiator: str | None = None,
     ) -> JSONResponse | StreamingResponse:
@@ -1191,6 +1192,10 @@ class CopilotBackend:
         Token counts in the response usage are scaled from Copilot's context
         limit to the client's expected context window so that Claude Code's
         context-fullness percentage remains accurate.
+
+        When *anthropic_model* is provided, the ``model`` field in responses is
+        restored to this value so the client sees the canonical Anthropic model
+        name rather than Copilot's internal display name.
 
         Raises TransientBackendError for fallback-eligible errors (429, 5xx).
         Raises CopilotHttpError for non-transient HTTP errors.
@@ -1206,7 +1211,9 @@ class CopilotBackend:
             headers = await self._get_headers(body, initiator=initiator, extra_headers=extra_headers)
             resp, stream_cm = await self._open_messages_stream(body, headers, log_prefix)
             return StreamingResponse(
-                self._stream_messages_passthrough(resp, stream_cm, log_prefix, copilot_limit, client_context_window),
+                self._stream_messages_passthrough(
+                    resp, stream_cm, log_prefix, copilot_limit, client_context_window, anthropic_model
+                ),
                 media_type="text/event-stream",
             )
         else:
@@ -1235,6 +1242,8 @@ class CopilotBackend:
 
             data = resp.json()
             _scale_usage_tokens(data.get("usage"), copilot_limit, client_context_window)
+            if anthropic_model:
+                data["model"] = anthropic_model
             return JSONResponse(content=data)
 
     async def _open_messages_stream(
@@ -1306,6 +1315,7 @@ class CopilotBackend:
         log_prefix: str,
         copilot_limit: int = 0,
         client_context_window: int = 0,
+        anthropic_model: str | None = None,
     ) -> AsyncGenerator[str, None]:
         """Stream Anthropic Messages SSE events from Copilot with token scaling.
 
@@ -1315,10 +1325,14 @@ class CopilotBackend:
         For ``message_start`` and ``message_delta`` events the usage token
         counts are scaled from Copilot's context limit to the client's
         expected context window so Claude Code's fullness bar stays accurate.
+
+        When *anthropic_model* is set, the ``model`` field inside
+        ``message_start`` is overwritten to the canonical Anthropic name.
         """
         chunk_count = 0
         pending_event_line: str | None = None
         need_scaling = copilot_limit > 0 and client_context_window > 0
+        need_patching = need_scaling or bool(anthropic_model)
         scale_event_types = frozenset({"message_start", "message_delta"})
 
         try:
@@ -1334,19 +1348,23 @@ class CopilotBackend:
                 if chunk_count <= 3:
                     logger.debug(f"{log_prefix}Messages passthrough chunk {chunk_count}: {line[:200]}")
 
-                # Scale usage tokens in message_start / message_delta events.
-                if need_scaling and pending_event_line is not None:
+                # Patch message_start / message_delta events (token scaling + model name).
+                if need_patching and pending_event_line is not None:
                     event_type = pending_event_line[7:]  # strip "event: "
                     if event_type in scale_event_types and line.startswith("data: "):
                         try:
                             data = json.loads(line[6:])
-                            usage = data.get("usage")
-                            if usage:
-                                _scale_usage_tokens(usage, copilot_limit, client_context_window)
+                            if need_scaling:
+                                usage = data.get("usage")
+                                if usage:
+                                    _scale_usage_tokens(usage, copilot_limit, client_context_window)
                             # message_start wraps usage inside message.usage too
                             msg = data.get("message")
                             if isinstance(msg, dict):
-                                _scale_usage_tokens(msg.get("usage"), copilot_limit, client_context_window)
+                                if need_scaling:
+                                    _scale_usage_tokens(msg.get("usage"), copilot_limit, client_context_window)
+                                if anthropic_model:
+                                    msg["model"] = anthropic_model
                             line = f"data: {json.dumps(data)}"
                         except (json.JSONDecodeError, TypeError):
                             pass  # forward as-is on parse failure
