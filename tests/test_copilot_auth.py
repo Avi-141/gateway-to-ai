@@ -88,10 +88,24 @@ class TestGetGithubToken:
         token_file = tmp_path / "nonexistent"
         monkeypatch.setattr("claudegate.copilot_auth.TOKEN_FILE", token_file)
 
-        with patch("claudegate.copilot_auth.device_flow_login", return_value="gho_device") as mock_login:
+        with (
+            patch("claudegate.copilot_auth.device_flow_login", return_value="gho_device") as mock_login,
+            patch("claudegate.copilot_auth.sys") as mock_sys,
+        ):
+            mock_sys.stdin.isatty.return_value = True
             result = get_github_token()
             assert result == "gho_device"
             mock_login.assert_called_once()
+
+    def test_non_interactive_raises_without_token(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        token_file = tmp_path / "nonexistent"
+        monkeypatch.setattr("claudegate.copilot_auth.TOKEN_FILE", token_file)
+
+        with patch("claudegate.copilot_auth.sys") as mock_sys:
+            mock_sys.stdin.isatty.return_value = False
+            with pytest.raises(RuntimeError, match="No GitHub token found and no interactive terminal"):
+                get_github_token()
 
 
 # --- device_flow_login ---

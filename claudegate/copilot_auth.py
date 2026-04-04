@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import sys
 import time
 import uuid
 
@@ -144,7 +145,14 @@ def get_github_token() -> str:
     if persisted:
         return persisted
 
-    # 3. Run interactive device flow
+    # 3. Run interactive device flow (requires a TTY)
+    if not sys.stdin.isatty():
+        raise RuntimeError(
+            "No GitHub token found and no interactive terminal available. "
+            "Either set the GITHUB_TOKEN environment variable, or run "
+            "'claudegate' interactively once to complete OAuth (the token "
+            f"is persisted to {TOKEN_FILE})."
+        )
     logger.info("No GitHub token found, starting device flow authentication")
     return device_flow_login()
 
