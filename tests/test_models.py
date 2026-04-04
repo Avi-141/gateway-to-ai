@@ -19,6 +19,7 @@ from claudegate.models import (
     get_copilot_openai_model,
     is_claude_model,
     model_requires_responses_api,
+    model_supports_messages_api,
     refresh_copilot_models_if_stale,
     set_copilot_models,
 )
@@ -568,6 +569,53 @@ class TestModelRequiresResponsesApi:
             ]
         )
         assert model_requires_responses_api("gpt-5.2") is False
+
+
+# --- model_supports_messages_api ---
+
+
+class TestModelSupportsMessagesApi:
+    @pytest.fixture(autouse=True)
+    def reset_registry(self):
+        set_copilot_models([])
+        yield
+        set_copilot_models([])
+
+    def test_claude_model_with_messages_endpoint(self):
+        """Claude model explicitly advertising /v1/messages returns True."""
+        set_copilot_models([{"id": "claude-sonnet-4.5", "supported_endpoints": ["/chat/completions", "/v1/messages"]}])
+        assert model_supports_messages_api("claude-sonnet-4.5") is True
+
+    def test_claude_model_without_messages_endpoint(self):
+        """Claude model with endpoints but not /v1/messages returns False."""
+        set_copilot_models([{"id": "claude-sonnet-4.5", "supported_endpoints": ["/chat/completions"]}])
+        assert model_supports_messages_api("claude-sonnet-4.5") is False
+
+    def test_non_claude_model_with_messages_endpoint(self):
+        """Non-Claude model explicitly advertising /v1/messages returns True."""
+        set_copilot_models([{"id": "some-model", "supported_endpoints": ["/v1/messages"]}])
+        assert model_supports_messages_api("some-model") is True
+
+    def test_non_claude_model_without_messages_endpoint(self):
+        """Non-Claude model with other endpoints returns False."""
+        set_copilot_models([{"id": "gpt-4o", "supported_endpoints": ["/chat/completions"]}])
+        assert model_supports_messages_api("gpt-4o") is False
+
+    def test_no_endpoints_returns_false(self):
+        """Model with no endpoint metadata returns False."""
+        set_copilot_models([{"id": "claude-sonnet-4.5"}])
+        assert model_supports_messages_api("claude-sonnet-4.5") is False
+
+    def test_unknown_model_not_in_registry(self):
+        """Model not in registry returns False."""
+        set_copilot_models([{"id": "some-other-model"}])
+        assert model_supports_messages_api("claude-opus-4.6") is False
+        assert model_supports_messages_api("gpt-5.4") is False
+
+    def test_empty_registry(self):
+        """Empty registry returns False for all models."""
+        assert model_supports_messages_api("claude-sonnet-4.5") is False
+        assert model_supports_messages_api("gpt-4o") is False
 
 
 # --- get_copilot_context_limit ---

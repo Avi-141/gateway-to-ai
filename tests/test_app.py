@@ -1852,7 +1852,6 @@ class TestServerToolRouting:
             },
         )
         assert resp.status_code == 200
-        # Bedrock should have been called (not Copilot)
         mock_bedrock_client.invoke_model.assert_called_once()
 
     @pytest.mark.anyio
@@ -1886,9 +1885,7 @@ class TestServerToolRouting:
             },
         )
         assert resp.status_code == 200
-        # Copilot should have been called
         mock_backend.handle_messages.assert_called_once()
-        # The body passed to handle_messages should not contain server tools
         call_body = mock_backend.handle_messages.call_args[0][0]
         assert "tools" not in call_body
 
@@ -1952,7 +1949,6 @@ class TestServerToolRouting:
         )
         assert resp.status_code == 200
         mock_backend.handle_messages.assert_called_once()
-        # The initiator kwarg must be "agent", not "user"
         assert mock_backend.handle_messages.call_args.kwargs["initiator"] == "agent"
 
     @pytest.mark.anyio
@@ -1987,7 +1983,6 @@ class TestServerToolRouting:
         )
         assert resp.status_code == 200
         mock_backend.handle_messages.assert_called_once()
-        # User-initiated should remain "user"
         assert mock_backend.handle_messages.call_args.kwargs["initiator"] == "user"
 
     @pytest.mark.anyio
@@ -2029,7 +2024,6 @@ class TestServerToolRouting:
 
         assert resp.status_code == 200
         assert resp.json()["content"][0]["text"] == "Fallback response"
-        # Copilot should have been called with stripped tools
         call_body = mock_copilot.handle_messages.call_args[0][0]
         assert "tools" not in call_body
 
@@ -2100,7 +2094,6 @@ class TestServerToolRouting:
             },
         )
         assert resp.status_code == 200
-        # Should use Copilot (primary), not Bedrock
         mock_backend.handle_messages.assert_called_once()
 
 

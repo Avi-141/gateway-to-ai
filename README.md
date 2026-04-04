@@ -38,6 +38,7 @@ A lightweight proxy that translates between Anthropic, OpenAI, and Responses API
 - **OpenAI-compatible API** (`/v1/chat/completions` and `/v1/responses`) for Open WebUI and other OpenAI-format clients
 - **Non-Claude models** (GPT-4o, o3-mini, etc.) via Copilot backend's OpenAI-compatible endpoint
 - **Direct Copilot passthrough** — zero-translation path for `/v1/chat/completions` when Copilot is the backend
+- **Native Copilot Messages API** — `/v1/messages` requests for Claude models are forwarded directly to Copilot's Anthropic-native endpoint with zero translation
 
 ## Supported Models
 

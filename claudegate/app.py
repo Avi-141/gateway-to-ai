@@ -34,7 +34,7 @@ from .config import (
     logger,
 )
 from .context_guard import check_context_guard_anthropic, check_context_guard_openai, check_context_guard_responses
-from .copilot_client import compute_initiator
+from .copilot_client import compute_initiator, filter_anthropic_beta_header
 from .copilot_translate import has_server_tools, strip_server_tools
 from .copilot_usage import CopilotUsageCache
 from .errors import ContextWindowExceededError, CopilotHttpError, TransientBackendError
@@ -50,6 +50,7 @@ from .models import (
     get_copilot_openai_model,
     is_claude_model,
     model_requires_responses_api,
+    model_supports_messages_api,
     model_supports_responses_api,
     refresh_copilot_models_if_stale,
     set_copilot_models,
@@ -645,6 +646,25 @@ async def _call_copilot(
         f"body: {len(json.dumps(body))}"
     )
     client_context_window = _detect_client_context_window(request, copilot_model)
+
+    # Native Anthropic Messages passthrough for Claude models (0 translations).
+    if model_supports_messages_api(copilot_model):
+        logger.info(f"{log_prefix}Routing to native Messages API for {copilot_model}")
+        extra_headers: dict[str, str] = {}
+        beta = request.headers.get("anthropic-beta")
+        if beta:
+            filtered = filter_anthropic_beta_header(beta)
+            if filtered:
+                extra_headers["anthropic-beta"] = filtered
+        return await copilot.handle_messages_passthrough(
+            body,
+            request_id,
+            stream,
+            copilot_model,
+            extra_headers=extra_headers or None,
+            initiator=effective_initiator,
+        )
+
     if model_requires_responses_api(copilot_model):
         logger.info(f"{log_prefix}Routing to Responses API for {copilot_model}")
         return await copilot.handle_responses_messages(
@@ -871,8 +891,9 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
             return _error_response(500, "api_error", str(e))
 
     # Route requests with server-side tools (e.g. web_search) appropriately.
-    # Copilot doesn't support server-side tools, so route to Bedrock if available,
-    # or strip them from the request if Copilot-only.
+    # Copilot doesn't support server-side tools on any path (including the
+    # native /v1/messages endpoint), so route to Bedrock if available or
+    # strip them from the request.
     # Compute the initiator *before* stripping so that removing server-tool
     # content blocks from the conversation history does not change the result.
     initiator_override: str | None = None

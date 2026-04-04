@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **Auto-refresh Copilot models** — the Copilot models list is now refreshed from the API on `/v1/models` and `/api/status` requests with a 5-minute TTL cache (configurable via `COPILOT_MODELS_TTL`). Previously, models were only fetched once at startup.
 - **GPT-5.4 model alias** — added `gpt-5.4` to the Copilot model map.
 - **Responses API passthrough preserves server-side tools** — the `/v1/responses` passthrough path to Copilot now passes through OpenAI-native built-in tools (`web_search_preview`, `code_interpreter`, `file_search`, `image_generation`, `local_shell`, etc.) instead of stripping them. Copilot's `/responses` endpoint supports these tools natively for models like GPT-5+.
+- **Native Copilot Messages API passthrough** — Claude model requests on `/v1/messages` are now automatically forwarded directly to Copilot's native Anthropic Messages endpoint with zero translation when the model advertises `/v1/messages` support. This eliminates the Anthropic-to-OpenAI-to-Anthropic round-trip translation, reducing latency and preserving full Anthropic protocol fidelity. Non-Claude models and non-Messages paths are unaffected.
 - **Enhanced error logging for Copilot failures** — all Copilot error paths (502, 429, timeouts, etc.) now log the request payload summary (model, message count, tool count, stream flag) at ERROR level and the full request body at DEBUG level. The `/v1/messages` request info line now includes message count, tool count, and system prompt size.
 
 ### Changed
