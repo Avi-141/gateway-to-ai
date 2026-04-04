@@ -13,7 +13,7 @@ from typing import Any
 from .config import CONTEXT_GUARD_THRESHOLD, logger
 from .copilot_translate import estimate_input_tokens
 from .errors import ContextWindowExceededError
-from .models import get_copilot_context_limit, get_copilot_model, get_copilot_openai_model
+from .models import get_copilot_context_limit, get_copilot_model, get_copilot_openai_model, get_copilot_output_limit
 
 # Minimum max_tokens to allow — below this the model can't produce useful output
 _MIN_OUTPUT_TOKENS = 1024
@@ -32,6 +32,18 @@ def check_context_guard_anthropic(body: dict[str, Any]) -> None:
         return
     model = body.get("model", "")
     copilot_model, _ = get_copilot_model(model)
+
+    # Clamp max_tokens to the model's output token limit
+    output_limit = get_copilot_output_limit(copilot_model)
+    if output_limit > 0:
+        original_max = body.get("max_tokens", 0)
+        if original_max > output_limit:
+            body["max_tokens"] = output_limit
+            logger.info(
+                f"Output guard clamped max_tokens: {original_max} -> {output_limit} "
+                f"(model {copilot_model} max_output_tokens={output_limit})"
+            )
+
     context_limit = get_copilot_context_limit(copilot_model)
     if context_limit <= 0:
         return
@@ -74,6 +86,27 @@ def check_context_guard_openai(body: dict[str, Any]) -> None:
         return
     model = body.get("model", "")
     copilot_model = get_copilot_openai_model(model)
+
+    # Clamp output tokens to the model's output token limit
+    output_limit = get_copilot_output_limit(copilot_model)
+    if output_limit > 0:
+        if "max_completion_tokens" in body:
+            original_max = body.get("max_completion_tokens") or 0
+            if original_max > output_limit:
+                body["max_completion_tokens"] = output_limit
+                logger.info(
+                    f"Output guard clamped max_completion_tokens (OpenAI): {original_max} -> {output_limit} "
+                    f"(model {copilot_model} max_output_tokens={output_limit})"
+                )
+        else:
+            original_max = body.get("max_tokens") or 0
+            if original_max > output_limit:
+                body["max_tokens"] = output_limit
+                logger.info(
+                    f"Output guard clamped max_tokens (OpenAI): {original_max} -> {output_limit} "
+                    f"(model {copilot_model} max_output_tokens={output_limit})"
+                )
+
     context_limit = get_copilot_context_limit(copilot_model)
     if context_limit <= 0:
         return
@@ -120,6 +153,18 @@ def check_context_guard_responses(body: dict[str, Any]) -> None:
         return
     model = body.get("model", "")
     copilot_model = get_copilot_openai_model(model)
+
+    # Clamp output tokens to the model's output token limit
+    output_limit = get_copilot_output_limit(copilot_model)
+    if output_limit > 0:
+        original_max = body.get("max_output_tokens") or 0
+        if original_max > output_limit:
+            body["max_output_tokens"] = output_limit
+            logger.info(
+                f"Output guard clamped max_output_tokens (Responses): {original_max} -> {output_limit} "
+                f"(model {copilot_model} max_output_tokens={output_limit})"
+            )
+
     context_limit = get_copilot_context_limit(copilot_model)
     if context_limit <= 0:
         return

@@ -186,6 +186,7 @@ _copilot_models: list[dict[str, Any]] = []
 _copilot_model_ids: set[str] = set()
 _copilot_model_endpoints: dict[str, list[str]] = {}
 _copilot_model_limits: dict[str, int] = {}
+_copilot_model_output_limits: dict[str, int] = {}
 _copilot_model_context_windows: dict[str, int] = {}
 _copilot_models_fetched_at: float = 0.0
 
@@ -193,7 +194,7 @@ _copilot_models_fetched_at: float = 0.0
 def set_copilot_models(models: list[dict[str, Any]]) -> None:
     """Store models fetched from the Copilot API."""
     global _copilot_models, _copilot_model_ids, _copilot_model_endpoints, _copilot_model_limits
-    global _copilot_model_context_windows, _copilot_models_fetched_at
+    global _copilot_model_output_limits, _copilot_model_context_windows, _copilot_models_fetched_at
     _copilot_models = models
     _copilot_model_ids = {m["id"] for m in models if "id" in m}
     _copilot_model_endpoints = {
@@ -202,6 +203,7 @@ def set_copilot_models(models: list[dict[str, Any]]) -> None:
         if "id" in m and isinstance(m.get("supported_endpoints"), list)
     }
     _copilot_model_limits = {}
+    _copilot_model_output_limits = {}
     _copilot_model_context_windows = {}
     for m in models:
         model_id = m.get("id")
@@ -214,6 +216,9 @@ def set_copilot_models(models: list[dict[str, Any]]) -> None:
         limit = limits.get("max_prompt_tokens")
         if isinstance(limit, int) and limit > 0:
             _copilot_model_limits[model_id] = limit
+        output_limit = limits.get("max_output_tokens")
+        if isinstance(output_limit, int) and output_limit > 0:
+            _copilot_model_output_limits[model_id] = output_limit
         context_window = limits.get("max_context_window_tokens")
         if isinstance(context_window, int) and context_window > 0:
             _copilot_model_context_windows[model_id] = context_window
@@ -266,6 +271,11 @@ def model_supports_messages_api(model_id: str) -> bool:
 def get_copilot_context_limit(model_id: str) -> int:
     """Return the Copilot context window limit for a model, or 0 if unknown."""
     return _copilot_model_limits.get(model_id, 0)
+
+
+def get_copilot_output_limit(model_id: str) -> int:
+    """Return the Copilot max_output_tokens for a model, or 0 if unknown."""
+    return _copilot_model_output_limits.get(model_id, 0)
 
 
 def get_copilot_context_window(model_id: str) -> int:

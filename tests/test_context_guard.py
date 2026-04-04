@@ -39,6 +39,11 @@ def _set_model_limits(monkeypatch, limits: dict[str, int]) -> None:
     monkeypatch.setattr(models_mod, "_copilot_model_ids", model_ids)
 
 
+def _set_output_limits(monkeypatch, limits: dict[str, int]) -> None:
+    """Set known output token limits for deterministic tests."""
+    monkeypatch.setattr(models_mod, "_copilot_model_output_limits", limits)
+
+
 def _big_messages(n_tokens_approx: int) -> list[dict]:
     """Build a messages list that estimates to roughly n_tokens_approx tokens."""
     # Each word is ~1 token with cl100k_base; use 'hello ' repeated
@@ -327,6 +332,62 @@ class TestCheckContextGuardAnthropic:
 
 
 # ---------------------------------------------------------------------------
+# TestOutputLimitGuardAnthropic (unit tests)
+# ---------------------------------------------------------------------------
+
+
+class TestOutputLimitGuardAnthropic:
+    def test_clamps_max_tokens_to_output_limit(self, monkeypatch):
+        """max_tokens exceeding model output limit gets clamped."""
+        _set_model_limits(monkeypatch, {"claude-sonnet-4.6": 200000})
+        _set_output_limits(monkeypatch, {"claude-sonnet-4.6": 32000})
+        body = {
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 128000,
+            "messages": [{"role": "user", "content": "Hi"}],
+        }
+        check_context_guard_anthropic(body)
+        assert body["max_tokens"] == 32000
+
+    def test_max_tokens_within_output_limit_unchanged(self, monkeypatch):
+        """max_tokens within model output limit passes through unchanged."""
+        _set_model_limits(monkeypatch, {"claude-sonnet-4.6": 200000})
+        _set_output_limits(monkeypatch, {"claude-sonnet-4.6": 32000})
+        body = {
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 8192,
+            "messages": [{"role": "user", "content": "Hi"}],
+        }
+        check_context_guard_anthropic(body)
+        assert body["max_tokens"] == 8192
+
+    def test_unknown_model_output_limit_unchanged(self, monkeypatch):
+        """Unknown model (output limit = 0) passes through unchanged."""
+        _set_model_limits(monkeypatch, {"claude-sonnet-4.6": 200000})
+        _set_output_limits(monkeypatch, {})  # no output limits known
+        body = {
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 128000,
+            "messages": [{"role": "user", "content": "Hi"}],
+        }
+        check_context_guard_anthropic(body)
+        assert body["max_tokens"] == 128000
+
+    def test_output_and_context_guard_both_apply(self, monkeypatch):
+        """Output limit clamping and context guard clamping work together."""
+        _set_model_limits(monkeypatch, {"claude-sonnet-4.6": 50000})
+        _set_output_limits(monkeypatch, {"claude-sonnet-4.6": 32000})
+        body = {
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 128000,
+            "messages": _big_messages(46000),
+        }
+        check_context_guard_anthropic(body)
+        # Output limit clamps 128000 -> 32000, then context guard clamps further
+        assert body["max_tokens"] < 32000
+
+
+# ---------------------------------------------------------------------------
 # TestCheckContextGuardOpenAI (unit tests)
 # ---------------------------------------------------------------------------
 
@@ -384,6 +445,57 @@ class TestCheckContextGuardOpenAI:
 
 
 # ---------------------------------------------------------------------------
+# TestOutputLimitGuardOpenAI (unit tests)
+# ---------------------------------------------------------------------------
+
+
+class TestOutputLimitGuardOpenAI:
+    def test_clamps_max_tokens_to_output_limit(self, monkeypatch):
+        _set_model_limits(monkeypatch, {"claude-sonnet-4.6": 200000})
+        _set_output_limits(monkeypatch, {"claude-sonnet-4.6": 32000})
+        body = {
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 128000,
+            "messages": [{"role": "user", "content": "Hi"}],
+        }
+        check_context_guard_openai(body)
+        assert body["max_tokens"] == 32000
+
+    def test_clamps_max_completion_tokens_to_output_limit(self, monkeypatch):
+        _set_model_limits(monkeypatch, {"claude-sonnet-4.6": 200000})
+        _set_output_limits(monkeypatch, {"claude-sonnet-4.6": 32000})
+        body = {
+            "model": "claude-sonnet-4-6",
+            "max_completion_tokens": 128000,
+            "messages": [{"role": "user", "content": "Hi"}],
+        }
+        check_context_guard_openai(body)
+        assert body["max_completion_tokens"] == 32000
+
+    def test_within_output_limit_unchanged(self, monkeypatch):
+        _set_model_limits(monkeypatch, {"claude-sonnet-4.6": 200000})
+        _set_output_limits(monkeypatch, {"claude-sonnet-4.6": 32000})
+        body = {
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 8192,
+            "messages": [{"role": "user", "content": "Hi"}],
+        }
+        check_context_guard_openai(body)
+        assert body["max_tokens"] == 8192
+
+    def test_unknown_model_output_limit_unchanged(self, monkeypatch):
+        _set_model_limits(monkeypatch, {"claude-sonnet-4.6": 200000})
+        _set_output_limits(monkeypatch, {})
+        body = {
+            "model": "claude-sonnet-4-6",
+            "max_tokens": 128000,
+            "messages": [{"role": "user", "content": "Hi"}],
+        }
+        check_context_guard_openai(body)
+        assert body["max_tokens"] == 128000
+
+
+# ---------------------------------------------------------------------------
 # TestCheckContextGuardResponses (unit tests)
 # ---------------------------------------------------------------------------
 
@@ -435,6 +547,46 @@ class TestCheckContextGuardResponses:
         }
         check_context_guard_responses(body)
         assert body["max_output_tokens"] < 8192
+
+
+# ---------------------------------------------------------------------------
+# TestOutputLimitGuardResponses (unit tests)
+# ---------------------------------------------------------------------------
+
+
+class TestOutputLimitGuardResponses:
+    def test_clamps_max_output_tokens_to_output_limit(self, monkeypatch):
+        _set_model_limits(monkeypatch, {"claude-sonnet-4.6": 200000})
+        _set_output_limits(monkeypatch, {"claude-sonnet-4.6": 32000})
+        body = {
+            "model": "claude-sonnet-4-6",
+            "max_output_tokens": 128000,
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}],
+        }
+        check_context_guard_responses(body)
+        assert body["max_output_tokens"] == 32000
+
+    def test_within_output_limit_unchanged(self, monkeypatch):
+        _set_model_limits(monkeypatch, {"claude-sonnet-4.6": 200000})
+        _set_output_limits(monkeypatch, {"claude-sonnet-4.6": 32000})
+        body = {
+            "model": "claude-sonnet-4-6",
+            "max_output_tokens": 8192,
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}],
+        }
+        check_context_guard_responses(body)
+        assert body["max_output_tokens"] == 8192
+
+    def test_unknown_model_output_limit_unchanged(self, monkeypatch):
+        _set_model_limits(monkeypatch, {"claude-sonnet-4.6": 200000})
+        _set_output_limits(monkeypatch, {})
+        body = {
+            "model": "claude-sonnet-4-6",
+            "max_output_tokens": 128000,
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}],
+        }
+        check_context_guard_responses(body)
+        assert body["max_output_tokens"] == 128000
 
 
 # ---------------------------------------------------------------------------
