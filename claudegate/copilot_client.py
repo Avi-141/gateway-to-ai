@@ -201,6 +201,21 @@ def compute_initiator(body: dict[str, Any]) -> str:
 
 _UNSUPPORTED_COPILOT_BETAS = frozenset({"context-1m"})
 
+_USAGE_TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+
+
+def _scale_usage_tokens(usage: dict[str, Any] | None, copilot_limit: int, client_context_window: int) -> None:
+    """Scale token counts in a usage dict from Copilot's limit to the client window.
+
+    Mutates *usage* in-place.  No-op when either limit is zero or usage is None.
+    """
+    if not usage or copilot_limit <= 0 or client_context_window <= 0:
+        return
+    for field in _USAGE_TOKEN_FIELDS:
+        raw = usage.get(field)
+        if raw is not None and raw > 0:
+            usage[field] = int(raw * client_context_window / copilot_limit)
+
 
 def filter_anthropic_beta_header(beta: str) -> str | None:
     """Strip beta values unsupported by Copilot's /v1/messages endpoint.
@@ -1163,6 +1178,7 @@ class CopilotBackend:
         request_id: str,
         stream: bool,
         copilot_model: str,
+        client_context_window: int = 0,
         extra_headers: dict[str, str] | None = None,
         initiator: str | None = None,
     ) -> JSONResponse | StreamingResponse:
@@ -1172,6 +1188,10 @@ class CopilotBackend:
         field is overridden to the Copilot display name). Used for Claude models
         that the Copilot proxy serves via its native Anthropic Messages endpoint.
 
+        Token counts in the response usage are scaled from Copilot's context
+        limit to the client's expected context window so that Claude Code's
+        context-fullness percentage remains accurate.
+
         Raises TransientBackendError for fallback-eligible errors (429, 5xx).
         Raises CopilotHttpError for non-transient HTTP errors.
         """
@@ -1179,12 +1199,14 @@ class CopilotBackend:
         body = {**body, "model": copilot_model}
         sanitize_cache_control(body)
 
+        copilot_limit = get_copilot_context_limit(copilot_model)
+
         if stream:
             body["stream"] = True
             headers = await self._get_headers(body, initiator=initiator, extra_headers=extra_headers)
             resp, stream_cm = await self._open_messages_stream(body, headers, log_prefix)
             return StreamingResponse(
-                self._stream_messages_passthrough(resp, stream_cm, log_prefix),
+                self._stream_messages_passthrough(resp, stream_cm, log_prefix, copilot_limit, client_context_window),
                 media_type="text/event-stream",
             )
         else:
@@ -1211,7 +1233,9 @@ class CopilotBackend:
                     raise TransientBackendError(resp.status_code, error_type, detail, "copilot")
                 raise CopilotHttpError(resp.status_code, detail)
 
-            return JSONResponse(content=resp.json())
+            data = resp.json()
+            _scale_usage_tokens(data.get("usage"), copilot_limit, client_context_window)
+            return JSONResponse(content=data)
 
     async def _open_messages_stream(
         self,
@@ -1276,15 +1300,26 @@ class CopilotBackend:
         return resp, stream_cm  # type: ignore[possibly-undefined]  # unreachable
 
     async def _stream_messages_passthrough(
-        self, resp: httpx.Response, stream_cm: Any, log_prefix: str
+        self,
+        resp: httpx.Response,
+        stream_cm: Any,
+        log_prefix: str,
+        copilot_limit: int = 0,
+        client_context_window: int = 0,
     ) -> AsyncGenerator[str, None]:
-        """Stream Anthropic Messages SSE events as-is from Copilot (no translation).
+        """Stream Anthropic Messages SSE events from Copilot with token scaling.
 
         Reassembles SSE events from aiter_lines() which strips blank-line
         boundaries.  Each SSE event is ``event: <type>\\ndata: <json>\\n\\n``.
+
+        For ``message_start`` and ``message_delta`` events the usage token
+        counts are scaled from Copilot's context limit to the client's
+        expected context window so Claude Code's fullness bar stays accurate.
         """
         chunk_count = 0
         pending_event_line: str | None = None
+        need_scaling = copilot_limit > 0 and client_context_window > 0
+        scale_event_types = frozenset({"message_start", "message_delta"})
 
         try:
             async for line in resp.aiter_lines():
@@ -1298,6 +1333,23 @@ class CopilotBackend:
                 chunk_count += 1
                 if chunk_count <= 3:
                     logger.debug(f"{log_prefix}Messages passthrough chunk {chunk_count}: {line[:200]}")
+
+                # Scale usage tokens in message_start / message_delta events.
+                if need_scaling and pending_event_line is not None:
+                    event_type = pending_event_line[7:]  # strip "event: "
+                    if event_type in scale_event_types and line.startswith("data: "):
+                        try:
+                            data = json.loads(line[6:])
+                            usage = data.get("usage")
+                            if usage:
+                                _scale_usage_tokens(usage, copilot_limit, client_context_window)
+                            # message_start wraps usage inside message.usage too
+                            msg = data.get("message")
+                            if isinstance(msg, dict):
+                                _scale_usage_tokens(msg.get("usage"), copilot_limit, client_context_window)
+                            line = f"data: {json.dumps(data)}"
+                        except (json.JSONDecodeError, TypeError):
+                            pass  # forward as-is on parse failure
 
                 if pending_event_line is not None:
                     yield f"{pending_event_line}\n{line}\n\n"

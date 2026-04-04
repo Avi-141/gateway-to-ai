@@ -1474,6 +1474,225 @@ class TestHandleMessagesPassthrough:
         assert len(posted_body["tools"]) == 1
         assert posted_body["tools"][0]["name"] == "get_weather"
 
+    @pytest.mark.anyio
+    async def test_non_streaming_scales_usage_tokens(self, backend):
+        """Non-streaming passthrough scales usage tokens to client context window."""
+        body = {
+            "model": "claude-sonnet-4.5",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Hi"}],
+        }
+        anthropic_resp = {
+            "id": "msg_1",
+            "type": "message",
+            "content": [{"type": "text", "text": "Hi"}],
+            "model": "claude-sonnet-4.5",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_creation_input_tokens": 20,
+                "cache_read_input_tokens": 10,
+            },
+        }
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = anthropic_resp
+
+        # copilot limit 200k, client window 1M → 5x scale
+        with (
+            patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response),
+            patch("claudegate.copilot_client.get_copilot_context_limit", return_value=200_000),
+        ):
+            resp = await backend.handle_messages_passthrough(
+                body, "req1", False, "claude-sonnet-4.5", client_context_window=1_000_000
+            )
+
+        resp_body = json.loads(resp.body)
+        assert resp_body["usage"]["input_tokens"] == 500
+        assert resp_body["usage"]["output_tokens"] == 250
+        assert resp_body["usage"]["cache_creation_input_tokens"] == 100
+        assert resp_body["usage"]["cache_read_input_tokens"] == 50
+
+    @pytest.mark.anyio
+    async def test_non_streaming_no_scaling_when_limit_unknown(self, backend):
+        """Non-streaming passthrough does not scale when copilot limit is unknown."""
+        body = {
+            "model": "claude-sonnet-4.5",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Hi"}],
+        }
+        anthropic_resp = {
+            "id": "msg_1",
+            "type": "message",
+            "content": [],
+            "usage": {"input_tokens": 100, "output_tokens": 50},
+        }
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = anthropic_resp
+
+        with (
+            patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response),
+            patch("claudegate.copilot_client.get_copilot_context_limit", return_value=0),
+        ):
+            resp = await backend.handle_messages_passthrough(
+                body, "req1", False, "claude-sonnet-4.5", client_context_window=1_000_000
+            )
+
+        resp_body = json.loads(resp.body)
+        assert resp_body["usage"]["input_tokens"] == 100
+        assert resp_body["usage"]["output_tokens"] == 50
+
+    @pytest.mark.anyio
+    async def test_streaming_scales_usage_tokens(self, backend):
+        """Streaming passthrough scales usage tokens in message_start and message_delta."""
+        body = {
+            "model": "claude-sonnet-4.5",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Hi"}],
+        }
+
+        # copilot limit 200k, client window 1M → 5x scale
+        # input_tokens 100 → 500, output_tokens 20 → 100
+        msg_start = json.dumps(
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "model": "claude-sonnet-4.5",
+                    "usage": {"input_tokens": 100, "output_tokens": 0},
+                },
+            }
+        )
+        msg_delta = json.dumps(
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 20},
+            }
+        )
+        sse_lines = [
+            "event: message_start",
+            f"data: {msg_start}",
+            "",
+            "event: content_block_delta",
+            'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}',
+            "",
+            "event: message_delta",
+            f"data: {msg_delta}",
+            "",
+            "event: message_stop",
+            'data: {"type":"message_stop"}',
+        ]
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        async def mock_aiter_lines():
+            for line in sse_lines:
+                yield line
+
+        mock_response.aiter_lines = mock_aiter_lines
+        mock_response.aread = AsyncMock()
+
+        mock_stream_cm = AsyncMock()
+        mock_stream_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_stream_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch.object(backend._client, "stream", return_value=mock_stream_cm),
+            patch("claudegate.copilot_client.get_copilot_context_limit", return_value=200_000),
+        ):
+            resp = await backend.handle_messages_passthrough(
+                body, "req1", True, "claude-sonnet-4.5", client_context_window=1_000_000
+            )
+
+        collected = []
+        async for chunk in resp.body_iterator:
+            collected.append(chunk)
+
+        # Parse out the message_start event and check scaled tokens
+        for chunk in collected:
+            if "message_start" in chunk:
+                data_line = [p for p in chunk.split("\n") if p.startswith("data: ")][0]
+                data = json.loads(data_line[6:])
+                assert data["message"]["usage"]["input_tokens"] == 500
+                break
+
+        # Parse out the message_delta event and check scaled tokens
+        for chunk in collected:
+            if "message_delta" in chunk and "output_tokens" in chunk:
+                data_line = [p for p in chunk.split("\n") if p.startswith("data: ")][0]
+                data = json.loads(data_line[6:])
+                assert data["usage"]["output_tokens"] == 100
+                break
+
+    @pytest.mark.anyio
+    async def test_streaming_no_scaling_without_client_window(self, backend):
+        """Streaming passthrough passes tokens through when client_context_window is 0."""
+        body = {
+            "model": "claude-sonnet-4.5",
+            "max_tokens": 1024,
+            "messages": [{"role": "user", "content": "Hi"}],
+        }
+
+        msg_start = json.dumps(
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_1",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [],
+                    "usage": {"input_tokens": 100, "output_tokens": 0},
+                },
+            }
+        )
+        sse_lines = [
+            "event: message_start",
+            f"data: {msg_start}",
+            "",
+            "event: message_stop",
+            'data: {"type":"message_stop"}',
+        ]
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+
+        async def mock_aiter_lines():
+            for line in sse_lines:
+                yield line
+
+        mock_response.aiter_lines = mock_aiter_lines
+        mock_response.aread = AsyncMock()
+
+        mock_stream_cm = AsyncMock()
+        mock_stream_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_stream_cm.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch.object(backend._client, "stream", return_value=mock_stream_cm),
+            patch("claudegate.copilot_client.get_copilot_context_limit", return_value=200_000),
+        ):
+            # client_context_window=0 → no scaling
+            resp = await backend.handle_messages_passthrough(
+                body, "req1", True, "claude-sonnet-4.5", client_context_window=0
+            )
+
+        collected = []
+        async for chunk in resp.body_iterator:
+            collected.append(chunk)
+
+        for chunk in collected:
+            if "message_start" in chunk:
+                data_line = [p for p in chunk.split("\n") if p.startswith("data: ")][0]
+                data = json.loads(data_line[6:])
+                assert data["message"]["usage"]["input_tokens"] == 100
+                break
+
 
 class TestFilterAnthropicBetaHeader:
     """Tests for filter_anthropic_beta_header."""

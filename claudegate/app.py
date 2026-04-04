@@ -661,6 +661,7 @@ async def _call_copilot(
             request_id,
             stream,
             copilot_model,
+            client_context_window,
             extra_headers=extra_headers or None,
             initiator=effective_initiator,
         )
