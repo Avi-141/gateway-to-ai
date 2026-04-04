@@ -3,6 +3,7 @@
 import asyncio
 import os
 import time
+import uuid
 
 import httpx
 
@@ -20,12 +21,24 @@ GITHUB_DEVICE_CODE_URL = "https://github.com/login/device/code"
 GITHUB_OAUTH_TOKEN_URL = "https://github.com/login/oauth/access_token"  # noqa: S105
 COPILOT_TOKEN_URL = "https://api.github.com/copilot_internal/v2/token"  # noqa: S105
 
-# Shared editor identification headers required by all Copilot endpoints
+# Stable per-installation identifiers (generated once, reused across restarts via process lifetime)
+_SESSION_ID = str(uuid.uuid4())
+_MACHINE_ID = str(uuid.uuid4())
+
+# Shared editor identification headers required by all Copilot endpoints.
+# Matches the VS Code Copilot Chat extension fingerprint.
 COPILOT_HEADERS = {
-    "Editor-Version": "Neovim/0.6.1",
-    "Editor-Plugin-Version": "copilot.vim/1.16.0",
+    "Editor-Version": "vscode/1.100.0",
+    "Editor-Plugin-Version": "copilot-chat/0.27.2025040201",
     "User-Agent": "GithubCopilot/1.155.0",
     "Accept": "application/json",
+    "X-GitHub-Api-Version": "2025-10-01",
+}
+
+# Token exchange uses an older API version per the VS Code extension
+COPILOT_TOKEN_HEADERS = {
+    **COPILOT_HEADERS,
+    "X-GitHub-Api-Version": "2025-04-01",
 }
 
 
@@ -181,7 +194,7 @@ class CopilotAuth:
         resp = await self._client.get(
             COPILOT_TOKEN_URL,
             headers={
-                **COPILOT_HEADERS,
+                **COPILOT_TOKEN_HEADERS,
                 "Authorization": f"token {self._github_token}",
             },
         )

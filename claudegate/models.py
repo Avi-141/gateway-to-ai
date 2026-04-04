@@ -257,6 +257,23 @@ def model_supports_responses_api(model_id: str) -> bool:
     return "/responses" in endpoints
 
 
+def model_supports_messages_api(model_id: str) -> bool:
+    """Return True if the model supports /v1/messages (Anthropic native format).
+
+    Checks the dynamic model registry first.  Falls back to a heuristic:
+    all Claude models are assumed to support the native messages endpoint
+    since the Copilot proxy natively speaks Anthropic Messages for Claude.
+    """
+    endpoints = _copilot_model_endpoints.get(model_id, [])
+    if "/v1/messages" in endpoints:
+        return True
+    # Heuristic fallback: Claude models are served via the Anthropic proxy,
+    # which always supports /v1/messages even when not listed in /models.
+    if endpoints:
+        return False
+    return is_claude_model(model_id)
+
+
 def get_copilot_context_limit(model_id: str) -> int:
     """Return the Copilot context window limit for a model, or 0 if unknown."""
     return _copilot_model_limits.get(model_id, 0)

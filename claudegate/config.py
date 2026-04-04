@@ -122,6 +122,11 @@ COPILOT_RETRY_BASE_DELAY = float(os.environ.get("COPILOT_RETRY_BASE_DELAY", "1.0
 # Rate limiting: max requests per minute to Copilot (0 = unlimited)
 COPILOT_MAX_RATE = int(os.environ.get("COPILOT_MAX_RATE", "15"))
 
+# Use the native Anthropic /v1/messages endpoint on Copilot for Claude models
+# (zero-translation passthrough). Opt-in; when disabled, requests are translated
+# through the OpenAI chat/completions or responses path as before.
+COPILOT_MESSAGES_API = os.environ.get("COPILOT_MESSAGES_API", "").lower() in ("1", "true", "yes")
+
 # Pre-flight context guard: reject requests estimated to exceed this fraction
 # of the model's context limit. Set to 0 to disable. Default 0.90 leaves 10%
 # headroom for tiktoken estimation inaccuracy.
