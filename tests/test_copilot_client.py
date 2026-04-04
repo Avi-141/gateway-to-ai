@@ -232,7 +232,7 @@ class TestHandleMessagesTokenLimit:
         mock_response.status_code = 400
         mock_response.text = _TOKEN_LIMIT_DETAIL
 
-        with patch.object(backend._retry_client, "post", new_callable=AsyncMock, return_value=mock_response):
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
             body = {"model": "x", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]}
             with pytest.raises(ContextWindowExceededError) as exc_info:
                 await backend.handle_messages(body, "", False, "m", "x")
@@ -252,7 +252,7 @@ class TestHandleMessagesTokenLimit:
         mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch.object(backend._retry_client, "stream", return_value=mock_stream_ctx),
+            patch.object(backend._client, "stream", return_value=mock_stream_ctx),
             pytest.raises(ContextWindowExceededError) as exc_info,
         ):
             await backend._open_stream({"model": "m"}, "")
@@ -266,7 +266,7 @@ class TestHandleMessagesTokenLimit:
         mock_response.status_code = 400
         mock_response.text = '{"error":{"message":"invalid model","code":"invalid_request"}}'
 
-        with patch.object(backend._retry_client, "post", new_callable=AsyncMock, return_value=mock_response):
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
             body = {"model": "x", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]}
             with pytest.raises(CopilotHttpError) as exc_info:
                 await backend.handle_messages(body, "", False, "m", "x")
@@ -282,7 +282,7 @@ class TestHandleOpenAIMessagesTokenLimit:
         mock_response.status_code = 400
         mock_response.text = _TOKEN_LIMIT_DETAIL
 
-        with patch.object(backend._retry_client, "post", new_callable=AsyncMock, return_value=mock_response):
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
             body = {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}
             with pytest.raises(ContextWindowExceededError) as exc_info:
                 await backend.handle_openai_messages(body, "", False, "gpt-4o")
@@ -340,9 +340,7 @@ class TestHandleMessages:
         mock_response.status_code = 200
         mock_response.json.return_value = openai_resp
 
-        with patch.object(
-            backend._retry_client, "post", new_callable=AsyncMock, return_value=mock_response
-        ) as mock_post:
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
             body = {
                 "model": "claude-sonnet-4-5-20250929",
                 "max_tokens": 100,
@@ -365,7 +363,7 @@ class TestHandleMessages:
         mock_response.status_code = 429
         mock_response.text = "rate limited"
 
-        with patch.object(backend._retry_client, "post", new_callable=AsyncMock, return_value=mock_response):
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
             body = {
                 "model": "x",
                 "max_tokens": 100,
@@ -384,7 +382,7 @@ class TestHandleMessages:
         mock_response.status_code = 500
         mock_response.text = "server error"
 
-        with patch.object(backend._retry_client, "post", new_callable=AsyncMock, return_value=mock_response):
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
             body = {
                 "model": "x",
                 "max_tokens": 100,
@@ -402,7 +400,7 @@ class TestHandleMessages:
         mock_response.status_code = 401
         mock_response.text = "unauthorized"
 
-        with patch.object(backend._retry_client, "post", new_callable=AsyncMock, return_value=mock_response):
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
             body = {
                 "model": "x",
                 "max_tokens": 100,
@@ -417,7 +415,7 @@ class TestHandleMessages:
     async def test_non_streaming_timeout_raises(self, backend):
         """Timeout is converted to TransientBackendError for fallback eligibility."""
         with patch.object(
-            backend._retry_client, "post", new_callable=AsyncMock, side_effect=httpx.TimeoutException("timeout")
+            backend._client, "post", new_callable=AsyncMock, side_effect=httpx.TimeoutException("timeout")
         ):
             body = {
                 "model": "x",
@@ -481,7 +479,7 @@ class TestOpenStream:
         mock_stream_ctx.__aenter__ = AsyncMock(return_value=mock_resp)
         mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
 
-        with patch.object(backend._retry_client, "stream", return_value=mock_stream_ctx):
+        with patch.object(backend._client, "stream", return_value=mock_stream_ctx):
             resp, cm = await backend._open_stream({"model": "m"}, "")
 
         assert resp.status_code == 200
@@ -498,7 +496,7 @@ class TestOpenStream:
         mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch.object(backend._retry_client, "stream", return_value=mock_stream_ctx),
+            patch.object(backend._client, "stream", return_value=mock_stream_ctx),
             pytest.raises(TransientBackendError) as exc_info,
         ):
             await backend._open_stream({"model": "m"}, "")
@@ -518,7 +516,7 @@ class TestOpenStream:
         mock_stream_ctx.__aexit__ = AsyncMock(return_value=False)
 
         with (
-            patch.object(backend._retry_client, "stream", return_value=mock_stream_ctx),
+            patch.object(backend._client, "stream", return_value=mock_stream_ctx),
             pytest.raises(CopilotHttpError) as exc_info,
         ):
             await backend._open_stream({"model": "m"}, "")
@@ -640,9 +638,7 @@ class TestHandleOpenAIMessages:
         mock_response.status_code = 200
         mock_response.json.return_value = openai_resp
 
-        with patch.object(
-            backend._retry_client, "post", new_callable=AsyncMock, return_value=mock_response
-        ) as mock_post:
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
             body = {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}
             resp = await backend.handle_openai_messages(body, "req1", False, "gpt-4o")
 
@@ -667,9 +663,7 @@ class TestHandleOpenAIMessages:
         mock_response.status_code = 200
         mock_response.json.return_value = openai_resp
 
-        with patch.object(
-            backend._retry_client, "post", new_callable=AsyncMock, return_value=mock_response
-        ) as mock_post:
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
             body = {"model": "claude-sonnet-4-5-20250929", "messages": [{"role": "user", "content": "hi"}]}
             await backend.handle_openai_messages(body, "", False, "claude-sonnet-4.5")
 
@@ -682,7 +676,7 @@ class TestHandleOpenAIMessages:
         mock_response.status_code = 429
         mock_response.text = "rate limited"
 
-        with patch.object(backend._retry_client, "post", new_callable=AsyncMock, return_value=mock_response):
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
             body = {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}
             with pytest.raises(TransientBackendError) as exc_info:
                 await backend.handle_openai_messages(body, "", False, "gpt-4o")
@@ -696,7 +690,7 @@ class TestHandleOpenAIMessages:
         mock_response.status_code = 401
         mock_response.text = "unauthorized"
 
-        with patch.object(backend._retry_client, "post", new_callable=AsyncMock, return_value=mock_response):
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
             body = {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}
             with pytest.raises(CopilotHttpError) as exc_info:
                 await backend.handle_openai_messages(body, "", False, "gpt-4o")
@@ -734,7 +728,7 @@ class TestHandleOpenAIMessages:
         mock_response.status_code = 200
         mock_response.json.return_value = openai_resp
 
-        with patch.object(backend._retry_client, "post", new_callable=AsyncMock, return_value=mock_response):
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
             body = {"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}]}
             resp = await backend.handle_openai_messages(body, "req1", False, "gpt-4o")
 
@@ -754,7 +748,7 @@ class TestHandleOpenAIMessages:
         mock_response.status_code = 200
         mock_response.json.return_value = openai_resp
 
-        with patch.object(backend._retry_client, "post", new_callable=AsyncMock, return_value=mock_response):
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
             body = {"model": "original-model", "messages": [{"role": "user", "content": "hi"}]}
             await backend.handle_openai_messages(body, "", False, "gpt-4o")
 
@@ -959,7 +953,7 @@ class TestPostWithRetry:
         resp_200.status_code = 200
 
         with patch.object(
-            retry_backend._retry_client, "post", new_callable=AsyncMock, side_effect=[resp_429, resp_200]
+            retry_backend._client, "post", new_callable=AsyncMock, side_effect=[resp_429, resp_200]
         ) as mock_post:
             result = await retry_backend._post_with_retry(
                 "https://example.com/api", {"Authorization": "Bearer tok"}, {"model": "test"}, "[test] "
@@ -974,9 +968,7 @@ class TestPostWithRetry:
         resp_429.status_code = 429
         resp_429.headers = httpx.Headers({})
 
-        with patch.object(
-            retry_backend._retry_client, "post", new_callable=AsyncMock, return_value=resp_429
-        ) as mock_post:
+        with patch.object(retry_backend._client, "post", new_callable=AsyncMock, return_value=resp_429) as mock_post:
             result = await retry_backend._post_with_retry(
                 "https://example.com/api", {"Authorization": "Bearer tok"}, {"model": "test"}, "[test] "
             )
@@ -995,7 +987,7 @@ class TestPostWithRetry:
         resp_200.status_code = 200
 
         with (
-            patch.object(retry_backend._retry_client, "post", new_callable=AsyncMock, side_effect=[resp_429, resp_200]),
+            patch.object(retry_backend._client, "post", new_callable=AsyncMock, side_effect=[resp_429, resp_200]),
             patch("claudegate.copilot_client.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
         ):
             result = await retry_backend._post_with_retry(
@@ -1006,23 +998,17 @@ class TestPostWithRetry:
             mock_sleep.assert_called_once_with(1.0)
 
     @pytest.mark.anyio
-    async def test_500_retried(self, retry_backend):
-        """500 error is retried like 429, with exponential backoff."""
+    async def test_500_not_retried(self, retry_backend):
+        """500 error is not retried — returned immediately for fallback."""
         resp_500 = MagicMock()
         resp_500.status_code = 500
-        resp_500.headers = httpx.Headers({})
 
-        resp_200 = MagicMock()
-        resp_200.status_code = 200
-
-        with patch.object(
-            retry_backend._retry_client, "post", new_callable=AsyncMock, side_effect=[resp_500, resp_200]
-        ) as mock_post:
+        with patch.object(retry_backend._client, "post", new_callable=AsyncMock, return_value=resp_500) as mock_post:
             result = await retry_backend._post_with_retry(
                 "https://example.com/api", {"Authorization": "Bearer tok"}, {"model": "test"}, "[test] "
             )
-            assert result.status_code == 200
-            assert mock_post.call_count == 2
+            assert result.status_code == 500
+            assert mock_post.call_count == 1
 
     @pytest.mark.anyio
     async def test_no_retry_when_max_zero(self, mock_copilot_auth):
@@ -1032,7 +1018,7 @@ class TestPostWithRetry:
         resp_429.status_code = 429
         resp_429.headers = httpx.Headers({})
 
-        with patch.object(b._retry_client, "post", new_callable=AsyncMock, return_value=resp_429) as mock_post:
+        with patch.object(b._client, "post", new_callable=AsyncMock, return_value=resp_429) as mock_post:
             result = await b._post_with_retry(
                 "https://example.com/api", {"Authorization": "Bearer tok"}, {"model": "test"}, ""
             )
@@ -1047,7 +1033,7 @@ class TestPostWithRetry:
         resp_200.status_code = 200
 
         with (
-            patch.object(b._retry_client, "post", new_callable=AsyncMock, return_value=resp_200),
+            patch.object(b._client, "post", new_callable=AsyncMock, return_value=resp_200),
             patch.object(b._rate_limiter, "acquire", new_callable=AsyncMock, return_value=0.0) as mock_acquire,
         ):
             await b._post_with_retry("https://example.com/api", {"Authorization": "Bearer tok"}, {"model": "test"}, "")
@@ -1067,7 +1053,7 @@ class TestPostWithRetry:
         resp_200.status_code = 200
 
         with (
-            patch.object(b._retry_client, "post", new_callable=AsyncMock, side_effect=[resp_429, resp_200]),
+            patch.object(b._client, "post", new_callable=AsyncMock, side_effect=[resp_429, resp_200]),
             patch("claudegate.copilot_client.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
         ):
             result = await b._post_with_retry(
@@ -1114,7 +1100,7 @@ class TestOpenStreamWithRetry:
                 return stream_cm_429
             return stream_cm_200
 
-        with patch.object(retry_backend._retry_client, "stream", side_effect=fake_stream):
+        with patch.object(retry_backend._client, "stream", side_effect=fake_stream):
             resp, cm = await retry_backend._open_stream_with_retry(
                 "https://example.com/api", {"model": "test"}, "[test] "
             )
@@ -1122,35 +1108,26 @@ class TestOpenStreamWithRetry:
             assert call_count == 2
 
     @pytest.mark.anyio
-    async def test_stream_500_retried(self, retry_backend):
-        """Stream open: 500 is retried, subsequent success is returned."""
+    async def test_stream_500_not_retried(self, retry_backend):
+        """Stream open: 500 is not retried, returned immediately."""
         resp_500 = MagicMock()
         resp_500.status_code = 500
-        resp_500.aread = AsyncMock()
         stream_cm_500 = AsyncMock()
         stream_cm_500.__aenter__ = AsyncMock(return_value=resp_500)
-        stream_cm_500.__aexit__ = AsyncMock(return_value=False)
-
-        resp_200 = MagicMock()
-        resp_200.status_code = 200
-        stream_cm_200 = AsyncMock()
-        stream_cm_200.__aenter__ = AsyncMock(return_value=resp_200)
 
         call_count = 0
 
         def fake_stream(*args, **kwargs):
             nonlocal call_count
             call_count += 1
-            if call_count == 1:
-                return stream_cm_500
-            return stream_cm_200
+            return stream_cm_500
 
-        with patch.object(retry_backend._retry_client, "stream", side_effect=fake_stream):
+        with patch.object(retry_backend._client, "stream", side_effect=fake_stream):
             resp, cm = await retry_backend._open_stream_with_retry(
                 "https://example.com/api", {"model": "test"}, "[test] "
             )
-            assert resp.status_code == 200
-            assert call_count == 2
+            assert resp.status_code == 500
+            assert call_count == 1
 
 
 # --- handle_responses_passthrough ---
@@ -1180,9 +1157,7 @@ class TestHandleResponsesPassthrough:
         mock_response.status_code = 200
         mock_response.json.return_value = responses_resp
 
-        with patch.object(
-            backend._retry_client, "post", new_callable=AsyncMock, return_value=mock_response
-        ) as mock_post:
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
             resp = await backend.handle_responses_passthrough(body, "req1", False)
 
         assert resp.status_code == 200
@@ -1206,9 +1181,7 @@ class TestHandleResponsesPassthrough:
         mock_response.status_code = 200
         mock_response.json.return_value = {"id": "resp_123", "object": "response", "status": "completed", "output": []}
 
-        with patch.object(
-            backend._retry_client, "post", new_callable=AsyncMock, return_value=mock_response
-        ) as mock_post:
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
             resp = await backend.handle_responses_passthrough(body, "req1", False)
 
         assert resp.status_code == 200
@@ -1227,9 +1200,7 @@ class TestHandleResponsesPassthrough:
         mock_response.status_code = 200
         mock_response.json.return_value = {"id": "resp_123", "object": "response", "status": "completed", "output": []}
 
-        with patch.object(
-            backend._retry_client, "post", new_callable=AsyncMock, return_value=mock_response
-        ) as mock_post:
+        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
             resp = await backend.handle_responses_passthrough(body, "req1", False)
 
         assert resp.status_code == 200
