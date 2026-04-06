@@ -1,10 +1,9 @@
-# claudegate
+# gateway-to-ai
 
 ![Version](https://img.shields.io/badge/version-0.7.0-blue)
 ![Python](https://img.shields.io/badge/python-3.11%2B-blue)
-![License](https://img.shields.io/badge/license-UNLICENSED-green)
 
-A lightweight proxy that translates between Anthropic, OpenAI, and Responses API formats, routing requests to GitHub Copilot or AWS Bedrock backends. Enables Claude Code, Open WebUI, Codex CLI, and other API clients to use either backend.
+`gateway-to-ai` packages the `claudegate` proxy: a lightweight gateway that translates between Anthropic, OpenAI, and Responses API formats while routing requests to GitHub Copilot or AWS Bedrock backends. It enables Claude Code, Open WebUI, Codex CLI, and other API clients to use either backend.
 
 > [!IMPORTANT]
 > **New here?** Follow the **[Getting Started Guide](docs/getting-started.md)** for step-by-step setup instructions.
@@ -101,7 +100,7 @@ claudegate restart
 
 ```bash
 git clone https://github.com/Avi-141/gateway-to-ai.git
-cd claudegate
+cd gateway-to-ai
 uv run claudegate
 ```
 

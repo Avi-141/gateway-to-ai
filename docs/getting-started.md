@@ -1,19 +1,10 @@
 # Getting Started with Claude Code
 
-This guide covers setting up Claude Code. It uses **claudegate**, a local proxy that routes requests through your GitHub Copilot subscription.
+This guide covers setting up Claude Code with **claudegate**, a local proxy that routes requests through your GitHub Copilot subscription.
 
-## 1. Request a GitHub Copilot License
+## 1. Confirm your GitHub Copilot access
 
-Go to [https://github.com/features/copilot](https://github.com/features/copilot) and request one of:
-
-| Plan | Cost (quarterly) | Included prompts | Overage |
-|------|-------------------|------------------|---------|
-| GitHub Copilot Business | $43.68 USD | 300/month | $0.03/prompt |
-| GitHub Copilot Enterprise | $90.09 USD | 1,000/month | $0.03/prompt |
-
-Wait for approval.
-
-> **Data classification:** You can share highly confidential information in GitHub Copilot. Use the [Data Advisor](https://github.com/features/copilot) tool to help classify and categorize the data you share.
+Make sure the GitHub account you plan to use has an active GitHub Copilot subscription or organization entitlement.
 
 ## 2. Log into GitHub
 
@@ -159,4 +150,4 @@ claude
 
 **`claudegate` not found (Windows)** — Ensure `%USERPROFILE%\.local\bin` is on your PATH.
 
-**Model not supported (`model_not_supported` 400)** — If you see `Copilot stream error 400: {"error":{"message":"The requested model is not supported.","code":"model_not_supported",...}}` in the claudegate logs, your GitHub Copilot subscription has likely lapsed. Renew it at [https://github.com/features/copilot](https://github.com/features/copilot).
+**Model not supported (`model_not_supported` 400)** — If you see `Copilot stream error 400: {"error":{"message":"The requested model is not supported.","code":"model_not_supported",...}}` in the claudegate logs, verify that your GitHub Copilot subscription is active for the account you used during device authentication.

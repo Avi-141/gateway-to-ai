@@ -97,8 +97,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/).
 - **Server-side tool routing** — requests containing server-side tools (e.g. `web_search_20250305`) are automatically routed to Bedrock when Copilot is the primary backend, since Copilot does not support them. Falls back to stripping the tools if Bedrock is unavailable.
 - `/v1/models` now passes through `limits` (context_window, max_prompt, max_output) from the Copilot API when available.
 - **Web dashboard** — a self-contained HTML page showing server status, service info, available models with token limits, and a live log viewer with level filtering.
-- **OS trust store support** — use the native OS certificate store (macOS Keychain, Windows CertStore, Linux OpenSSL) via `truststore` so corporate SSL inspection certificates (e.g. enterprise SSL inspection) are trusted automatically without manual cert installation.
-- **Claude Code plugin** — `/models` skill available as a plugin. Install with `/plugin marketplace add github.com/Avi-141/gateway-to-ai` then `/plugin install models@claudegate`.
+- **OS trust store support** — use the native OS certificate store (macOS Keychain, Windows CertStore, Linux OpenSSL) via `truststore` so enterprise SSL inspection certificates are trusted automatically without manual cert installation.
+- **Claude Code plugin** — `/models` skill available as a plugin. Install with `/plugin marketplace add https://github.com/Avi-141/gateway-to-ai.git` then `/plugin install models@claudegate`.
 
 ### Changed
 
