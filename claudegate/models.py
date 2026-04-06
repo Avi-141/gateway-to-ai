@@ -469,3 +469,134 @@ def get_copilot_model(model: str) -> tuple[str, str]:
         return model, model
     # Default
     return DEFAULT_COPILOT_MODEL, "claude-sonnet-4-6"
+
+# --- LiteLLM Model Mappings ---
+
+# Default LiteLLM model (anthropic/ prefix for LiteLLM provider routing)
+DEFAULT_LITELLM_MODEL = "anthropic/claude-sonnet-4.6"
+
+# Map Anthropic model names to LiteLLM model IDs (provider/model format)
+LITELLM_MODEL_MAP: dict[str, str] = {
+    # Opus 4.6
+    "claude-opus-4-6-20250515": "anthropic/claude-opus-4-6-20250515",
+    "claude-opus-4-6": "anthropic/claude-opus-4-6-20250515",
+    # Opus 4.5
+    "claude-opus-4-5-20251101": "anthropic/claude-opus-4-5-20251101",
+    "claude-opus-4-5": "anthropic/claude-opus-4-5-20251101",
+    # Opus 4.1
+    "claude-opus-4-1-20250805": "anthropic/claude-opus-4-1-20250805",
+    "claude-opus-4-1": "anthropic/claude-opus-4-1-20250805",
+    # Opus 4
+    "claude-opus-4-20250514": "anthropic/claude-opus-4-20250514",
+    "claude-opus-4": "anthropic/claude-opus-4-20250514",
+    # Sonnet 4.6
+    "claude-sonnet-4-6": "anthropic/claude-sonnet-4.6",
+    # Sonnet 4.5
+    "claude-sonnet-4-5-20250929": "anthropic/claude-sonnet-4-5-20250929",
+    "claude-sonnet-4-5": "anthropic/claude-sonnet-4-5-20250929",
+    # Sonnet 4
+    "claude-sonnet-4-20250514": "anthropic/claude-sonnet-4-20250514",
+    "claude-sonnet-4": "anthropic/claude-sonnet-4-20250514",
+    # Sonnet 3.7
+    "claude-3-7-sonnet-20250219": "anthropic/claude-3-7-sonnet-20250219",
+    "claude-3-7-sonnet": "anthropic/claude-3-7-sonnet-20250219",
+    # Sonnet 3.5 v2
+    "claude-3-5-sonnet-20241022": "anthropic/claude-3-5-sonnet-20241022",
+    "claude-3-5-sonnet": "anthropic/claude-3-5-sonnet-20241022",
+    # Sonnet 3.5 v1
+    "claude-3-5-sonnet-20240620": "anthropic/claude-3-5-sonnet-20240620",
+    # Haiku 4.5
+    "claude-haiku-4-5-20251001": "anthropic/claude-haiku-4-5-20251001",
+    "claude-haiku-4-5": "anthropic/claude-haiku-4-5-20251001",
+    # Haiku 3.5
+    "claude-3-5-haiku-20241022": "anthropic/claude-3-5-haiku-20241022",
+    "claude-3-5-haiku": "anthropic/claude-3-5-haiku-20241022",
+    # Haiku 3
+    "claude-3-haiku-20240307": "anthropic/claude-3-haiku-20240307",
+    # Opus 3
+    "claude-3-opus-20240229": "anthropic/claude-3-opus-20240229",
+    # Sonnet 3
+    "claude-3-sonnet-20240229": "anthropic/claude-3-sonnet-20240229",
+}
+
+
+# --- Dynamic LiteLLM Model Registry ---
+
+# Populated at startup from the LiteLLM /models endpoint
+_litellm_models: list[dict[str, Any]] = []
+_litellm_model_ids: set[str] = set()
+
+
+def set_litellm_models(models: list[dict[str, Any]]) -> None:
+    """Store models fetched from the LiteLLM /models endpoint."""
+    global _litellm_models, _litellm_model_ids
+    _litellm_models = models
+    _litellm_model_ids = {m["id"] for m in models if "id" in m}
+
+
+def get_available_litellm_models() -> list[dict[str, Any]]:
+    """Return the dynamically fetched LiteLLM models (empty if not fetched)."""
+    return _litellm_models
+
+
+def get_litellm_model(model: str) -> tuple[str, str]:
+    """Map Anthropic model name to LiteLLM model ID.
+
+    Returns (litellm_model_id, anthropic_model_name) tuple.
+    When dynamic models are available, validates against them.
+    Falls back to static map, then passes through as-is.
+    """
+    model = _strip_model_prefix(model)
+
+    if _litellm_model_ids:
+        # Direct match in dynamic registry
+        if model in _litellm_model_ids:
+            return model, model
+        # Anthropic versioned name -> LiteLLM model ID
+        if model in LITELLM_MODEL_MAP:
+            target = LITELLM_MODEL_MAP[model]
+            if target in _litellm_model_ids:
+                return target, model
+            # Target not found in registry, use static map anyway
+            return target, model
+        # Partial match in static map, validated against registry
+        for key, value in LITELLM_MODEL_MAP.items():
+            if key in model and value in _litellm_model_ids:
+                return value, key
+        # Non-Claude models: pass through as-is (LiteLLM handles routing)
+        if not is_claude_model(model):
+            return model, model
+        # Default
+        return DEFAULT_LITELLM_MODEL, "claude-sonnet-4-6"
+
+    # No dynamic models: use static map
+    if model in LITELLM_MODEL_MAP:
+        return LITELLM_MODEL_MAP[model], model
+    for key, value in LITELLM_MODEL_MAP.items():
+        if key in model:
+            return value, key
+    # Non-Claude models: pass through as-is
+    if not is_claude_model(model):
+        return model, model
+    return DEFAULT_LITELLM_MODEL, "claude-sonnet-4-6"
+
+
+def get_litellm_openai_model(model: str) -> str:
+    """Map a model name to a LiteLLM-compatible model ID for OpenAI passthrough.
+
+    LiteLLM accepts both prefixed (anthropic/claude-...) and unprefixed names
+    depending on proxy config. Dynamic registry takes priority.
+    """
+    model = _strip_model_prefix(model)
+    if _litellm_model_ids:
+        if model in _litellm_model_ids:
+            return model
+        if model in LITELLM_MODEL_MAP:
+            target = LITELLM_MODEL_MAP[model]
+            if target in _litellm_model_ids:
+                return target
+        return model
+    if model in LITELLM_MODEL_MAP:
+        return LITELLM_MODEL_MAP[model]
+    return model
+

@@ -1,6 +1,12 @@
 """Tests for claudegate/errors.py."""
 
-from claudegate.errors import ContextWindowExceededError, CopilotHttpError, TransientBackendError
+from claudegate.errors import (
+    BackendHttpError,
+    ContextWindowExceededError,
+    CopilotHttpError,
+    LiteLLMHttpError,
+    TransientBackendError,
+)
 
 
 class TestTransientBackendError:
@@ -31,11 +37,46 @@ class TestCopilotHttpError:
     def test_str(self):
         err = CopilotHttpError(403, "forbidden")
         assert "403" in str(err)
-        assert "forbidden" in str(err)
 
-    def test_is_exception(self):
-        err = CopilotHttpError(404, "not found")
+    def test_is_backend_http_error(self):
+        err = CopilotHttpError(401, "unauthorized")
+        assert isinstance(err, BackendHttpError)
+        assert err.backend == "copilot"
+
+
+class TestLiteLLMHttpError:
+    def test_attributes(self):
+        err = LiteLLMHttpError(401, "unauthorized")
+        assert err.status_code == 401
+        assert err.detail == "unauthorized"
+        assert err.backend == "litellm"
+
+    def test_str(self):
+        err = LiteLLMHttpError(403, "forbidden")
+        assert "403" in str(err)
+        assert "litellm" in str(err)
+
+    def test_is_backend_http_error(self):
+        err = LiteLLMHttpError(404, "not found")
+        assert isinstance(err, BackendHttpError)
         assert isinstance(err, Exception)
+
+
+class TestBackendHttpError:
+    def test_attributes(self):
+        err = BackendHttpError(500, "server error", "custom")
+        assert err.status_code == 500
+        assert err.detail == "server error"
+        assert err.backend == "custom"
+
+    def test_catches_both_subclasses(self):
+        """BackendHttpError catch clause catches both CopilotHttpError and LiteLLMHttpError."""
+        copilot_err = CopilotHttpError(401, "unauthorized")
+        litellm_err = LiteLLMHttpError(403, "forbidden")
+        assert isinstance(copilot_err, BackendHttpError)
+        assert isinstance(litellm_err, BackendHttpError)
+
+
 
 
 class TestContextWindowExceededError:

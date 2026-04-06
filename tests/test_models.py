@@ -10,18 +10,24 @@ from claudegate.models import (
     COPILOT_MODEL_MAP,
     COPILOT_OPENAI_MODEL_MAP,
     DEFAULT_BEDROCK_MODEL,
+    DEFAULT_LITELLM_MODEL,
+    LITELLM_MODEL_MAP,
     add_region_prefix,
     get_available_copilot_models,
+    get_available_litellm_models,
     get_bedrock_model,
     get_copilot_context_limit,
     get_copilot_context_window,
     get_copilot_model,
     get_copilot_openai_model,
+    get_litellm_model,
+    get_litellm_openai_model,
     is_claude_model,
     model_requires_responses_api,
     model_supports_messages_api,
     refresh_copilot_models_if_stale,
     set_copilot_models,
+    set_litellm_models,
 )
 
 # --- add_region_prefix ---
@@ -847,3 +853,118 @@ class TestRefreshCopilotModelsIfStale:
 
         assert models_mod._copilot_models_fetched_at >= before
         assert models_mod._copilot_models_fetched_at <= after
+        )
+        assert get_copilot_context_limit("claude-opus-4.6") == 128000
+        assert get_copilot_context_window("claude-opus-4.6") == 200000
+
+
+# --- get_litellm_model ---
+
+
+class TestGetLiteLLMModel:
+    @pytest.fixture(autouse=True)
+    def reset_registry(self):
+        """Reset the dynamic model registry before and after each test."""
+        set_litellm_models([])
+        yield
+        set_litellm_models([])
+
+    @pytest.mark.parametrize("anthropic_name,litellm_id", list(LITELLM_MODEL_MAP.items()))
+    def test_all_map_entries(self, anthropic_name, litellm_id):
+        model_id, returned_name = get_litellm_model(anthropic_name)
+        assert model_id == litellm_id
+        assert returned_name == anthropic_name
+
+    def test_partial_match(self):
+        model_id, returned_name = get_litellm_model("prefix-claude-sonnet-4-5-20250929-suffix")
+        assert model_id == "anthropic/claude-sonnet-4-5-20250929"
+        assert returned_name == "claude-sonnet-4-5-20250929"
+
+    def test_non_claude_passthrough(self):
+        model_id, returned_name = get_litellm_model("gpt-4o")
+        assert model_id == "gpt-4o"
+        assert returned_name == "gpt-4o"
+
+    def test_unknown_claude_falls_back_to_default(self):
+        model_id, returned_name = get_litellm_model("claude-unknown-99-0")
+        assert model_id == DEFAULT_LITELLM_MODEL
+        assert returned_name == "claude-sonnet-4-5-20250929"
+
+    def test_dynamic_registry_direct_match(self):
+        set_litellm_models([{"id": "anthropic/claude-sonnet-4-5-20250929"}, {"id": "openai/gpt-4o"}])
+        model_id, returned_name = get_litellm_model("anthropic/claude-sonnet-4-5-20250929")
+        assert model_id == "anthropic/claude-sonnet-4-5-20250929"
+
+    def test_dynamic_registry_anthropic_name_to_litellm_id(self):
+        set_litellm_models([{"id": "anthropic/claude-sonnet-4-5-20250929"}])
+        model_id, returned_name = get_litellm_model("claude-sonnet-4-5-20250929")
+        assert model_id == "anthropic/claude-sonnet-4-5-20250929"
+        assert returned_name == "claude-sonnet-4-5-20250929"
+
+    def test_dynamic_non_claude_passthrough(self):
+        set_litellm_models([{"id": "anthropic/claude-sonnet-4.5"}])
+        model_id, returned_name = get_litellm_model("gpt-4o")
+        assert model_id == "gpt-4o"
+        assert returned_name == "gpt-4o"
+
+    def test_prefix_stripping(self):
+        model_id, returned_name = get_litellm_model("github-copilot/claude-sonnet-4-5-20250929")
+        assert model_id == "anthropic/claude-sonnet-4-5-20250929"
+        assert returned_name == "claude-sonnet-4-5-20250929"
+
+
+# --- get_litellm_openai_model ---
+
+
+class TestGetLiteLLMOpenAIModel:
+    @pytest.fixture(autouse=True)
+    def reset_registry(self):
+        """Reset the dynamic model registry before and after each test."""
+        set_litellm_models([])
+        yield
+        set_litellm_models([])
+
+    def test_anthropic_name_maps_to_litellm(self):
+        result = get_litellm_openai_model("claude-sonnet-4-5-20250929")
+        assert result == "anthropic/claude-sonnet-4-5-20250929"
+
+    def test_non_claude_passthrough(self):
+        assert get_litellm_openai_model("gpt-4o") == "gpt-4o"
+
+    def test_unknown_model_passthrough(self):
+        assert get_litellm_openai_model("some-custom-model") == "some-custom-model"
+
+    def test_dynamic_registry_exact_match(self):
+        set_litellm_models([{"id": "openai/gpt-4o"}, {"id": "anthropic/claude-sonnet-4-5-20250929"}])
+        assert get_litellm_openai_model("openai/gpt-4o") == "openai/gpt-4o"
+
+    def test_dynamic_registry_anthropic_name_resolves(self):
+        set_litellm_models([{"id": "anthropic/claude-sonnet-4-5-20250929"}])
+        assert get_litellm_openai_model("claude-sonnet-4-5-20250929") == "anthropic/claude-sonnet-4-5-20250929"
+
+    def test_dynamic_registry_passthrough_when_not_found(self):
+        set_litellm_models([{"id": "some-model"}])
+        assert get_litellm_openai_model("unknown-model") == "unknown-model"
+
+    def test_prefix_stripping(self):
+        result = get_litellm_openai_model("github-copilot/claude-sonnet-4-5-20250929")
+        assert result == "anthropic/claude-sonnet-4-5-20250929"
+
+
+# --- Dynamic LiteLLM Model Registry ---
+
+
+class TestDynamicLiteLLMModels:
+    @pytest.fixture(autouse=True)
+    def reset_registry(self):
+        set_litellm_models([])
+        yield
+        set_litellm_models([])
+
+    def test_set_and_get_litellm_models(self):
+        models = [{"id": "model-a"}, {"id": "model-b"}]
+        set_litellm_models(models)
+        assert get_available_litellm_models() == models
+
+    def test_get_empty_when_not_set(self):
+        assert get_available_litellm_models() == []

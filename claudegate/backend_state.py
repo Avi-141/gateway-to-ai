@@ -8,8 +8,9 @@ from .config import COPILOT_TIMEOUT, logger
 if TYPE_CHECKING:
     from .copilot_client import CopilotBackend
     from .copilot_usage import CopilotUsageCache
+    from .litellm_client import LiteLLMBackend
 
-VALID_BACKENDS = {"copilot", "bedrock"}
+VALID_BACKENDS = {"copilot", "bedrock", "litellm"}
 
 
 def parse_backend_string(value: str) -> tuple[str, str]:
@@ -46,6 +47,7 @@ class BackendState:
         self._fallback = fallback
         self._copilot_backend: CopilotBackend | None = None
         self._copilot_usage_cache: CopilotUsageCache | None = None
+        self._litellm_backend: LiteLLMBackend | None = None
         self._lock = asyncio.Lock()
 
     @property
@@ -64,10 +66,18 @@ class BackendState:
     def copilot_usage_cache(self) -> "CopilotUsageCache | None":
         return self._copilot_usage_cache
 
+    @property
+    def litellm_backend(self) -> "LiteLLMBackend | None":
+        return self._litellm_backend
+
     def set_copilot_backend(self, backend: "CopilotBackend", cache: "CopilotUsageCache") -> None:
         """Called from lifespan() at startup to set the initialized copilot backend."""
         self._copilot_backend = backend
         self._copilot_usage_cache = cache
+
+    def set_litellm_backend(self, backend: "LiteLLMBackend") -> None:
+        """Called from lifespan() at startup to set the initialized LiteLLM backend."""
+        self._litellm_backend = backend
 
     async def switch(self, primary: str, fallback: str = "") -> dict:
         """Switch to a new backend configuration.
@@ -89,6 +99,10 @@ class BackendState:
             needs_copilot = primary == "copilot" or fallback == "copilot"
             if needs_copilot and self._copilot_backend is None:
                 await self._init_copilot()
+
+            needs_litellm = primary == "litellm" or fallback == "litellm"
+            if needs_litellm and self._litellm_backend is None:
+                await self._init_litellm()
 
             self._primary = primary
             self._fallback = fallback
@@ -125,9 +139,28 @@ class BackendState:
         self._copilot_usage_cache = cache
         logger.info("Copilot backend initialized via runtime switch")
 
+    async def _init_litellm(self) -> None:
+        """Lazily initialize the LiteLLM backend."""
+        from .config import LITELLM_API_BASE, LITELLM_API_KEY, LITELLM_TIMEOUT
+        from .litellm_client import LiteLLMBackend
+        from .models import set_litellm_models
+
+        backend = LiteLLMBackend(api_base=LITELLM_API_BASE, api_key=LITELLM_API_KEY, timeout=LITELLM_TIMEOUT)
+        models = await backend.list_models()
+        if models:
+            set_litellm_models(models)
+            logger.info(f"Loaded {len(models)} models from LiteLLM API")
+        else:
+            logger.warning("No models fetched from LiteLLM API, using static model map")
+
+        self._litellm_backend = backend
+        logger.info(f"LiteLLM backend initialized via runtime switch (base: {LITELLM_API_BASE})")
+
     async def close(self) -> None:
-        """Shutdown lifecycle — close copilot resources."""
+        """Shutdown lifecycle — close backend resources."""
         if self._copilot_usage_cache is not None:
             await self._copilot_usage_cache.close()
         if self._copilot_backend is not None:
             await self._copilot_backend.close()
+        if self._litellm_backend is not None:
+            await self._litellm_backend.close()

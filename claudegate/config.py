@@ -105,13 +105,19 @@ logger = logging.getLogger("claudegate")
 # See: https://docs.aws.amazon.com/bedrock/latest/userguide/cross-region-inference.html
 BEDROCK_REGION_PREFIX = os.environ.get("BEDROCK_REGION_PREFIX", DEFAULT_BEDROCK_REGION_PREFIX)
 
-# Backend selection: "bedrock", "copilot", or comma-separated "copilot,bedrock" for fallback
+# Backend selection: "bedrock", "copilot", "litellm", or comma-separated primary,fallback
 _backends = [b.strip() for b in os.environ.get("CLAUDEGATE_BACKEND", "copilot").lower().split(",") if b.strip()]
 BACKEND_TYPE = _backends[0]  # primary backend
 FALLBACK_BACKEND = _backends[1] if len(_backends) > 1 else ""  # optional fallback
 FALLBACK_ON_ERRORS = {429, 500, 502, 503, 504}
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "")
 COPILOT_TIMEOUT = int(os.environ.get("COPILOT_TIMEOUT", "300"))
+
+# LiteLLM proxy settings
+LITELLM_API_BASE = os.environ.get("LITELLM_API_BASE", "http://localhost:4000")
+LITELLM_API_KEY = os.environ.get("LITELLM_API_KEY", "")
+LITELLM_TIMEOUT = int(os.environ.get("LITELLM_TIMEOUT", str(DEFAULT_READ_TIMEOUT)))
+
 COPILOT_MODELS_TTL = int(os.environ.get("COPILOT_MODELS_TTL", "300"))
 
 # Retry on 429 before falling back (0 = no retries, go straight to fallback)

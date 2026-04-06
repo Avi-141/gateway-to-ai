@@ -30,6 +30,9 @@ from .config import (
     DEFAULT_HOST,
     DEFAULT_PORT,
     FALLBACK_BACKEND,
+    LITELLM_API_BASE,
+    LITELLM_API_KEY,
+    LITELLM_TIMEOUT,
     LOG_LEVEL,
     logger,
 )
@@ -37,23 +40,28 @@ from .context_guard import check_context_guard_anthropic, check_context_guard_op
 from .copilot_client import compute_initiator, filter_anthropic_beta_header
 from .copilot_translate import has_server_tools, strip_server_tools
 from .copilot_usage import CopilotUsageCache
-from .errors import ContextWindowExceededError, CopilotHttpError, TransientBackendError
+from .errors import BackendHttpError, ContextWindowExceededError, TransientBackendError
 from .models import (
     BEDROCK_MODEL_MAP,
     COPILOT_MODEL_MAP,
     COPILOT_OPENAI_MODEL_MAP,
+    LITELLM_MODEL_MAP,
     add_region_prefix,
     get_available_copilot_models,
+    get_available_litellm_models,
     get_bedrock_model,
     get_copilot_context_limit,
     get_copilot_model,
     get_copilot_openai_model,
+    get_litellm_model,
+    get_litellm_openai_model,
     is_claude_model,
     model_requires_responses_api,
     model_supports_messages_api,
     model_supports_responses_api,
     refresh_copilot_models_if_stale,
     set_copilot_models,
+    set_litellm_models,
 )
 from .openai_translate import (
     ReverseStreamTranslator,
@@ -126,7 +134,7 @@ async def lifespan(app: FastAPI):
     if fallback:
         if fallback == primary:
             raise ValueError(f"FALLBACK_BACKEND cannot be the same as BACKEND_TYPE: {primary}")
-        valid = {"bedrock", "copilot"}
+        valid = {"bedrock", "copilot", "litellm"}
         if fallback not in valid:
             raise ValueError(f"Invalid FALLBACK_BACKEND: {fallback}, must be one of {valid}")
 
@@ -165,6 +173,26 @@ async def lifespan(app: FastAPI):
             logger.info(f"Loaded {len(models)} models from Copilot API")
         else:
             logger.warning("No models fetched from Copilot API, using hardcoded maps")
+
+    needs_litellm = primary == "litellm" or fallback == "litellm"
+    if needs_litellm:
+        from .litellm_client import LiteLLMBackend
+
+        litellm_backend = LiteLLMBackend(
+            api_base=LITELLM_API_BASE,
+            api_key=LITELLM_API_KEY,
+            timeout=LITELLM_TIMEOUT,
+        )
+        logger.info(f"LiteLLM backend initialized (base: {LITELLM_API_BASE})")
+
+        models = await litellm_backend.list_models()
+        if models:
+            set_litellm_models(models)
+            logger.info(f"Loaded {len(models)} models from LiteLLM API")
+        else:
+            logger.warning("No models fetched from LiteLLM API, using static model map")
+
+        _backend_state.set_litellm_backend(litellm_backend)
 
     needs_bedrock = primary == "bedrock" or fallback == "bedrock"
     if needs_bedrock:
@@ -709,6 +737,63 @@ async def _call_copilot_openai(body: dict[str, Any], request_id: str, stream: bo
     return await copilot.handle_openai_messages(body, request_id, stream, copilot_model)
 
 
+async def _call_litellm(
+    body: dict[str, Any],
+    request: Request,
+    request_id: str,
+    stream: bool,
+) -> JSONResponse | StreamingResponse:
+    """Execute request against LiteLLM backend.
+
+    Raises TransientBackendError for fallback-eligible errors.
+    Raises LiteLLMHttpError for non-transient errors.
+    """
+    litellm = _backend_state.litellm_backend
+    if litellm is None:
+        raise RuntimeError("LiteLLM backend not initialized")
+    litellm_model, anthropic_model = get_litellm_model(body["model"])
+    log_prefix = f"[{request_id}] " if request_id else ""
+    logger.info(f"{log_prefix}Request - model: {body['model']} -> {litellm_model} (litellm), stream: {stream}")
+    return await litellm.handle_messages(body, request_id, stream, litellm_model, anthropic_model)
+
+
+async def _call_litellm_openai(body: dict[str, Any], request_id: str, stream: bool) -> JSONResponse | StreamingResponse:
+    """Execute OpenAI-format request directly against LiteLLM (no translation).
+
+    Raises TransientBackendError for fallback-eligible errors.
+    Raises LiteLLMHttpError for non-transient errors.
+    """
+    litellm = _backend_state.litellm_backend
+    if litellm is None:
+        raise RuntimeError("LiteLLM backend not initialized")
+    litellm_model = get_litellm_openai_model(body["model"])
+    log_prefix = f"[{request_id}] " if request_id else ""
+    logger.info(
+        f"{log_prefix}OpenAI passthrough - model: {body['model']} -> {litellm_model} (litellm), stream: {stream}"
+    )
+    return await litellm.handle_openai_messages(body, request_id, stream, litellm_model)
+
+
+async def _call_litellm_responses(
+    body: dict[str, Any], request_id: str, stream: bool
+) -> JSONResponse | StreamingResponse:
+    """Execute Responses API request against LiteLLM backend via chat translation.
+
+    Translates Responses -> Chat Completions -> LiteLLM -> Chat Completions -> Responses.
+    """
+    litellm = _backend_state.litellm_backend
+    if litellm is None:
+        raise RuntimeError("LiteLLM backend not initialized")
+    model = body.get("model", "")
+    litellm_model = get_litellm_openai_model(model)
+    log_prefix = f"[{request_id}] " if request_id else ""
+    body = {**body, "model": litellm_model}
+    logger.info(f"{log_prefix}Responses via chat for {litellm_model} (litellm)")
+    return await litellm.handle_responses_via_chat(body, request_id, stream, litellm_model)
+
+
+
+
 async def _call_bedrock_for_openai(
     body: dict[str, Any], request: Request, request_id: str, stream: bool
 ) -> JSONResponse | StreamingResponse:
@@ -859,31 +944,35 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
     stream = body.get("stream", False)
     log_prefix = f"[{request_id}] " if request_id else ""
 
-    # Route non-Claude models (GPT, Gemini, Grok, etc.) to Copilot when available.
-    # Bedrock only supports Claude models, so non-Claude models need Copilot.
+    # Route non-Claude models (GPT, Gemini, Grok, etc.) to Copilot or LiteLLM when available.
+    # Bedrock only supports Claude models, so non-Claude models need a different backend.
     requested_model = body["model"]
     if not is_claude_model(requested_model):
         copilot_available = _backend_state.primary == "copilot" or _backend_state.fallback == "copilot"
-        if not copilot_available:
+        litellm_available = _backend_state.primary == "litellm" or _backend_state.fallback == "litellm"
+        if not copilot_available and not litellm_available:
             return _error_response(
                 400,
                 "invalid_request_error",
                 f"Model '{requested_model}' is not supported on the Bedrock backend. "
-                "Non-Claude models require the Copilot backend.",
+                "Non-Claude models require the Copilot or LiteLLM backend.",
             )
-        # Force route to Copilot for non-Claude models
+        if _backend_state.primary in ("copilot", "litellm"):
+            backend_fn = _call_copilot if _backend_state.primary == "copilot" else _call_litellm
+        else:
+            backend_fn = _call_copilot if copilot_available else _call_litellm
         try:
             check_context_guard_anthropic(body)
         except ContextWindowExceededError as e:
             request_stats.record_context_guard_rejection()
             return _context_window_error_response(e, body.get("max_tokens", 0))
         try:
-            return await _call_copilot(body, request, request_id, stream)
+            return await backend_fn(body, request, request_id, stream)
         except ContextWindowExceededError as e:
             return _context_window_error_response(e, body.get("max_tokens", 0))
         except TransientBackendError as e:
             return _error_response(e.status_code, e.error_type, e.message)
-        except CopilotHttpError as e:
+        except BackendHttpError as e:
             return _error_response(e.status_code, "api_error", e.detail)
         except RuntimeError as e:
             logger.error(f"{log_prefix}Auth error: {e}")
@@ -899,7 +988,7 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
     # Compute the initiator *before* stripping so that removing server-tool
     # content blocks from the conversation history does not change the result.
     initiator_override: str | None = None
-    if has_server_tools(body) and _backend_state.primary == "copilot":
+    if has_server_tools(body) and _backend_state.primary in ("copilot", "litellm"):
         initiator_override = compute_initiator(body)
         if _backend_state.fallback == "bedrock":
             logger.info(f"{log_prefix}Server-side tools detected, routing to Bedrock fallback")
@@ -924,6 +1013,8 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
     def _get_backend_caller(backend_name: str):
         if backend_name == "copilot":
             return lambda: _call_copilot(body, request, request_id, stream, initiator=initiator_override)
+        if backend_name == "litellm":
+            return lambda: _call_litellm(body, request, request_id, stream)
         return lambda: _call_bedrock(body, request, request_id, stream)
 
     # Capture current backend config for this request
@@ -965,7 +1056,7 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
                 logger.error(f"{log_prefix}Fallback ({current_fallback}) failed with {fallback_err.status_code}")
                 request_stats.record_error()
                 return _context_window_error_response(e, max_tokens)
-            except CopilotHttpError as fallback_err:
+            except BackendHttpError as fallback_err:
                 logger.error(f"{log_prefix}Fallback ({current_fallback}) HTTP error: {fallback_err}")
                 request_stats.record_error()
                 return _context_window_error_response(e, max_tokens)
@@ -1002,7 +1093,7 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
             logger.error(f"{log_prefix}Fallback ({current_fallback}) also failed with {fallback_err.status_code}")
             request_stats.record_error()
             return _error_response(fallback_err.status_code, fallback_err.error_type, fallback_err.message)
-        except CopilotHttpError as fallback_err:
+        except BackendHttpError as fallback_err:
             request_stats.record_error()
             return _error_response(fallback_err.status_code, "api_error", fallback_err.detail)
         except RuntimeError as fallback_err:
@@ -1012,7 +1103,7 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
             logger.error(f"{log_prefix}Fallback ({current_fallback}) unexpected error: {fallback_err}", exc_info=True)
             request_stats.record_error()
             return _error_response(500, "api_error", str(fallback_err))
-    except CopilotHttpError as e:
+    except BackendHttpError as e:
         request_stats.record_error()
         return _error_response(e.status_code, "api_error", e.detail)
     except RuntimeError as e:
@@ -1068,6 +1159,8 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
     def _get_backend_caller(backend_name: str):
         if backend_name == "copilot":
             return lambda: _call_copilot_openai(body, request_id, stream)
+        if backend_name == "litellm":
+            return lambda: _call_litellm_openai(body, request_id, stream)
         return lambda: _call_bedrock_for_openai(body, request, request_id, stream)
 
     # Capture current backend config for this request
@@ -1114,7 +1207,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
                 logger.error(f"{log_prefix}Fallback ({current_fallback}) failed with {fallback_err.status_code}")
                 request_stats.record_error()
                 return _openai_error_response(400, _ctx_msg)
-            except CopilotHttpError as fallback_err:
+            except BackendHttpError as fallback_err:
                 logger.error(f"{log_prefix}Fallback ({current_fallback}) HTTP error: {fallback_err}")
                 request_stats.record_error()
                 return _openai_error_response(400, _ctx_msg)
@@ -1155,7 +1248,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
             logger.error(f"{log_prefix}Fallback ({current_fallback}) also failed with {fallback_err.status_code}")
             request_stats.record_error()
             return _openai_error_response(fallback_err.status_code, fallback_err.message, "server_error")
-        except CopilotHttpError as fallback_err:
+        except BackendHttpError as fallback_err:
             request_stats.record_error()
             return _openai_error_response(fallback_err.status_code, fallback_err.detail, "server_error")
         except RuntimeError as fallback_err:
@@ -1165,7 +1258,7 @@ async def chat_completions(request: Request) -> JSONResponse | StreamingResponse
             logger.error(f"{log_prefix}Fallback ({current_fallback}) unexpected error: {fallback_err}", exc_info=True)
             request_stats.record_error()
             return _openai_error_response(500, str(fallback_err), "server_error")
-    except CopilotHttpError as e:
+    except BackendHttpError as e:
         request_stats.record_error()
         return _openai_error_response(e.status_code, e.detail, "server_error")
     except RuntimeError as e:
@@ -1239,6 +1332,8 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
     def _get_backend_caller(backend_name: str):
         if backend_name == "copilot":
             return lambda: _call_copilot_responses(body, request_id, stream)
+        if backend_name == "litellm":
+            return lambda: _call_litellm_responses(body, request_id, stream)
         return lambda: _call_bedrock_for_responses(body, request, request_id, stream)
 
     # Capture current backend config for this request
@@ -1290,7 +1385,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
                 request_stats.record_error()
                 return _openai_error_response(400, _ctx_msg)
 
-            except CopilotHttpError as fallback_err:
+            except BackendHttpError as fallback_err:
                 logger.error(f"{log_prefix}Fallback ({current_fallback}) HTTP error: {fallback_err}")
                 request_stats.record_error()
                 return _openai_error_response(400, _ctx_msg)
@@ -1335,7 +1430,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
             request_stats.record_error()
             return _openai_error_response(fallback_err.status_code, fallback_err.message, "server_error")
 
-        except CopilotHttpError as fallback_err:
+        except BackendHttpError as fallback_err:
             request_stats.record_error()
             return _openai_error_response(fallback_err.status_code, fallback_err.detail, "server_error")
 
@@ -1351,7 +1446,7 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
             request_stats.record_error()
             return _openai_error_response(500, str(fallback_err), "server_error")
 
-    except CopilotHttpError as e:
+    except BackendHttpError as e:
         request_stats.record_error()
         return _openai_error_response(e.status_code, e.detail, "server_error")
 
@@ -1469,6 +1564,33 @@ async def list_models() -> dict[str, Any]:
                     "owned_by": owned_by,
                 }
                 for model_id, owned_by in all_model_ids.items()
+            ]
+    elif _backend_state.primary == "litellm":
+        dynamic_models = get_available_litellm_models()
+        if dynamic_models:
+            models = []
+            for m in dynamic_models:
+                mid = m.get("id", "")
+                if not mid:
+                    continue
+                models.append(
+                    {
+                        "id": mid,
+                        "object": "model",
+                        "created": m.get("created", 1700000000),
+                        "owned_by": m.get("owned_by", _infer_owned_by(mid)),
+                    }
+                )
+        else:
+            # Fallback to hardcoded map
+            models = [
+                {
+                    "id": model_id,
+                    "object": "model",
+                    "created": 1700000000,
+                    "owned_by": "anthropic",
+                }
+                for model_id in LITELLM_MODEL_MAP
             ]
     else:
         models = [
