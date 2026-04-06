@@ -5,6 +5,7 @@ import gzip
 import io
 import json
 import os
+import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -71,6 +72,84 @@ from .server_url import remove_server_url, write_server_url
 # Credential/connection errors that should return a clean 401/503 instead of a stacktrace
 _CREDENTIAL_ERRORS = (NoCredentialsError, PartialCredentialsError)
 _CONNECTION_ERRORS = (EndpointConnectionError,)
+
+# ---- Tunables for /v1/responses/compact ----
+MAX_RECENT_MESSAGES = 8
+MAX_SUMMARY_CHARS = 4000
+SUMMARY_MODEL = "gpt-4.1-mini"
+
+
+def _split_conversation(input_items: list):
+    system_msgs = []
+    other_msgs = []
+
+    for item in input_items:
+        if item.get("role") == "system":
+            system_msgs.append(item)
+        else:
+            other_msgs.append(item)
+
+    return system_msgs, other_msgs
+
+
+async def _summarize_messages(old_messages: list, request: Request, request_id: str):
+    """Summarize old messages using the configured primary backend (no /compact recursion)."""
+    if not old_messages:
+        return None
+
+    summary_prompt = {
+        "model": SUMMARY_MODEL,
+        "input": [
+            {
+                "role": "system",
+                "content": (
+                    "Summarize the following conversation concisely. "
+                    "Preserve key facts, decisions, errors, and tool outputs if present."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(old_messages)[:MAX_SUMMARY_CHARS],
+            },
+        ],
+        "temperature": 0,
+    }
+
+    try:
+        if _backend_state.primary == "copilot":
+            response = await _call_copilot_responses(summary_prompt, request_id, False)
+        else:
+            response = await _call_bedrock_for_responses(summary_prompt, request, request_id, False)
+
+        if isinstance(response, JSONResponse):
+            data = json.loads(response.body.decode())
+
+            return data.get("output", [{}])[0].get("content", [{}])[0].get("text")
+
+    except Exception:
+        pass
+
+    return None
+
+
+def _wrap_compact_response(compacted_input: list):
+    return {
+        "id": f"compact-{uuid.uuid4()}",
+        "object": "response",
+        "output": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": json.dumps(compacted_input),
+                    }
+                ],
+            }
+        ],
+    }
+
 
 # Use cl100k_base encoding (similar to Claude's tokenizer)
 tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -1364,6 +1443,76 @@ async def responses(request: Request) -> JSONResponse | StreamingResponse:
         logger.error(f"{log_prefix}Unexpected error: {e}", exc_info=True)
         request_stats.record_error()
         return _openai_error_response(500, str(e), "server_error")
+
+
+@app.post("/v1/responses/compact", response_model=None)
+async def responses_compact(request: Request) -> JSONResponse:
+    request_id = request.headers.get("x-request-id", "")
+    log_prefix = f"[{request_id}] " if request_id else ""
+
+    # ---- Parse request ----
+    try:
+        body = await request.json()
+    except Exception:
+        return _openai_error_response(400, "Invalid JSON in request body")
+
+    input_items = body.get("input")
+
+    if not isinstance(input_items, list):
+        return _openai_error_response(400, "`input` must be a list")
+
+    # ---- Split conversation ----
+    system_msgs, other_msgs = _split_conversation(input_items)
+
+    # ---- Skip compaction if small ----
+    if len(other_msgs) <= MAX_RECENT_MESSAGES:
+        logger.info(f"{log_prefix}Compact skipped (small conversation)")
+        return JSONResponse(_wrap_compact_response(input_items))
+
+    # ---- Split old vs recent ----
+    old_msgs = other_msgs[:-MAX_RECENT_MESSAGES]
+    recent_msgs = other_msgs[-MAX_RECENT_MESSAGES:]
+
+    logger.info(f"{log_prefix}Compacting: {len(old_msgs)} old → summary, {len(recent_msgs)} recent kept")
+
+    # ---- Summarize ----
+    summary_text = None
+    try:
+        summary_text = await _summarize_messages(old_msgs, request, request_id)
+    except Exception as e:
+        logger.error(f"{log_prefix}Summarization failed: {e}", exc_info=True)
+
+    # ---- Build compacted input ----
+    compacted_input = []
+
+    # 1. Preserve system messages
+    compacted_input.extend(system_msgs)
+
+    # 2. Add summary (or fallback)
+    if summary_text:
+        compacted_input.append(
+            {
+                "type": "message",
+                "role": "system",
+                "content": f"Summary of previous conversation:\n{summary_text}",
+            }
+        )
+    else:
+        compacted_input.append(
+            {
+                "type": "message",
+                "role": "system",
+                "content": "Previous conversation truncated due to size.",
+            }
+        )
+
+    # 3. Append recent messages
+    compacted_input.extend(recent_msgs)
+
+    # ---- Return Codex-compatible response ----
+    response_payload = _wrap_compact_response(compacted_input)
+
+    return JSONResponse(response_payload)
 
 
 @app.get("/health")

@@ -2531,3 +2531,98 @@ class TestResponsesRoute:
             assert body["output"][0]["content"][0]["text"] == "Fallback!"
         finally:
             set_copilot_models([])
+
+
+# --- POST /v1/responses/compact ---
+
+
+class TestResponsesCompactRoute:
+    @pytest.mark.anyio
+    async def test_invalid_json(self, async_client):
+        resp = await async_client.post(
+            "/v1/responses/compact",
+            content=b"not json",
+            headers={"content-type": "application/json"},
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["error"]["message"] == "Invalid JSON in request body"
+
+    @pytest.mark.anyio
+    async def test_input_must_be_list(self, async_client):
+        resp = await async_client.post("/v1/responses/compact", json={"input": "not-a-list"})
+
+        assert resp.status_code == 400
+        assert resp.json()["error"]["message"] == "`input` must be a list"
+
+    @pytest.mark.anyio
+    async def test_small_conversation_skips_compaction(self, async_client, monkeypatch):
+        mock_summarize = AsyncMock(return_value="should-not-be-used")
+        monkeypatch.setattr(app_module, "_summarize_messages", mock_summarize)
+
+        input_items = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+            {"role": "assistant", "content": [{"type": "output_text", "text": "hello"}]},
+        ]
+
+        resp = await async_client.post("/v1/responses/compact", json={"input": input_items})
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["object"] == "response"
+        compacted_input = json.loads(body["output"][0]["content"][0]["text"])
+        assert compacted_input == input_items
+        mock_summarize.assert_not_called()
+
+    @pytest.mark.anyio
+    async def test_large_conversation_compacts_with_summary(self, async_client, monkeypatch):
+        max_recent = app_module.MAX_RECENT_MESSAGES
+        mock_summarize = AsyncMock(return_value="Key decisions and progress")
+        monkeypatch.setattr(app_module, "_summarize_messages", mock_summarize)
+
+        system_msgs = [{"role": "system", "content": "system prompt"}]
+        other_msgs = [
+            {"role": "user", "content": [{"type": "input_text", "text": f"msg-{i}"}]} for i in range(max_recent + 2)
+        ]
+        input_items = system_msgs + other_msgs
+
+        resp = await async_client.post(
+            "/v1/responses/compact",
+            json={"input": input_items},
+            headers={"x-request-id": "req-compact-123"},
+        )
+
+        assert resp.status_code == 200
+        compacted_input = json.loads(resp.json()["output"][0]["content"][0]["text"])
+
+        assert compacted_input[0] == system_msgs[0]
+        assert compacted_input[1]["role"] == "system"
+        assert compacted_input[1]["content"] == "Summary of previous conversation:\nKey decisions and progress"
+        assert compacted_input[2:] == other_msgs[-max_recent:]
+
+        mock_summarize.assert_awaited_once()
+        old_msgs, _, request_id = mock_summarize.await_args.args
+        assert old_msgs == other_msgs[:-max_recent]
+        assert request_id == "req-compact-123"
+
+    @pytest.mark.anyio
+    async def test_large_conversation_uses_fallback_when_summary_missing(self, async_client, monkeypatch):
+        max_recent = app_module.MAX_RECENT_MESSAGES
+        mock_summarize = AsyncMock(return_value=None)
+        monkeypatch.setattr(app_module, "_summarize_messages", mock_summarize)
+
+        input_items = [
+            {"role": "system", "content": "system prompt"},
+            *[{"role": "user", "content": [{"type": "input_text", "text": f"msg-{i}"}]} for i in range(max_recent + 1)],
+        ]
+
+        resp = await async_client.post("/v1/responses/compact", json={"input": input_items})
+
+        assert resp.status_code == 200
+        compacted_input = json.loads(resp.json()["output"][0]["content"][0]["text"])
+        assert compacted_input[1] == {
+            "type": "message",
+            "role": "system",
+            "content": "Previous conversation truncated due to size.",
+        }
