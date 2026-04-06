@@ -12,13 +12,28 @@ class TransientBackendError(Exception):
         super().__init__(f"{backend} error {status_code}: {message}")
 
 
-class CopilotHttpError(Exception):
+class BackendHttpError(Exception):
+    """Non-transient backend HTTP error (401, 403, 404, etc.)."""
+
+    def __init__(self, status_code: int, detail: str, backend: str = "unknown"):
+        self.status_code = status_code
+        self.detail = detail
+        self.backend = backend
+        super().__init__(f"{backend} HTTP {status_code}: {detail}")
+
+
+class CopilotHttpError(BackendHttpError):
     """Non-transient Copilot HTTP error (401, 403, 404, etc.)."""
 
     def __init__(self, status_code: int, detail: str):
-        self.status_code = status_code
-        self.detail = detail
-        super().__init__(f"Copilot HTTP {status_code}: {detail}")
+        super().__init__(status_code, detail, "copilot")
+
+
+class LiteLLMHttpError(BackendHttpError):
+    """Non-transient LiteLLM HTTP error (401, 403, 404, etc.)."""
+
+    def __init__(self, status_code: int, detail: str):
+        super().__init__(status_code, detail, "litellm")
 
 
 class ContextWindowExceededError(Exception):

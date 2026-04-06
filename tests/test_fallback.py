@@ -401,3 +401,118 @@ def make_client_error(code: str = "InternalError", message: str = "Something fai
         error_response={"Error": {"Code": code, "Message": message}},
         operation_name="InvokeModel",
     )
+
+
+def _mock_litellm_backend_success():
+    """Return a mock LiteLLMBackend whose handle_messages returns success."""
+    from fastapi.responses import JSONResponse
+
+    mock = AsyncMock()
+    result = {
+        "type": "message",
+        "content": [{"type": "text", "text": "Hello from litellm"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    }
+    mock.handle_messages.return_value = JSONResponse(content=result)
+    mock.handle_openai_messages.return_value = JSONResponse(
+        content={
+            "id": "chatcmpl-litellm",
+            "object": "chat.completion",
+            "choices": [{"message": {"role": "assistant", "content": "Hello from litellm"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        }
+    )
+    mock.close = AsyncMock()
+    return mock
+
+
+class TestLiteLLMFallback:
+    """LiteLLM fallback scenarios."""
+
+    @pytest.mark.anyio
+    async def test_litellm_primary_429_fallback_to_bedrock(self, fallback_client, minimal_body):
+        """Primary litellm 429 -> fallback bedrock succeeds."""
+        mock_litellm = AsyncMock()
+        mock_litellm.handle_messages.side_effect = TransientBackendError(
+            429, "rate_limit_error", "rate limited", "litellm"
+        )
+        mock_litellm.close = AsyncMock()
+
+        mock_bedrock = _mock_bedrock_success()
+
+        with (
+            patch.object(_bs, "_primary", "litellm"),
+            patch.object(_bs, "_fallback", "bedrock"),
+            patch.object(_bs, "_litellm_backend", mock_litellm),
+            patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
+        ):
+            resp = await fallback_client.post("/v1/messages", json=minimal_body)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["content"][0]["text"] == "Hello from bedrock"
+
+    @pytest.mark.anyio
+    async def test_bedrock_primary_429_fallback_to_litellm(self, fallback_client, minimal_body):
+        """Primary bedrock 429 -> fallback litellm succeeds."""
+        mock_bedrock = MagicMock()
+        mock_bedrock.invoke_model.side_effect = make_client_error("ThrottlingException", "rate limited")
+
+        mock_litellm = _mock_litellm_backend_success()
+
+        with (
+            patch.object(_bs, "_primary", "bedrock"),
+            patch.object(_bs, "_fallback", "litellm"),
+            patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
+            patch.object(_bs, "_litellm_backend", mock_litellm),
+        ):
+            resp = await fallback_client.post("/v1/messages", json=minimal_body)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["content"][0]["text"] == "Hello from litellm"
+
+    @pytest.mark.anyio
+    async def test_litellm_primary_copilot_fallback(self, fallback_client, minimal_body):
+        """Primary litellm 503 -> fallback copilot succeeds."""
+        mock_litellm = AsyncMock()
+        mock_litellm.handle_messages.side_effect = TransientBackendError(
+            503, "api_error", "service unavailable", "litellm"
+        )
+        mock_litellm.close = AsyncMock()
+
+        mock_copilot = _mock_copilot_backend_success()
+
+        with (
+            patch.object(_bs, "_primary", "litellm"),
+            patch.object(_bs, "_fallback", "copilot"),
+            patch.object(_bs, "_litellm_backend", mock_litellm),
+            patch.object(_bs, "_copilot_backend", mock_copilot),
+        ):
+            resp = await fallback_client.post("/v1/messages", json=minimal_body)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["content"][0]["text"] == "Hello from copilot"
+
+    @pytest.mark.anyio
+    async def test_litellm_context_window_fallback_to_bedrock(self, fallback_client, minimal_body):
+        """LiteLLM context window exceeded -> fallback to bedrock succeeds."""
+        mock_litellm = AsyncMock()
+        mock_litellm.handle_messages.side_effect = ContextWindowExceededError(145794, 128000, "litellm")
+        mock_litellm.close = AsyncMock()
+
+        mock_bedrock = _mock_bedrock_success()
+
+        with (
+            patch.object(_bs, "_primary", "litellm"),
+            patch.object(_bs, "_fallback", "bedrock"),
+            patch.object(_bs, "_litellm_backend", mock_litellm),
+            patch("claudegate.app.get_bedrock_client", return_value=mock_bedrock),
+        ):
+            resp = await fallback_client.post("/v1/messages", json=minimal_body)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["content"][0]["text"] == "Hello from bedrock"
