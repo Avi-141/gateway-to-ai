@@ -10,6 +10,8 @@ from typing import Any
 
 import tiktoken
 
+from .models import is_claude_model
+
 # Lazy-initialized tokenizer for estimating input tokens
 _tokenizer: tiktoken.Encoding | None = None
 
@@ -228,8 +230,16 @@ def anthropic_to_openai_request(body: dict[str, Any], openai_model: str) -> dict
     """Translate an Anthropic Messages API request to OpenAI Chat Completions format."""
     openai_body: dict[str, Any] = {
         "model": openai_model,
-        "max_tokens": body.get("max_tokens", 4096),
     }
+    # Only include max_tokens when explicitly provided — AI Framework models
+    # default to the model's own limit when omitted.
+    if "max_tokens" in body:
+        # Newer OpenAI models (gpt-5.x etc.) require max_completion_tokens
+        # instead of max_tokens. Claude models on Copilot accept max_tokens.
+        if is_claude_model(openai_model):
+            openai_body["max_tokens"] = body["max_tokens"]
+        else:
+            openai_body["max_completion_tokens"] = body["max_tokens"]
 
     messages: list[dict[str, Any]] = []
 

@@ -121,6 +121,68 @@ COPILOT_RETRY_BASE_DELAY = float(os.environ.get("COPILOT_RETRY_BASE_DELAY", "1.0
 # Rate limiting: max requests per minute to Copilot (0 = unlimited)
 COPILOT_MAX_RATE = int(os.environ.get("COPILOT_MAX_RATE", "15"))
 
+# AI Framework backend — multi-environment (defaults are illustrative; set
+# AI_FRAMEWORK_<ENV>_BASE_URL or override per deployment)
+AI_FRAMEWORK_TIMEOUT = int(os.environ.get("AI_FRAMEWORK_TIMEOUT", "300"))
+
+AI_FRAMEWORK_ENVIRONMENT_URLS: dict[str, str] = {
+    "dev": "https://dev.ai-framework.example",
+    "sandbox": "https://sandbox.ai-framework.example",
+    "nprd": "https://nprd.ai-framework.example",
+    "nprd-eu": "https://nprd-eu.ai-framework.example",
+    "nprd-apac": "https://nprd-apac.ai-framework.example",
+    "prod": "https://prod.ai-framework.example",
+    "prod-eu": "https://prod-eu.ai-framework.example",
+    "prod-apac": "https://prod-apac.ai-framework.example",
+}
+AI_FRAMEWORK_CHAT_PATH = "/ai-framework/ai-platform-serving/api/v1/chat/completions"
+
+# Maps environment name to env var segment: "nprd-eu" -> "NPRD_EU"
+AI_FRAMEWORK_ENV_KEY_MAP: dict[str, str] = {
+    "dev": "DEV",
+    "sandbox": "SANDBOX",
+    "nprd": "NPRD",
+    "nprd-eu": "NPRD_EU",
+    "nprd-apac": "NPRD_APAC",
+    "prod": "PROD",
+    "prod-eu": "PROD_EU",
+    "prod-apac": "PROD_APAC",
+}
+
+
+class AiFrameworkEnvConfig:
+    """Configuration for a single AI Framework environment."""
+
+    __slots__ = ("env_name", "service_credentials", "account_id", "base_url")
+
+    def __init__(self, env_name: str, service_credentials: str, account_id: str, base_url: str):
+        self.env_name = env_name
+        self.service_credentials = service_credentials
+        self.account_id = account_id
+        self.base_url = base_url
+
+
+def load_ai_framework_configs() -> dict[str, AiFrameworkEnvConfig]:
+    """Scan env vars for AI_FRAMEWORK_<ENV>_SERVICE_CREDENTIALS and build per-env configs.
+
+    Only environments with SERVICE_CREDENTIALS set are included.
+    """
+    configs: dict[str, AiFrameworkEnvConfig] = {}
+    for env_name, key in AI_FRAMEWORK_ENV_KEY_MAP.items():
+        creds = os.environ.get(f"AI_FRAMEWORK_{key}_SERVICE_CREDENTIALS", "")
+        if not creds:
+            continue
+        account_id = os.environ.get(f"AI_FRAMEWORK_{key}_ACCOUNT_ID", "")
+        base_url = os.environ.get(f"AI_FRAMEWORK_{key}_BASE_URL", "")
+        if not base_url:
+            base_url = AI_FRAMEWORK_ENVIRONMENT_URLS.get(env_name, "")
+        if not base_url:
+            logger.warning(f"AI Framework env '{env_name}': credentials set but no base URL available, skipping")
+            continue
+        configs[env_name] = AiFrameworkEnvConfig(env_name, creds, account_id, base_url)
+    return configs
+
+
 # Pre-flight context guard: reject requests estimated to exceed this fraction
 # of the model's context limit. Set to 0 to disable. Default 0.90 leaves 10%
 # headroom for tiktoken estimation inaccuracy.

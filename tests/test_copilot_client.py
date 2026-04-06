@@ -7,15 +7,12 @@ import httpx
 import pytest
 
 from claudegate.copilot_client import (
-    COPILOT_MESSAGES_URL,
     CopilotBackend,
     TokenBucket,
     _normalize_openai_response,
     _parse_retry_after,
     _parse_token_limit_error,
     compute_initiator,
-    filter_anthropic_beta_header,
-    sanitize_cache_control,
 )
 from claudegate.errors import ContextWindowExceededError, CopilotHttpError, TransientBackendError
 
@@ -416,7 +413,7 @@ class TestHandleMessages:
 
     @pytest.mark.anyio
     async def test_non_streaming_timeout_raises(self, backend):
-        """Timeout is converted to TransientBackendError for fallback eligibility."""
+        """Timeout is re-raised (not caught internally)."""
         with patch.object(
             backend._client, "post", new_callable=AsyncMock, side_effect=httpx.TimeoutException("timeout")
         ):
@@ -425,10 +422,8 @@ class TestHandleMessages:
                 "max_tokens": 100,
                 "messages": [{"role": "user", "content": "hi"}],
             }
-            with pytest.raises(TransientBackendError) as exc_info:
+            with pytest.raises(httpx.TimeoutException):
                 await backend.handle_messages(body, "", False, "m", "x")
-            assert exc_info.value.status_code == 504
-            assert exc_info.value.backend == "copilot"
 
     @pytest.mark.anyio
     async def test_non_streaming_auth_error_raises(self, backend):
@@ -466,6 +461,62 @@ class TestHandleMessages:
             resp = await backend.handle_messages(body, "", True, "m", "x")
 
         assert resp.media_type == "text/event-stream"
+
+
+class TestHandleMessagesModelNotSupported:
+    """handle_messages retries via /responses when /chat/completions returns model_not_supported."""
+
+    @pytest.mark.anyio
+    async def test_non_streaming_retries_via_responses(self, backend):
+        error_detail = '{"error":{"message":"The requested model is not supported.","code":"model_not_supported"}}'
+        mock_resp = MagicMock()
+        mock_resp.status_code = 400
+        mock_resp.text = error_detail
+
+        responses_result = MagicMock()
+
+        with (
+            patch.object(backend, "_post_with_retry", new_callable=AsyncMock, return_value=mock_resp),
+            patch.object(
+                backend, "handle_responses_messages", new_callable=AsyncMock, return_value=responses_result
+            ) as mock_responses,
+        ):
+            body = {"model": "x", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]}
+            result = await backend.handle_messages(body, "req1", False, "gpt-5.1-codex", "gpt-5.1-codex")
+
+        assert result is responses_result
+        mock_responses.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_streaming_retries_via_responses(self, backend):
+        error_detail = '{"error":{"message":"The requested model is not supported.","code":"model_not_supported"}}'
+        mock_open_stream = AsyncMock(side_effect=CopilotHttpError(400, error_detail))
+        responses_result = MagicMock()
+
+        with (
+            patch.object(backend, "_open_stream", mock_open_stream),
+            patch.object(
+                backend, "handle_responses_messages", new_callable=AsyncMock, return_value=responses_result
+            ) as mock_responses,
+        ):
+            body = {"model": "x", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]}
+            result = await backend.handle_messages(body, "", True, "gpt-5.1-codex", "gpt-5.1-codex")
+
+        assert result is responses_result
+        mock_responses.assert_called_once()
+
+    @pytest.mark.anyio
+    async def test_non_model_error_still_raises(self, backend):
+        """Non model_not_supported 400 errors are not retried."""
+        error_detail = '{"error":{"message":"Bad request","code":"invalid_request_body"}}'
+        mock_resp = MagicMock()
+        mock_resp.status_code = 400
+        mock_resp.text = error_detail
+
+        with patch.object(backend, "_post_with_retry", new_callable=AsyncMock, return_value=mock_resp):
+            body = {"model": "x", "max_tokens": 100, "messages": [{"role": "user", "content": "hi"}]}
+            with pytest.raises(CopilotHttpError):
+                await backend.handle_messages(body, "", False, "m", "x")
 
 
 # --- _open_stream ---
@@ -1209,664 +1260,3 @@ class TestHandleResponsesPassthrough:
         assert resp.status_code == 200
         posted_body = mock_post.call_args.kwargs["json"]
         assert "tools" not in posted_body
-
-
-# --- handle_messages_passthrough ---
-
-
-class TestHandleMessagesPassthrough:
-    """Tests for native Anthropic Messages API passthrough."""
-
-    @pytest.mark.anyio
-    async def test_non_streaming_success(self, backend):
-        """Non-streaming passthrough returns Anthropic JSON as-is."""
-        body = {
-            "model": "claude-sonnet-4-5-20250929",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": "Hello"}],
-        }
-        anthropic_resp = {
-            "id": "msg_abc123",
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "text", "text": "Hello there!"}],
-            "model": "claude-sonnet-4.5",
-            "usage": {"input_tokens": 10, "output_tokens": 5},
-        }
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = anthropic_resp
-
-        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
-            resp = await backend.handle_messages_passthrough(body, "req1", False, "claude-sonnet-4.5")
-
-        assert resp.status_code == 200
-        resp_body = json.loads(resp.body)
-        assert resp_body["id"] == "msg_abc123"
-        assert resp_body["content"][0]["text"] == "Hello there!"
-
-        posted_url = mock_post.call_args.args[0] if mock_post.call_args.args else mock_post.call_args.kwargs.get("url")
-        assert posted_url == COPILOT_MESSAGES_URL
-
-    @pytest.mark.anyio
-    async def test_model_override(self, backend):
-        """Passthrough overrides model to Copilot display name."""
-        body = {
-            "model": "claude-sonnet-4-5-20250929",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": "Hi"}],
-        }
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {"id": "msg_1", "type": "message", "content": [], "usage": {}}
-
-        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
-            await backend.handle_messages_passthrough(body, "req1", False, "claude-sonnet-4.5")
-
-        posted_body = mock_post.call_args.kwargs["json"]
-        assert posted_body["model"] == "claude-sonnet-4.5"
-
-    @pytest.mark.anyio
-    async def test_extra_headers_forwarded(self, backend):
-        """Extra headers (e.g. anthropic-beta) are included in the request."""
-        body = {
-            "model": "claude-sonnet-4.5",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": "Hi"}],
-        }
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {"id": "msg_1", "type": "message", "content": [], "usage": {}}
-
-        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
-            await backend.handle_messages_passthrough(
-                body,
-                "req1",
-                False,
-                "claude-sonnet-4.5",
-                extra_headers={"anthropic-beta": "interleaved-thinking-2025-05-14"},
-            )
-
-        posted_headers = mock_post.call_args.kwargs["headers"]
-        assert posted_headers["anthropic-beta"] == "interleaved-thinking-2025-05-14"
-
-    @pytest.mark.anyio
-    async def test_vscode_session_headers_present(self, backend):
-        """VScode-SessionId and VScode-MachineId are included in request headers."""
-        body = {
-            "model": "claude-sonnet-4.5",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": "Hi"}],
-        }
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {"id": "msg_1", "type": "message", "content": [], "usage": {}}
-
-        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
-            await backend.handle_messages_passthrough(body, "req1", False, "claude-sonnet-4.5")
-
-        posted_headers = mock_post.call_args.kwargs["headers"]
-        assert "VScode-SessionId" in posted_headers
-        assert "VScode-MachineId" in posted_headers
-
-    @pytest.mark.anyio
-    async def test_transient_error_raises(self, backend):
-        """429 and 5xx responses raise TransientBackendError for fallback."""
-        body = {
-            "model": "claude-sonnet-4.5",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": "Hi"}],
-        }
-        mock_response = MagicMock()
-        mock_response.status_code = 429
-        mock_response.text = "rate limited"
-        mock_response.headers = httpx.Headers({})
-
-        with (
-            patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response),
-            pytest.raises(TransientBackendError) as exc_info,
-        ):
-            await backend.handle_messages_passthrough(body, "req1", False, "claude-sonnet-4.5")
-        assert exc_info.value.status_code == 429
-
-    @pytest.mark.anyio
-    async def test_non_transient_error_raises_copilot_http(self, backend):
-        """Non-fallback HTTP errors raise CopilotHttpError."""
-        body = {
-            "model": "claude-sonnet-4.5",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": "Hi"}],
-        }
-        mock_response = MagicMock()
-        mock_response.status_code = 403
-        mock_response.text = "forbidden"
-        mock_response.headers = httpx.Headers({})
-
-        with (
-            patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response),
-            pytest.raises(CopilotHttpError) as exc_info,
-        ):
-            await backend.handle_messages_passthrough(body, "req1", False, "claude-sonnet-4.5")
-        assert exc_info.value.status_code == 403
-
-    @pytest.mark.anyio
-    async def test_token_limit_error_raised(self, backend):
-        """Token limit errors are parsed and raised as ContextWindowExceededError."""
-        body = {
-            "model": "claude-sonnet-4.5",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": "Hi"}],
-        }
-        mock_response = MagicMock()
-        mock_response.status_code = 400
-        mock_response.text = _TOKEN_LIMIT_DETAIL
-        mock_response.headers = httpx.Headers({})
-
-        with (
-            patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response),
-            pytest.raises(ContextWindowExceededError) as exc_info,
-        ):
-            await backend.handle_messages_passthrough(body, "req1", False, "claude-sonnet-4.5")
-        assert exc_info.value.prompt_tokens == 145794
-
-    @pytest.mark.anyio
-    async def test_streaming_passthrough(self, backend):
-        """Streaming passthrough relays Anthropic SSE events as-is."""
-        body = {
-            "model": "claude-sonnet-4.5",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": "Hi"}],
-        }
-
-        msg_start = (
-            '{"type":"message_start","message":{"id":"msg_1","type":"message",'
-            '"role":"assistant","content":[],"model":"claude-sonnet-4.5",'
-            '"usage":{"input_tokens":10,"output_tokens":0}}}'
-        )
-        sse_lines = [
-            "event: message_start",
-            f"data: {msg_start}",
-            "",
-            "event: content_block_start",
-            'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}',
-            "",
-            "event: content_block_delta",
-            'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}',
-            "",
-            "event: content_block_stop",
-            'data: {"type":"content_block_stop","index":0}',
-            "",
-            "event: message_delta",
-            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}',
-            "",
-            "event: message_stop",
-            'data: {"type":"message_stop"}',
-        ]
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-
-        async def mock_aiter_lines():
-            for line in sse_lines:
-                yield line
-
-        mock_response.aiter_lines = mock_aiter_lines
-        mock_response.aread = AsyncMock()
-
-        mock_stream_cm = AsyncMock()
-        mock_stream_cm.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_stream_cm.__aexit__ = AsyncMock(return_value=None)
-
-        with patch.object(backend._client, "stream", return_value=mock_stream_cm):
-            resp = await backend.handle_messages_passthrough(body, "req1", True, "claude-sonnet-4.5")
-
-        assert resp.media_type == "text/event-stream"
-        collected = []
-        async for chunk in resp.body_iterator:
-            collected.append(chunk)
-
-        full_output = "".join(collected)
-        assert "event: message_start" in full_output
-        assert "content_block_delta" in full_output
-        assert '"text":"Hello"' in full_output
-
-    @pytest.mark.anyio
-    async def test_body_not_mutated(self, backend):
-        """Original body dict is not mutated by passthrough."""
-        body = {
-            "model": "claude-sonnet-4-5-20250929",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": "Hi"}],
-        }
-        original_model = body["model"]
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {"id": "msg_1", "type": "message", "content": [], "usage": {}}
-
-        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
-            await backend.handle_messages_passthrough(body, "req1", False, "claude-sonnet-4.5")
-
-        assert body["model"] == original_model
-
-    @pytest.mark.anyio
-    async def test_tools_passed_through(self, backend):
-        """Anthropic tool definitions are forwarded without modification."""
-        body = {
-            "model": "claude-sonnet-4.5",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": "weather?"}],
-            "tools": [
-                {
-                    "name": "get_weather",
-                    "description": "Get weather",
-                    "input_schema": {"type": "object", "properties": {"loc": {"type": "string"}}},
-                }
-            ],
-        }
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {"id": "msg_1", "type": "message", "content": [], "usage": {}}
-
-        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response) as mock_post:
-            await backend.handle_messages_passthrough(body, "req1", False, "claude-sonnet-4.5")
-
-        posted_body = mock_post.call_args.kwargs["json"]
-        assert len(posted_body["tools"]) == 1
-        assert posted_body["tools"][0]["name"] == "get_weather"
-
-    @pytest.mark.anyio
-    async def test_non_streaming_scales_usage_tokens(self, backend):
-        """Non-streaming passthrough scales usage tokens to client context window."""
-        body = {
-            "model": "claude-sonnet-4.5",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": "Hi"}],
-        }
-        anthropic_resp = {
-            "id": "msg_1",
-            "type": "message",
-            "content": [{"type": "text", "text": "Hi"}],
-            "model": "claude-sonnet-4.5",
-            "usage": {
-                "input_tokens": 100,
-                "output_tokens": 50,
-                "cache_creation_input_tokens": 20,
-                "cache_read_input_tokens": 10,
-            },
-        }
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = anthropic_resp
-
-        # copilot limit 200k, client window 1M → 5x scale
-        with (
-            patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response),
-            patch("claudegate.copilot_client.get_copilot_context_limit", return_value=200_000),
-        ):
-            resp = await backend.handle_messages_passthrough(
-                body, "req1", False, "claude-sonnet-4.5", client_context_window=1_000_000
-            )
-
-        resp_body = json.loads(resp.body)
-        assert resp_body["usage"]["input_tokens"] == 500
-        assert resp_body["usage"]["output_tokens"] == 250
-        assert resp_body["usage"]["cache_creation_input_tokens"] == 100
-        assert resp_body["usage"]["cache_read_input_tokens"] == 50
-
-    @pytest.mark.anyio
-    async def test_non_streaming_no_scaling_when_limit_unknown(self, backend):
-        """Non-streaming passthrough does not scale when copilot limit is unknown."""
-        body = {
-            "model": "claude-sonnet-4.5",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": "Hi"}],
-        }
-        anthropic_resp = {
-            "id": "msg_1",
-            "type": "message",
-            "content": [],
-            "usage": {"input_tokens": 100, "output_tokens": 50},
-        }
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = anthropic_resp
-
-        with (
-            patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response),
-            patch("claudegate.copilot_client.get_copilot_context_limit", return_value=0),
-        ):
-            resp = await backend.handle_messages_passthrough(
-                body, "req1", False, "claude-sonnet-4.5", client_context_window=1_000_000
-            )
-
-        resp_body = json.loads(resp.body)
-        assert resp_body["usage"]["input_tokens"] == 100
-        assert resp_body["usage"]["output_tokens"] == 50
-
-    @pytest.mark.anyio
-    async def test_streaming_scales_usage_tokens(self, backend):
-        """Streaming passthrough scales usage tokens in message_start and message_delta."""
-        body = {
-            "model": "claude-sonnet-4.5",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": "Hi"}],
-        }
-
-        # copilot limit 200k, client window 1M → 5x scale
-        # input_tokens 100 → 500, output_tokens 20 → 100
-        msg_start = json.dumps(
-            {
-                "type": "message_start",
-                "message": {
-                    "id": "msg_1",
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [],
-                    "model": "claude-sonnet-4.5",
-                    "usage": {"input_tokens": 100, "output_tokens": 0},
-                },
-            }
-        )
-        msg_delta = json.dumps(
-            {
-                "type": "message_delta",
-                "delta": {"stop_reason": "end_turn"},
-                "usage": {"output_tokens": 20},
-            }
-        )
-        sse_lines = [
-            "event: message_start",
-            f"data: {msg_start}",
-            "",
-            "event: content_block_delta",
-            'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}',
-            "",
-            "event: message_delta",
-            f"data: {msg_delta}",
-            "",
-            "event: message_stop",
-            'data: {"type":"message_stop"}',
-        ]
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-
-        async def mock_aiter_lines():
-            for line in sse_lines:
-                yield line
-
-        mock_response.aiter_lines = mock_aiter_lines
-        mock_response.aread = AsyncMock()
-
-        mock_stream_cm = AsyncMock()
-        mock_stream_cm.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_stream_cm.__aexit__ = AsyncMock(return_value=None)
-
-        with (
-            patch.object(backend._client, "stream", return_value=mock_stream_cm),
-            patch("claudegate.copilot_client.get_copilot_context_limit", return_value=200_000),
-        ):
-            resp = await backend.handle_messages_passthrough(
-                body, "req1", True, "claude-sonnet-4.5", client_context_window=1_000_000
-            )
-
-        collected = []
-        async for chunk in resp.body_iterator:
-            collected.append(chunk)
-
-        # Parse out the message_start event and check scaled tokens
-        for chunk in collected:
-            if "message_start" in chunk:
-                data_line = [p for p in chunk.split("\n") if p.startswith("data: ")][0]
-                data = json.loads(data_line[6:])
-                assert data["message"]["usage"]["input_tokens"] == 500
-                break
-
-        # Parse out the message_delta event and check scaled tokens
-        for chunk in collected:
-            if "message_delta" in chunk and "output_tokens" in chunk:
-                data_line = [p for p in chunk.split("\n") if p.startswith("data: ")][0]
-                data = json.loads(data_line[6:])
-                assert data["usage"]["output_tokens"] == 100
-                break
-
-    @pytest.mark.anyio
-    async def test_streaming_no_scaling_without_client_window(self, backend):
-        """Streaming passthrough passes tokens through when client_context_window is 0."""
-        body = {
-            "model": "claude-sonnet-4.5",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": "Hi"}],
-        }
-
-        msg_start = json.dumps(
-            {
-                "type": "message_start",
-                "message": {
-                    "id": "msg_1",
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [],
-                    "usage": {"input_tokens": 100, "output_tokens": 0},
-                },
-            }
-        )
-        sse_lines = [
-            "event: message_start",
-            f"data: {msg_start}",
-            "",
-            "event: message_stop",
-            'data: {"type":"message_stop"}',
-        ]
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-
-        async def mock_aiter_lines():
-            for line in sse_lines:
-                yield line
-
-        mock_response.aiter_lines = mock_aiter_lines
-        mock_response.aread = AsyncMock()
-
-        mock_stream_cm = AsyncMock()
-        mock_stream_cm.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_stream_cm.__aexit__ = AsyncMock(return_value=None)
-
-        with (
-            patch.object(backend._client, "stream", return_value=mock_stream_cm),
-            patch("claudegate.copilot_client.get_copilot_context_limit", return_value=200_000),
-        ):
-            # client_context_window=0 → no scaling
-            resp = await backend.handle_messages_passthrough(
-                body, "req1", True, "claude-sonnet-4.5", client_context_window=0
-            )
-
-        collected = []
-        async for chunk in resp.body_iterator:
-            collected.append(chunk)
-
-        for chunk in collected:
-            if "message_start" in chunk:
-                data_line = [p for p in chunk.split("\n") if p.startswith("data: ")][0]
-                data = json.loads(data_line[6:])
-                assert data["message"]["usage"]["input_tokens"] == 100
-                break
-
-    @pytest.mark.anyio
-    async def test_non_streaming_restores_model_name(self, backend):
-        """Non-streaming passthrough restores anthropic_model in response."""
-        body = {
-            "model": "claude-sonnet-4.5",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": "Hi"}],
-        }
-        anthropic_resp = {
-            "id": "msg_1",
-            "type": "message",
-            "content": [],
-            "model": "claude-sonnet-4.5",
-            "usage": {"input_tokens": 10, "output_tokens": 5},
-        }
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = anthropic_resp
-
-        with patch.object(backend._client, "post", new_callable=AsyncMock, return_value=mock_response):
-            resp = await backend.handle_messages_passthrough(
-                body, "req1", False, "claude-sonnet-4.5", anthropic_model="claude-sonnet-4-5-20250929"
-            )
-
-        resp_body = json.loads(resp.body)
-        assert resp_body["model"] == "claude-sonnet-4-5-20250929"
-
-    @pytest.mark.anyio
-    async def test_streaming_restores_model_name(self, backend):
-        """Streaming passthrough restores anthropic_model in message_start."""
-        body = {
-            "model": "claude-sonnet-4.5",
-            "max_tokens": 1024,
-            "messages": [{"role": "user", "content": "Hi"}],
-        }
-
-        msg_start = json.dumps(
-            {
-                "type": "message_start",
-                "message": {
-                    "id": "msg_1",
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [],
-                    "model": "claude-sonnet-4.5",
-                    "usage": {"input_tokens": 10, "output_tokens": 0},
-                },
-            }
-        )
-        sse_lines = [
-            "event: message_start",
-            f"data: {msg_start}",
-            "",
-            "event: message_stop",
-            'data: {"type":"message_stop"}',
-        ]
-
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-
-        async def mock_aiter_lines():
-            for line in sse_lines:
-                yield line
-
-        mock_response.aiter_lines = mock_aiter_lines
-        mock_response.aread = AsyncMock()
-
-        mock_stream_cm = AsyncMock()
-        mock_stream_cm.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_stream_cm.__aexit__ = AsyncMock(return_value=None)
-
-        with patch.object(backend._client, "stream", return_value=mock_stream_cm):
-            resp = await backend.handle_messages_passthrough(
-                body, "req1", True, "claude-sonnet-4.5", anthropic_model="claude-sonnet-4-5-20250929"
-            )
-
-        collected = []
-        async for chunk in resp.body_iterator:
-            collected.append(chunk)
-
-        for chunk in collected:
-            if "message_start" in chunk:
-                data_line = [p for p in chunk.split("\n") if p.startswith("data: ")][0]
-                data = json.loads(data_line[6:])
-                assert data["message"]["model"] == "claude-sonnet-4-5-20250929"
-                break
-
-
-class TestFilterAnthropicBetaHeader:
-    """Tests for filter_anthropic_beta_header."""
-
-    def test_strips_context_1m(self):
-        result = filter_anthropic_beta_header("context-1m-2025-08-07")
-        assert result is None
-
-    def test_strips_context_1m_with_future_date(self):
-        result = filter_anthropic_beta_header("context-1m-2026-01-15")
-        assert result is None
-
-    def test_keeps_supported_betas(self):
-        result = filter_anthropic_beta_header("interleaved-thinking-2025-05-14")
-        assert result == "interleaved-thinking-2025-05-14"
-
-    def test_filters_mixed_values(self):
-        header = "interleaved-thinking-2025-05-14, context-1m-2025-08-07, advanced-tool-use-2025-11-20"
-        result = filter_anthropic_beta_header(header)
-        assert result == "interleaved-thinking-2025-05-14, advanced-tool-use-2025-11-20"
-
-    def test_all_unsupported_returns_none(self):
-        result = filter_anthropic_beta_header("context-1m-2025-08-07, context-1m-2026-01-01")
-        assert result is None
-
-    def test_empty_string_returns_none(self):
-        result = filter_anthropic_beta_header("")
-        assert result is None
-
-    def test_single_supported_value(self):
-        result = filter_anthropic_beta_header("max-tokens-3-5-sonnet-2024-07-15")
-        assert result == "max-tokens-3-5-sonnet-2024-07-15"
-
-
-class TestSanitizeCacheControl:
-    """Tests for sanitize_cache_control."""
-
-    def test_strips_extra_fields_from_system_blocks(self):
-        body = {
-            "system": [
-                {"type": "text", "text": "hello"},
-                {"type": "text", "text": "world", "cache_control": {"type": "ephemeral", "scope": "turn"}},
-            ],
-            "messages": [],
-        }
-        sanitize_cache_control(body)
-        assert body["system"][0].get("cache_control") is None
-        assert body["system"][1]["cache_control"] == {"type": "ephemeral"}
-
-    def test_strips_extra_fields_from_message_content(self):
-        body = {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral", "scope": "turn"}},
-                    ],
-                },
-            ],
-        }
-        sanitize_cache_control(body)
-        assert body["messages"][0]["content"][0]["cache_control"] == {"type": "ephemeral"}
-
-    def test_preserves_clean_cache_control(self):
-        body = {
-            "system": [{"type": "text", "cache_control": {"type": "ephemeral"}}],
-            "messages": [],
-        }
-        sanitize_cache_control(body)
-        assert body["system"][0]["cache_control"] == {"type": "ephemeral"}
-
-    def test_no_cache_control_unchanged(self):
-        body = {
-            "system": [{"type": "text", "text": "hello"}],
-            "messages": [{"role": "user", "content": "plain string"}],
-        }
-        result = sanitize_cache_control(body)
-        assert result is body
-
-    def test_empty_body(self):
-        body: dict = {}
-        sanitize_cache_control(body)
-        assert body == {}
-
-    def test_handles_string_content_in_messages(self):
-        body = {
-            "messages": [{"role": "user", "content": "just a string"}],
-        }
-        sanitize_cache_control(body)
-        assert body["messages"][0]["content"] == "just a string"

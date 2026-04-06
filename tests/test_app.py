@@ -1346,7 +1346,7 @@ class TestModelsRoute:
                     }
                 },
             },
-            {"id": "gemini-2.5-pro"},
+            {"id": "gemini-3-flash-preview"},
         ]
         set_copilot_models(dynamic)
         try:
@@ -1358,7 +1358,7 @@ class TestModelsRoute:
             assert "claude-sonnet-4-5-20250929" in ids
             # Should include non-Claude models from Copilot
             assert "gpt-4o" in ids
-            assert "gemini-2.5-pro" in ids
+            assert "gemini-3-flash-preview" in ids
             # Should NOT include Claude models from Copilot (already in Bedrock)
             assert ids.count("claude-sonnet-4.5") == 0  # Copilot display name not in Bedrock map
             # Check limits are passed through for non-Claude Copilot models
@@ -1369,7 +1369,7 @@ class TestModelsRoute:
                 "max_output_tokens": 16384,
             }
             # Check limits are omitted when not present
-            gemini = next(m for m in body["data"] if m["id"] == "gemini-2.5-pro")
+            gemini = next(m for m in body["data"] if m["id"] == "gemini-3-flash-preview")
             assert "limits" not in gemini
         finally:
             set_copilot_models([])
@@ -1389,7 +1389,7 @@ class TestModelsRoute:
         ids = [m["id"] for m in body["data"]]
         # Should include non-Claude models from COPILOT_OPENAI_MODEL_MAP
         assert "gpt-4o" in ids
-        assert "gemini-2.5-pro" in ids
+        assert "gemini-3-flash-preview" in ids
         # Should include Bedrock Claude models
         assert "claude-sonnet-4-5-20250929" in ids
 
@@ -1852,6 +1852,7 @@ class TestServerToolRouting:
             },
         )
         assert resp.status_code == 200
+        # Bedrock should have been called (not Copilot)
         mock_bedrock_client.invoke_model.assert_called_once()
 
     @pytest.mark.anyio
@@ -1885,7 +1886,9 @@ class TestServerToolRouting:
             },
         )
         assert resp.status_code == 200
+        # Copilot should have been called
         mock_backend.handle_messages.assert_called_once()
+        # The body passed to handle_messages should not contain server tools
         call_body = mock_backend.handle_messages.call_args[0][0]
         assert "tools" not in call_body
 
@@ -1949,6 +1952,7 @@ class TestServerToolRouting:
         )
         assert resp.status_code == 200
         mock_backend.handle_messages.assert_called_once()
+        # The initiator kwarg must be "agent", not "user"
         assert mock_backend.handle_messages.call_args.kwargs["initiator"] == "agent"
 
     @pytest.mark.anyio
@@ -1983,6 +1987,7 @@ class TestServerToolRouting:
         )
         assert resp.status_code == 200
         mock_backend.handle_messages.assert_called_once()
+        # User-initiated should remain "user"
         assert mock_backend.handle_messages.call_args.kwargs["initiator"] == "user"
 
     @pytest.mark.anyio
@@ -2024,6 +2029,7 @@ class TestServerToolRouting:
 
         assert resp.status_code == 200
         assert resp.json()["content"][0]["text"] == "Fallback response"
+        # Copilot should have been called with stripped tools
         call_body = mock_copilot.handle_messages.call_args[0][0]
         assert "tools" not in call_body
 
@@ -2094,6 +2100,7 @@ class TestServerToolRouting:
             },
         )
         assert resp.status_code == 200
+        # Should use Copilot (primary), not Bedrock
         mock_backend.handle_messages.assert_called_once()
 
 

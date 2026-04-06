@@ -16,11 +16,12 @@
 - **[Open WebUI](https://github.com/open-webui/open-webui)** - Use Open WebUI with Bedrock or Copilot via the OpenAI-compatible API
 - **[OpenAI Codex CLI](https://github.com/openai/codex)** - Run Codex CLI using your GitHub Copilot subscription or AWS Bedrock via the Responses API
 - **Any OpenAI API client** - Use the `/v1/chat/completions` or `/v1/responses` endpoint with any OpenAI-format client
+- **Multi-environment AI Framework** - Route `iq/<env>/<model>` requests to per-environment OpenAI-compatible endpoints alongside Copilot or Bedrock
 
 ## Features
 
-- Two backends: **GitHub Copilot** (default, OpenAI-compatible, auto-translated) and **AWS Bedrock** (native Anthropic format)
-- Backend selected via `CLAUDEGATE_BACKEND=copilot|bedrock` environment variable
+- Three backends: **GitHub Copilot** (default, OpenAI-compatible, auto-translated), **AWS Bedrock** (native Anthropic format), and **AI Framework** (multi-environment HTTP endpoint)
+- Backend selected via `CLAUDEGATE_BACKEND=copilot|bedrock|iq-ai-cluster` environment variable (comma-separated pairs for fallback)
 - **Cross-backend fallback**: set `CLAUDEGATE_BACKEND=copilot,bedrock` to automatically retry on the other backend when the primary returns a transient error (429, 5xx)
 - Supports streaming and non-streaming responses
 - Extended thinking support (Bedrock)
@@ -47,7 +48,7 @@ Available models are fetched dynamically from each backend at startup. View them
 - **API** — `GET http://localhost:8080/v1/models`
 - **Claude Code** — install the `/models` plugin (see below)
 
-The Copilot backend supports Claude models (translated to Anthropic format) and non-Claude models like GPT, Gemini, and others (passed through via OpenAI format). The Bedrock backend supports all Claude models available in your AWS region.
+The Copilot backend supports Claude models (translated to Anthropic format) and non-Claude models like GPT, Gemini, and others (passed through via OpenAI format). The Bedrock backend supports all Claude models available in your AWS region. The **AI Framework** backend is selected per request when you use model IDs like `iq/<env>/<model>` — configure credentials and base URLs per environment (see [AI Framework configuration](#ai-framework-configuration)).
 
 ## Prerequisites
 
@@ -55,6 +56,7 @@ The Copilot backend supports Claude models (translated to Anthropic format) and 
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) — install with `curl -LsSf https://astral.sh/uv/install.sh | sh` (macOS/Linux) or `powershell -c "irm https://astral.sh/uv/install.ps1 | iex"` (Windows)
 - **Copilot backend (default):** GitHub account with an active GitHub Copilot subscription
 - **Bedrock backend:** AWS credentials configured (via `aws configure`, environment variables, or IAM role) and access to Anthropic models in AWS Bedrock
+- **AI Framework:** Per-environment `AI_FRAMEWORK_<ENV>_SERVICE_CREDENTIALS` and base URL configuration (see [AI Framework configuration](#ai-framework-configuration))
 
 ## Installation
 
@@ -115,11 +117,17 @@ export CLAUDEGATE_BACKEND="copilot"
 # Use AWS Bedrock
 export CLAUDEGATE_BACKEND="bedrock"
 
+# Use AI Framework (multi-environment; requires per-env credentials)
+export CLAUDEGATE_BACKEND="iq-ai-cluster"
+
 # Use Copilot with Bedrock as fallback (retries on 429, 5xx errors)
 export CLAUDEGATE_BACKEND="copilot,bedrock"
 
 # Use Bedrock with Copilot as fallback
 export CLAUDEGATE_BACKEND="bedrock,copilot"
+
+# Use AI Framework with Bedrock as fallback
+export CLAUDEGATE_BACKEND="iq-ai-cluster,bedrock"
 ```
 
 You can also switch backends at runtime without restarting — see [Runtime Backend Switching](#runtime-backend-switching).
@@ -150,6 +158,62 @@ export BEDROCK_REGION_PREFIX="us"  # default: us (options: us, eu, apac)
 # Optional: Read timeout for slow models (Opus can be slow)
 export BEDROCK_READ_TIMEOUT="300"  # default: 300 (seconds)
 ```
+
+
+
+### AI Framework configuration
+
+The AI Framework backend supports **multiple environments at once**. Each environment has its own credentials. Only environments with credentials set are initialized. Consult your AI Framework operator documentation for onboarding, credential format, and allowed models.
+
+**Model ID format:** `iq/<env>/<model>` — for example, `iq/dev/gpt-5-chat`, `iq/prod/mistral-medium-2508`
+
+```bash
+# Per-environment credentials (set for each environment you want to use)
+export AI_FRAMEWORK_DEV_SERVICE_CREDENTIALS="your-dev-credentials"
+export AI_FRAMEWORK_PROD_SERVICE_CREDENTIALS="your-prod-credentials"
+
+# Optional: per-environment account IDs
+export AI_FRAMEWORK_DEV_ACCOUNT_ID="your-dev-account-id"
+export AI_FRAMEWORK_PROD_ACCOUNT_ID="your-prod-account-id"
+
+# Optional: per-environment base URL overrides (defaults are illustrative *.ai-framework.example hosts)
+# export AI_FRAMEWORK_DEV_BASE_URL="https://dev.ai-framework.example"
+# export AI_FRAMEWORK_PROD_BASE_URL="https://prod.ai-framework.example"
+
+# Optional: shared HTTP timeout (default: 300 seconds)
+export AI_FRAMEWORK_TIMEOUT="300"
+```
+
+**Environment variable pattern:** `AI_FRAMEWORK_<ENV>_SERVICE_CREDENTIALS` where `<ENV>` is one of:
+
+| Environment | Env Var Key | Default base URL (override with `AI_FRAMEWORK_<ENV>_BASE_URL`) |
+|---|---|---|
+| dev | `DEV` | `https://dev.ai-framework.example` |
+| sandbox | `SANDBOX` | `https://sandbox.ai-framework.example` |
+| nprd | `NPRD` | `https://nprd.ai-framework.example` |
+| nprd-eu | `NPRD_EU` | `https://nprd-eu.ai-framework.example` |
+| nprd-apac | `NPRD_APAC` | `https://nprd-apac.ai-framework.example` |
+| prod | `PROD` | `https://prod.ai-framework.example` |
+| prod-eu | `PROD_EU` | `https://prod-eu.ai-framework.example` |
+| prod-apac | `PROD_APAC` | `https://prod-apac.ai-framework.example` |
+
+**Example models (availability depends on your deployment):**
+
+| Model | Provider | Tool calling | Typical environments |
+|---|---|---|---|
+| `gpt-5-chat` | Azure OpenAI | Yes | dev only |
+| `gpt-5.2-chat` | Azure OpenAI | Yes | dev only |
+| `gpt-5.3-chat` | Azure OpenAI | Yes | dev only |
+| `claude-sonnet-4-6` | Anthropic (via Azure) | Yes | dev only |
+| `mistral-medium-2508` | Mistral | Yes | all |
+| `magistral-medium-2507` | Mistral | Yes | all |
+| `phi4` | Microsoft | No | all |
+| `Phi-4-mini-instruct` | Microsoft | No | all |
+| `openai/gpt-oss-120b` | OpenAI OSS | Yes | all |
+
+**Usage:** Send `model: "iq/dev/gpt-5-chat"` to `/v1/messages` to route through the dev environment's AI Framework endpoint. Models using the `iq/` prefix are routed to the AI Framework regardless of the primary backend setting, so you can use `iq/` models alongside Copilot or Bedrock.
+
+Auth uses the `X-ServiceCredentials` header with your per-environment service credentials.
 
 ### General Configuration
 
@@ -185,6 +249,16 @@ CLAUDEGATE_BACKEND=bedrock claudegate
 **With fallback (Copilot primary, Bedrock fallback):**
 ```bash
 CLAUDEGATE_BACKEND=copilot,bedrock claudegate
+```
+
+**With AI Framework (primary):**
+```bash
+CLAUDEGATE_BACKEND=iq-ai-cluster claudegate
+```
+
+**With AI Framework and Bedrock fallback:**
+```bash
+CLAUDEGATE_BACKEND=iq-ai-cluster,bedrock claudegate
 ```
 
 If `GITHUB_TOKEN` is not set, the proxy will run an interactive OAuth device flow at startup:
@@ -261,6 +335,12 @@ claudegate backend bedrock
 
 # Switch to copilot with bedrock fallback
 claudegate backend copilot,bedrock
+
+# Switch to AI Framework
+claudegate backend iq-ai-cluster
+
+# AI Framework with Bedrock fallback
+claudegate backend iq-ai-cluster,bedrock
 ```
 
 **API:**
@@ -276,7 +356,7 @@ curl -X POST http://localhost:8080/api/backend \
 
 **Dashboard:** Use the backend dropdown in the Status panel at `http://localhost:8080`.
 
-**Claude Code:** Install the claudegate plugin (see below) and use `/backend copilot` or `/backend bedrock,copilot`.
+**Claude Code:** Install the claudegate plugin (see below) and use `/backend copilot`, `/backend bedrock,copilot`, or `/backend iq-ai-cluster`.
 
 Runtime changes are ephemeral — they don't survive restarts. The `CLAUDEGATE_BACKEND` env var remains the startup source of truth. If switching to Copilot and it wasn't initialized at startup, the OAuth device flow will run automatically.
 
@@ -375,6 +455,52 @@ curl -X POST http://localhost:8080/v1/responses \
 | `/v1/messages/count_tokens` | POST | Count tokens in a request |
 | `/health` | GET | Health check (add `?check_bedrock=true` or `?check_copilot=true` for deep check) |
 | `/version` | GET | Return current version |
+
+
+
+## Shell helpers
+
+Create a shell function to launch claudegate with your environment variables pre-configured. This avoids needing a `.env` file and keeps credentials out of your shell history.
+
+### Fish
+
+Save to `~/.config/fish/functions/cg.fish`:
+
+```fish
+function cg --description "Launch claudegate"
+    set -lx AI_FRAMEWORK_DEV_SERVICE_CREDENTIALS "your-dev-credentials"
+    set -lx AI_FRAMEWORK_DEV_ACCOUNT_ID "your-dev-account-id"
+    set -lx AI_FRAMEWORK_DEV_BASE_URL "https://dev.ai-framework.example"
+    set -lx AI_FRAMEWORK_PROD_SERVICE_CREDENTIALS "your-prod-credentials"
+    set -lx AI_FRAMEWORK_PROD_ACCOUNT_ID "your-prod-account-id"
+    set -lx AI_FRAMEWORK_PROD_BASE_URL "https://prod.ai-framework.example"
+    set -lx CLAUDEGATE_BACKEND "copilot,iq-ai-cluster"
+    claudegate $argv
+end
+```
+
+Then run `cg` to start, or `cg --help` to pass arguments through.
+
+### Bash / Zsh
+
+Add to `~/.bashrc` or `~/.zshrc`:
+
+```bash
+cg() {
+  AI_FRAMEWORK_DEV_SERVICE_CREDENTIALS="your-dev-credentials" \
+  AI_FRAMEWORK_DEV_ACCOUNT_ID="your-dev-account-id" \
+  AI_FRAMEWORK_DEV_BASE_URL="https://dev.ai-framework.example" \
+  AI_FRAMEWORK_PROD_SERVICE_CREDENTIALS="your-prod-credentials" \
+  AI_FRAMEWORK_PROD_ACCOUNT_ID="your-prod-account-id" \
+  AI_FRAMEWORK_PROD_BASE_URL="https://prod.ai-framework.example" \
+  CLAUDEGATE_BACKEND="copilot,iq-ai-cluster" \
+  claudegate "$@"
+}
+```
+
+Then run `cg` to start, or `cg --help` to pass arguments through.
+
+> **Tip:** If you installed claudegate globally with `uv tool install`, run `claudegate` directly; the environment variables above are still applied when you use the `cg` helper.
 
 ## Error Handling
 

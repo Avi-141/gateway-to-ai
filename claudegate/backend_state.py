@@ -8,8 +8,9 @@ from .config import COPILOT_TIMEOUT, logger
 if TYPE_CHECKING:
     from .copilot_client import CopilotBackend
     from .copilot_usage import CopilotUsageCache
+    from .cx_ai_cluster_client import CxAiClusterBackend
 
-VALID_BACKENDS = {"copilot", "bedrock"}
+VALID_BACKENDS = {"copilot", "bedrock", "iq-ai-cluster"}
 
 
 def parse_backend_string(value: str) -> tuple[str, str]:
@@ -46,6 +47,7 @@ class BackendState:
         self._fallback = fallback
         self._copilot_backend: CopilotBackend | None = None
         self._copilot_usage_cache: CopilotUsageCache | None = None
+        self._ai_framework_backends: dict[str, CxAiClusterBackend] = {}
         self._lock = asyncio.Lock()
 
     @property
@@ -68,6 +70,22 @@ class BackendState:
         """Called from lifespan() at startup to set the initialized copilot backend."""
         self._copilot_backend = backend
         self._copilot_usage_cache = cache
+
+    def get_ai_framework_backend(self, env_name: str) -> "CxAiClusterBackend | None":
+        """Return the AI Framework backend for the given environment, or None."""
+        return self._ai_framework_backends.get(env_name)
+
+    def set_ai_framework_backend(self, env_name: str, backend: "CxAiClusterBackend") -> None:
+        """Register an AI Framework backend for an environment."""
+        self._ai_framework_backends[env_name] = backend
+
+    @property
+    def has_ai_framework(self) -> bool:
+        return len(self._ai_framework_backends) > 0
+
+    @property
+    def ai_framework_environments(self) -> list[str]:
+        return list(self._ai_framework_backends.keys())
 
     async def switch(self, primary: str, fallback: str = "") -> dict:
         """Switch to a new backend configuration.
@@ -126,8 +144,10 @@ class BackendState:
         logger.info("Copilot backend initialized via runtime switch")
 
     async def close(self) -> None:
-        """Shutdown lifecycle — close copilot resources."""
+        """Shutdown lifecycle — close copilot and AI Framework resources."""
         if self._copilot_usage_cache is not None:
             await self._copilot_usage_cache.close()
         if self._copilot_backend is not None:
             await self._copilot_backend.close()
+        for backend in self._ai_framework_backends.values():
+            await backend.close()
