@@ -1,9 +1,9 @@
-"""Model mappings from Anthropic model names to Bedrock/Copilot model IDs."""
+"""Model mappings from Anthropic model names to Bedrock/Copilot/AI Framework model IDs."""
 
 import time
 from typing import TYPE_CHECKING, Any
 
-from .config import BEDROCK_REGION_PREFIX, COPILOT_MODELS_TTL, logger
+from .config import AI_FRAMEWORK_ENV_KEY_MAP, BEDROCK_REGION_PREFIX, COPILOT_MODELS_TTL, logger
 
 if TYPE_CHECKING:
     from .copilot_client import CopilotBackend
@@ -386,6 +386,58 @@ def _find_newest_available_claude_model(requested_model: str) -> tuple[str, str]
 
     # Requested version is older than everything available; use the newest
     return available[0][2], requested_model
+
+
+# --- AI Framework model registry ---
+
+AI_FRAMEWORK_MODELS: dict[str, dict[str, Any]] = {
+    "gpt-5-chat": {"provider": "openai", "tool_calling": True, "envs": {"dev"}},
+    "gpt-5.2-chat": {"provider": "openai", "tool_calling": True, "envs": {"dev"}},
+    "gpt-5.3-chat": {"provider": "openai", "tool_calling": True, "envs": {"dev"}},
+    "claude-sonnet-4-6": {"provider": "anthropic", "tool_calling": True, "envs": {"dev"}},
+    "mistral-medium-2508": {"provider": "openai", "tool_calling": True, "envs": "all"},
+    "magistral-medium-2507": {"provider": "openai", "tool_calling": True, "envs": "all"},
+    "phi4": {"provider": "Microsoft", "openai": False, "envs": "all"},
+    "Phi-4-mini-instruct": {"provider": "openai", "tool_calling": False, "envs": "all"},
+    "openai/gpt-oss-120b": {"provider": "openai", "tool_calling": True, "envs": "all"},
+}
+
+
+def is_ai_framework_model(model: str) -> bool:
+    """Return True if model uses iq/<env>/<model> format."""
+    return model.startswith("iq/")
+
+
+def parse_ai_framework_model(model: str) -> tuple[str, str]:
+    """Parse 'iq/<env>/<model>' into (env_name, model_name).
+
+    Raises ValueError if format is invalid or environment is unknown.
+    """
+    parts = model.split("/", 2)
+    if len(parts) < 3 or parts[0] != "iq" or not parts[1] or not parts[2]:
+        raise ValueError(f"Invalid AI Framework model format: '{model}'. Expected 'iq/<env>/<model>'.")
+    env_name = parts[1]
+    model_name = parts[2]
+    if env_name not in AI_FRAMEWORK_ENV_KEY_MAP:
+        raise ValueError(
+            f"Unknown AI Framework environment: '{env_name}'. "
+            f"Valid environments: {', '.join(sorted(AI_FRAMEWORK_ENV_KEY_MAP))}"
+        )
+    return env_name, model_name
+
+
+def validate_ai_framework_model(model_name: str, env_name: str) -> list[str]:
+    """Return warning strings for model/environment mismatches."""
+    warnings: list[str] = []
+    info = AI_FRAMEWORK_MODELS.get(model_name)
+    if info is None:
+        warnings.append(f"AI Framework model '{model_name}' is not in the known registry — it may still work")
+        return warnings
+    if env_name and info["envs"] != "all" and env_name.lower() not in info["envs"]:
+        warnings.append(
+            f"AI Framework model '{model_name}' is only available in {info['envs']} but environment is '{env_name}'"
+        )
+    return warnings
 
 
 def get_copilot_model(model: str) -> tuple[str, str]:

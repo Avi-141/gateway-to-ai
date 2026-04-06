@@ -24,6 +24,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from .backend_state import BackendState, parse_backend_string
 from .bedrock_client import get_bedrock_client, reset_bedrock_client
 from .config import (
+    AI_FRAMEWORK_TIMEOUT,
     BACKEND_TYPE,
     BEDROCK_REGION_PREFIX,
     COPILOT_TIMEOUT,
@@ -31,14 +32,16 @@ from .config import (
     DEFAULT_PORT,
     FALLBACK_BACKEND,
     LOG_LEVEL,
+    load_ai_framework_configs,
     logger,
 )
 from .context_guard import check_context_guard_anthropic, check_context_guard_openai, check_context_guard_responses
-from .copilot_client import compute_initiator, filter_anthropic_beta_header
+from .copilot_client import compute_initiator
 from .copilot_translate import has_server_tools, strip_server_tools
 from .copilot_usage import CopilotUsageCache
 from .errors import ContextWindowExceededError, CopilotHttpError, TransientBackendError
 from .models import (
+    AI_FRAMEWORK_MODELS,
     BEDROCK_MODEL_MAP,
     COPILOT_MODEL_MAP,
     COPILOT_OPENAI_MODEL_MAP,
@@ -48,12 +51,14 @@ from .models import (
     get_copilot_context_limit,
     get_copilot_model,
     get_copilot_openai_model,
+    is_ai_framework_model,
     is_claude_model,
     model_requires_responses_api,
-    model_supports_messages_api,
     model_supports_responses_api,
+    parse_ai_framework_model,
     refresh_copilot_models_if_stale,
     set_copilot_models,
+    validate_ai_framework_model,
 )
 from .openai_translate import (
     ReverseStreamTranslator,
@@ -126,9 +131,10 @@ async def lifespan(app: FastAPI):
     if fallback:
         if fallback == primary:
             raise ValueError(f"FALLBACK_BACKEND cannot be the same as BACKEND_TYPE: {primary}")
-        valid = {"bedrock", "copilot"}
-        if fallback not in valid:
-            raise ValueError(f"Invalid FALLBACK_BACKEND: {fallback}, must be one of {valid}")
+        from .backend_state import VALID_BACKENDS
+
+        if fallback not in VALID_BACKENDS:
+            raise ValueError(f"Invalid FALLBACK_BACKEND: {fallback}, must be one of {VALID_BACKENDS}")
 
     # Startup
     logger.info(f"Starting claudegate v{__version__}")
@@ -170,6 +176,25 @@ async def lifespan(app: FastAPI):
     if needs_bedrock:
         logger.info(f"AWS Region: {os.environ.get('AWS_REGION', 'us-west-2')}")
         logger.info(f"Bedrock Region Prefix: {BEDROCK_REGION_PREFIX or '(none)'}")
+
+    needs_cx_ai = primary == "iq-ai-cluster" or fallback == "iq-ai-cluster"
+    if needs_cx_ai:
+        ai_fw_configs = load_ai_framework_configs()
+        if not ai_fw_configs:
+            raise ValueError(
+                "cx-ai-cluster backend requires at least one AI_FRAMEWORK_<ENV>_SERVICE_CREDENTIALS "
+                "env var (e.g. AI_FRAMEWORK_DEV_SERVICE_CREDENTIALS)."
+            )
+        from .cx_ai_cluster_client import CxAiClusterBackend
+
+        for env_name, cfg in ai_fw_configs.items():
+            backend = CxAiClusterBackend(
+                cfg.service_credentials,
+                cfg.base_url,
+                timeout=AI_FRAMEWORK_TIMEOUT,
+            )
+            _backend_state.set_ai_framework_backend(env_name, backend)
+            logger.info(f"AI Framework environment '{env_name}' initialized ({cfg.base_url})")
 
     yield
 
@@ -218,7 +243,9 @@ def _validate_request(body: dict[str, Any]) -> JSONResponse | None:
     """Validate required fields in request body. Returns error response or None."""
     if "model" not in body:
         return _error_response(400, "invalid_request_error", "Missing required field: model")
-    if "max_tokens" not in body:
+    # max_tokens is required by the Anthropic API but optional for AI Framework models
+    # (which default to the model's own limit when omitted).
+    if "max_tokens" not in body and not is_ai_framework_model(body["model"]):
         return _error_response(400, "invalid_request_error", "Missing required field: max_tokens")
     if "messages" not in body:
         return _error_response(400, "invalid_request_error", "Missing required field: messages")
@@ -629,7 +656,7 @@ async def _call_copilot(
     stripped from the body, which can alter what ``compute_initiator`` returns.
 
     Raises TransientBackendError for fallback-eligible errors.
-    Raises CopilotHttpError, RuntimeError for non-fallback errors.
+    Raises CopilotHttpError, RuntimeError, httpx.TimeoutException for non-fallback errors.
     """
     copilot = _backend_state.copilot_backend
     if copilot is None:
@@ -639,34 +666,9 @@ async def _call_copilot(
     effective_initiator = initiator or compute_initiator(body)
     logger.info(
         f"{log_prefix}Request - model: {body['model']} -> {copilot_model} (copilot), "
-        f"stream: {stream}, initiator: {effective_initiator}, "
-        f"messages: {len(body.get('messages', []))}, "
-        f"tools: {len(body.get('tools', []))}, "
-        f"system: {len(json.dumps(body.get('system', '')))}, "
-        f"body: {len(json.dumps(body))}"
+        f"stream: {stream}, initiator: {effective_initiator}"
     )
     client_context_window = _detect_client_context_window(request, copilot_model)
-
-    # Native Anthropic Messages passthrough for Claude models (0 translations).
-    if model_supports_messages_api(copilot_model):
-        logger.info(f"{log_prefix}Routing to native Messages API for {copilot_model}")
-        extra_headers: dict[str, str] = {}
-        beta = request.headers.get("anthropic-beta")
-        if beta:
-            filtered = filter_anthropic_beta_header(beta)
-            if filtered:
-                extra_headers["anthropic-beta"] = filtered
-        return await copilot.handle_messages_passthrough(
-            body,
-            request_id,
-            stream,
-            copilot_model,
-            client_context_window,
-            anthropic_model=anthropic_model,
-            extra_headers=extra_headers or None,
-            initiator=effective_initiator,
-        )
-
     if model_requires_responses_api(copilot_model):
         logger.info(f"{log_prefix}Routing to Responses API for {copilot_model}")
         return await copilot.handle_responses_messages(
@@ -689,11 +691,43 @@ async def _call_copilot(
     )
 
 
+async def _call_cx_ai_cluster(
+    body: dict[str, Any],
+    request_id: str,
+    stream: bool,
+) -> JSONResponse | StreamingResponse:
+    """Execute request against the AI Framework backend.
+
+    Parses the iq/<env>/<model> model string, looks up the per-environment
+    backend, and forwards the request.
+
+    Raises TransientBackendError for fallback-eligible errors.
+    Raises ValueError for invalid model format or unknown environment.
+    Raises RuntimeError if the environment backend is not configured.
+    """
+    model_str = body["model"]
+    env_name, target_model = parse_ai_framework_model(model_str)
+    backend = _backend_state.get_ai_framework_backend(env_name)
+    if backend is None:
+        configured = _backend_state.ai_framework_environments
+        raise RuntimeError(
+            f"AI Framework environment '{env_name}' not configured. "
+            f"Configured environments: {configured or 'none'}. "
+            f"Set AI_FRAMEWORK_{env_name.upper().replace('-', '_')}_SERVICE_CREDENTIALS to enable it."
+        )
+    log_prefix = f"[{request_id}] " if request_id else ""
+    warnings = validate_ai_framework_model(target_model, env_name)
+    for w in warnings:
+        logger.warning(f"{log_prefix}{w}")
+    logger.info(f"{log_prefix}Request - model: {model_str} -> {target_model} @ {env_name}, stream: {stream}")
+    return await backend.handle_messages(body, request_id, stream, model_str, target_model)
+
+
 async def _call_copilot_openai(body: dict[str, Any], request_id: str, stream: bool) -> JSONResponse | StreamingResponse:
     """Execute OpenAI-format request directly against Copilot (no translation).
 
     Raises TransientBackendError for fallback-eligible errors.
-    Raises CopilotHttpError, RuntimeError for non-fallback errors.
+    Raises CopilotHttpError, RuntimeError, httpx.TimeoutException for non-fallback errors.
     """
     copilot = _backend_state.copilot_backend
     if copilot is None:
@@ -859,43 +893,67 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
     stream = body.get("stream", False)
     log_prefix = f"[{request_id}] " if request_id else ""
 
-    # Route non-Claude models (GPT, Gemini, Grok, etc.) to Copilot when available.
-    # Bedrock only supports Claude models, so non-Claude models need Copilot.
+    # Route iq/<env>/<model> requests directly to AI Framework regardless of primary backend.
     requested_model = body["model"]
+    if is_ai_framework_model(requested_model):
+        if not _backend_state.has_ai_framework:
+            return _error_response(
+                400,
+                "invalid_request_error",
+                f"Model '{requested_model}' targets AI Framework but no environments are configured. "
+                "Set AI_FRAMEWORK_<ENV>_SERVICE_CREDENTIALS env vars to enable.",
+            )
+        try:
+            return await _call_cx_ai_cluster(body, request_id, stream)
+        except ValueError as e:
+            return _error_response(400, "invalid_request_error", str(e))
+        except TransientBackendError as e:
+            return _error_response(e.status_code, e.error_type, e.message)
+        except RuntimeError as e:
+            logger.error(f"{log_prefix}AI Framework error: {e}")
+            return _error_response(400, "invalid_request_error", str(e))
+        except Exception as e:
+            logger.error(f"{log_prefix}Unexpected AI Framework error: {e}")
+            return _error_response(500, "api_error", str(e))
+
+    # Route non-Claude models (GPT, Gemini, Grok, etc.) to Copilot when available.
+    # Bedrock only supports Claude models. iq/ models are already handled above.
     if not is_claude_model(requested_model):
-        copilot_available = _backend_state.primary == "copilot" or _backend_state.fallback == "copilot"
-        if not copilot_available:
+        primary = _backend_state.primary
+        fallback = _backend_state.fallback
+        # For bedrock-only setups (or cx-ai-cluster without iq/ prefix), reject non-Claude models.
+        if "copilot" not in (primary, fallback):
             return _error_response(
                 400,
                 "invalid_request_error",
                 f"Model '{requested_model}' is not supported on the Bedrock backend. "
-                "Non-Claude models require the Copilot backend.",
+                "Non-Claude models require the Copilot or AI Framework backend.",
             )
-        # Force route to Copilot for non-Claude models
-        try:
-            check_context_guard_anthropic(body)
-        except ContextWindowExceededError as e:
-            request_stats.record_context_guard_rejection()
-            return _context_window_error_response(e, body.get("max_tokens", 0))
-        try:
-            return await _call_copilot(body, request, request_id, stream)
-        except ContextWindowExceededError as e:
-            return _context_window_error_response(e, body.get("max_tokens", 0))
-        except TransientBackendError as e:
-            return _error_response(e.status_code, e.error_type, e.message)
-        except CopilotHttpError as e:
-            return _error_response(e.status_code, "api_error", e.detail)
-        except RuntimeError as e:
-            logger.error(f"{log_prefix}Auth error: {e}")
-            return _error_response(401, "authentication_error", str(e))
-        except Exception as e:
-            logger.error(f"{log_prefix}Unexpected error: {e}", exc_info=True)
-            return _error_response(500, "api_error", str(e))
+        # Force route to Copilot (one of primary/fallback must be copilot to reach here)
+        if "copilot" in (primary, fallback):
+            try:
+                check_context_guard_anthropic(body)
+            except ContextWindowExceededError as e:
+                request_stats.record_context_guard_rejection()
+                return _context_window_error_response(e, body.get("max_tokens", 0))
+            try:
+                return await _call_copilot(body, request, request_id, stream)
+            except ContextWindowExceededError as e:
+                return _context_window_error_response(e, body.get("max_tokens", 0))
+            except TransientBackendError as e:
+                return _error_response(e.status_code, e.error_type, e.message)
+            except CopilotHttpError as e:
+                return _error_response(e.status_code, "api_error", e.detail)
+            except RuntimeError as e:
+                logger.error(f"{log_prefix}Auth error: {e}")
+                return _error_response(401, "authentication_error", str(e))
+            except Exception as e:
+                logger.error(f"{log_prefix}Unexpected error: {e}", exc_info=True)
+                return _error_response(500, "api_error", str(e))
 
     # Route requests with server-side tools (e.g. web_search) appropriately.
-    # Copilot doesn't support server-side tools on any path (including the
-    # native /v1/messages endpoint), so route to Bedrock if available or
-    # strip them from the request.
+    # Copilot doesn't support server-side tools, so route to Bedrock if available,
+    # or strip them from the request if Copilot-only.
     # Compute the initiator *before* stripping so that removing server-tool
     # content blocks from the conversation history does not change the result.
     initiator_override: str | None = None
@@ -924,6 +982,8 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
     def _get_backend_caller(backend_name: str):
         if backend_name == "copilot":
             return lambda: _call_copilot(body, request, request_id, stream, initiator=initiator_override)
+        if backend_name == "iq-ai-cluster":
+            return lambda: _call_cx_ai_cluster(body, request_id, stream)
         return lambda: _call_bedrock(body, request, request_id, stream)
 
     # Capture current backend config for this request
@@ -1021,13 +1081,6 @@ async def messages(request: Request) -> JSONResponse | StreamingResponse:
         return _error_response(401, "authentication_error", str(e))
     except Exception as e:
         logger.error(f"{log_prefix}Unexpected error: {e}", exc_info=True)
-        logger.error(
-            f"{log_prefix}Unexpected error request context: "
-            f"model={body.get('model')}, stream={stream}, "
-            f"messages={len(body.get('messages', []))}, "
-            f"tools={len(body.get('tools', []))}, "
-            f"system_len={len(json.dumps(body.get('system', '')))}"
-        )
         request_stats.record_error()
         return _error_response(500, "api_error", str(e))
 
@@ -1509,6 +1562,22 @@ async def list_models() -> dict[str, Any]:
                                 "owned_by": _infer_owned_by(model_id),
                             }
                         )
+    # Append AI Framework models for each configured environment
+    if _backend_state.has_ai_framework:
+        for env_name in _backend_state.ai_framework_environments:
+            for model_name, info in AI_FRAMEWORK_MODELS.items():
+                # Skip models not available in this environment
+                if info["envs"] != "all" and env_name not in info["envs"]:
+                    continue
+                models.append(
+                    {
+                        "id": f"iq/{env_name}/{model_name}",
+                        "object": "model",
+                        "created": 1700000000,
+                        "owned_by": info["provider"],
+                    }
+                )
+
     return {
         "object": "list",
         "data": models,

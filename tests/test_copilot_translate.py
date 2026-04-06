@@ -167,6 +167,26 @@ class TestAnthropicToOpenAIRequest:
         assert len(result["messages"]) == 1
         assert result["messages"][0]["role"] == "user"
 
+    def test_max_tokens_claude_model(self):
+        body = {
+            "model": "claude-sonnet-4-5",
+            "max_tokens": 200,
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        result = anthropic_to_openai_request(body, "claude-sonnet-4.5")
+        assert result["max_tokens"] == 200
+        assert "max_completion_tokens" not in result
+
+    def test_max_completion_tokens_non_claude_model(self):
+        body = {
+            "model": "gpt-5.4",
+            "max_tokens": 200,
+            "messages": [{"role": "user", "content": "hi"}],
+        }
+        result = anthropic_to_openai_request(body, "gpt-5.4")
+        assert result["max_completion_tokens"] == 200
+        assert "max_tokens" not in result
+
     def test_system_string(self):
         body = {
             "model": "x",

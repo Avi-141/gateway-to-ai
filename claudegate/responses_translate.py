@@ -11,6 +11,8 @@ import time
 import uuid
 from typing import Any
 
+from .models import is_claude_model
+
 # --- Request Translation (Anthropic -> Responses) ---
 
 
@@ -898,9 +900,12 @@ def responses_to_openai_chat_request(body: dict[str, Any], model: str) -> dict[s
     if instructions:
         messages.append({"role": "system", "content": instructions})
 
-    # max_output_tokens -> max_tokens
+    # max_output_tokens -> max_tokens (or max_completion_tokens for non-Claude)
     if "max_output_tokens" in body:
-        openai_body["max_tokens"] = body["max_output_tokens"]
+        if is_claude_model(model):
+            openai_body["max_tokens"] = body["max_output_tokens"]
+        else:
+            openai_body["max_completion_tokens"] = body["max_output_tokens"]
 
     input_items = body.get("input", [])
 

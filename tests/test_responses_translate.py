@@ -993,14 +993,25 @@ class TestResponsesToOpenAIChatRequest:
         assert result["messages"][0]["content"] == "Be concise."
         assert result["messages"][1]["role"] == "user"
 
-    def test_max_output_tokens(self):
+    def test_max_output_tokens_non_claude(self):
         body = {
             "model": "gpt-5.2",
             "max_output_tokens": 512,
             "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}],
         }
         result = responses_to_openai_chat_request(body, "gpt-5.2")
+        assert result["max_completion_tokens"] == 512
+        assert "max_tokens" not in result
+
+    def test_max_output_tokens_claude(self):
+        body = {
+            "model": "claude-sonnet-4-5",
+            "max_output_tokens": 512,
+            "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}],
+        }
+        result = responses_to_openai_chat_request(body, "claude-sonnet-4.5")
         assert result["max_tokens"] == 512
+        assert "max_completion_tokens" not in result
 
     def test_tool_calls_grouped(self):
         body = {
@@ -1533,7 +1544,7 @@ class TestResponsesAPIRoundTrip:
         # Responses -> OpenAI
         openai_req = responses_to_openai_chat_request(body, "gpt-5.2")
         assert openai_req["messages"][0]["content"] == "Be concise."
-        assert openai_req["max_tokens"] == 512
+        assert openai_req["max_completion_tokens"] == 512  # non-Claude model
         assert openai_req["messages"][1]["content"] == "Hello"
 
         # Simulate OpenAI response

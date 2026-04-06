@@ -406,7 +406,7 @@ class TestModelsRouteOpenAI:
         # Should include GPT, Codex, Gemini models
         assert "gpt-4o" in model_ids
         assert "gpt-5.1-codex" in model_ids
-        assert "gemini-2.5-pro" in model_ids
+        assert "gemini-3-flash-preview" in model_ids
         # Anthropic models from COPILOT_MODEL_MAP should be present
         assert "claude-sonnet-4-5-20250929" in model_ids
 
@@ -419,5 +419,5 @@ class TestModelsRouteOpenAI:
         model_map = {m["id"]: m["owned_by"] for m in body["data"]}
         assert model_map.get("gpt-4o") == "openai"
         assert model_map.get("gpt-5.1-codex") == "openai"
-        assert model_map.get("gemini-2.5-pro") == "google"
+        assert model_map.get("gemini-3-flash-preview") == "google"
         assert model_map.get("claude-sonnet-4-5-20250929") == "anthropic"

@@ -115,7 +115,8 @@ def _generate_plist(binary: str, env_vars: dict[str, str] | None = None) -> str:
         env_xml += f"        <key>{xml_escape(key)}</key>\n"
         env_xml += f"        <string>{xml_escape(val)}</string>\n"
 
-    return textwrap.dedent(f"""\
+    return textwrap.dedent(
+        f"""\
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
         <plist version="1.0">
@@ -140,7 +141,8 @@ def _generate_plist(binary: str, env_vars: dict[str, str] | None = None) -> str:
             </dict>
         </dict>
         </plist>
-    """)
+    """
+    )
 
 
 def _plist_path() -> Path:
@@ -156,7 +158,8 @@ def _generate_systemd_unit(binary: str, env_vars: dict[str, str] | None = None) 
         for key, val in sorted(env_vars.items()):
             env_lines += f"Environment={key}={val}\n"
 
-    return textwrap.dedent(f"""\
+    return textwrap.dedent(
+        f"""\
         [Unit]
         Description=Claudegate - API proxy for AWS Bedrock and GitHub Copilot
         After=network.target
@@ -173,7 +176,8 @@ def _generate_systemd_unit(binary: str, env_vars: dict[str, str] | None = None) 
 
         [Install]
         WantedBy=default.target
-    """)
+    """
+    )
 
 
 def _systemd_unit_path() -> Path:
